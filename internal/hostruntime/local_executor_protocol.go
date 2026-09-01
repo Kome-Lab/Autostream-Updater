@@ -9,6 +9,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const (
@@ -25,21 +27,22 @@ const (
 // from the root-owned local executor policy. Mutation requests carry only an
 // immutable, digest-bound MutationPlan and short-lived bearer credentials.
 type LocalExecutorRequest struct {
-	Version                  int                               `json:"version"`
-	Operation                string                            `json:"operation"`
-	ServiceID                string                            `json:"service_id"`
-	Plan                     *MutationPlan                     `json:"plan,omitempty"`
-	PortPlan                 *SystemdPortReconfigurePlan       `json:"port_plan,omitempty"`
-	HostSelfUpdate           *HostSelfUpdateRequest            `json:"host_self_update,omitempty"`
-	HostSelfUpdateProof      *HostSelfUpdateAgentProof         `json:"host_self_update_proof,omitempty"`
-	HostSelfUpdateGeneration string                            `json:"host_self_update_generation,omitempty"`
-	HostSelfUpdateGrant      *HostSelfUpdateGrantAuthorization `json:"host_self_update_grant,omitempty"`
-	RuntimeCredential        *RuntimeCredentialMutation        `json:"runtime_credential,omitempty"`
-	SourcePolicyRevision     int64                             `json:"source_policy_revision,omitempty"`
-	OwnershipEpoch           int64                             `json:"ownership_epoch,omitempty"`
-	OwnershipPolicyRevision  int64                             `json:"ownership_policy_revision,omitempty"`
-	ExecutorPolicyRevision   int64                             `json:"executor_policy_revision,omitempty"`
-	MutationGrant            BoundedSecret                     `json:"mutation_grant,omitempty"`
+	Version                  int                                    `json:"version"`
+	Operation                string                                 `json:"operation"`
+	ServiceID                string                                 `json:"service_id"`
+	Plan                     *MutationPlan                          `json:"plan,omitempty"`
+	PortPlan                 *SystemdPortReconfigurePlan            `json:"port_plan,omitempty"`
+	HostSelfUpdate           *HostSelfUpdateRequest                 `json:"host_self_update,omitempty"`
+	HostSelfUpdateProof      *HostSelfUpdateAgentProof              `json:"host_self_update_proof,omitempty"`
+	HostSelfUpdateGeneration string                                 `json:"host_self_update_generation,omitempty"`
+	HostSelfUpdateGrant      *HostSelfUpdateGrantAuthorization      `json:"host_self_update_grant,omitempty"`
+	RuntimeCredential        *RuntimeCredentialMutation             `json:"runtime_credential,omitempty"`
+	SourcePolicyRevision     int64                                  `json:"source_policy_revision,omitempty"`
+	OwnershipEpoch           int64                                  `json:"ownership_epoch,omitempty"`
+	OwnershipPolicyRevision  int64                                  `json:"ownership_policy_revision,omitempty"`
+	ExecutorPolicyRevision   int64                                  `json:"executor_policy_revision,omitempty"`
+	MutationGrant            BoundedSecret                          `json:"mutation_grant,omitempty"`
+	MutationGrantV2Binding   *contracts.UpdaterMutationGrantBinding `json:"mutation_grant_v2_binding,omitempty"`
 }
 
 func (r LocalExecutorRequest) Validate() error {
@@ -63,6 +66,7 @@ func (r LocalExecutorRequest) Validate() error {
 			r.OwnershipEpoch != 0 ||
 			r.OwnershipPolicyRevision != 0 ||
 			r.ExecutorPolicyRevision != 0 ||
+			r.MutationGrantV2Binding != nil ||
 			!r.MutationGrant.Empty() {
 			return errors.New("local executor probe request is invalid")
 		}
@@ -86,7 +90,7 @@ func (r LocalExecutorRequest) Validate() error {
 			return err
 		}
 		if r.Operation == "stage" {
-			if !r.MutationGrant.Empty() {
+			if !r.MutationGrant.Empty() || r.MutationGrantV2Binding != nil {
 				return errors.New("local executor stage must not include a credential")
 			}
 			return nil
@@ -126,6 +130,7 @@ func (r LocalExecutorRequest) Validate() error {
 			r.OwnershipEpoch != 0 ||
 			r.OwnershipPolicyRevision != 0 ||
 			r.ExecutorPolicyRevision != 0 ||
+			r.MutationGrantV2Binding != nil ||
 			!r.MutationGrant.Empty() {
 			return errors.New(
 				"local executor host self-update watchdog status request is invalid",
@@ -142,6 +147,7 @@ func (r LocalExecutorRequest) Validate() error {
 			r.OwnershipEpoch < 1 ||
 			r.OwnershipPolicyRevision < 1 ||
 			r.ExecutorPolicyRevision < 1 ||
+			r.MutationGrantV2Binding != nil ||
 			!r.MutationGrant.Empty() {
 			return errors.New("local executor host self-update binding is invalid")
 		}
@@ -206,6 +212,7 @@ func (r LocalExecutorRequest) Validate() error {
 			r.OwnershipEpoch != 0 ||
 			r.OwnershipPolicyRevision != 0 ||
 			r.ExecutorPolicyRevision != 0 ||
+			r.MutationGrantV2Binding != nil ||
 			!r.MutationGrant.Empty() {
 			return errors.New("local executor runtime credential status request is invalid")
 		}
@@ -225,6 +232,7 @@ func (r LocalExecutorRequest) Validate() error {
 			r.OwnershipEpoch < 1 ||
 			r.OwnershipPolicyRevision < 1 ||
 			r.ExecutorPolicyRevision < 1 ||
+			r.MutationGrantV2Binding != nil ||
 			!r.MutationGrant.Empty() {
 			return errors.New("local executor runtime credential binding is invalid")
 		}
@@ -437,6 +445,7 @@ func EncodeLocalExecutorRequest(w io.Writer, request LocalExecutorRequest) error
 		OwnershipPolicyRevision:  request.OwnershipPolicyRevision,
 		ExecutorPolicyRevision:   request.ExecutorPolicyRevision,
 		MutationGrant:            request.MutationGrant.Reveal(),
+		MutationGrantV2Binding:   request.MutationGrantV2Binding,
 	}
 	return encodeLocalExecutorFrame(w, wire, "request")
 }
@@ -459,6 +468,7 @@ func DecodeLocalExecutorRequest(r io.Reader) (LocalExecutorRequest, error) {
 		OwnershipPolicyRevision:  wire.OwnershipPolicyRevision,
 		ExecutorPolicyRevision:   wire.ExecutorPolicyRevision,
 		MutationGrant:            NewBoundedSecret(wire.MutationGrant),
+		MutationGrantV2Binding:   wire.MutationGrantV2Binding,
 	}
 	if err := request.Validate(); err != nil {
 		return LocalExecutorRequest{}, err
@@ -467,21 +477,22 @@ func DecodeLocalExecutorRequest(r io.Reader) (LocalExecutorRequest, error) {
 }
 
 type localExecutorRequestWire struct {
-	Version                  int                                   `json:"version"`
-	Operation                string                                `json:"operation"`
-	ServiceID                string                                `json:"service_id"`
-	Plan                     *MutationPlan                         `json:"plan,omitempty"`
-	PortPlan                 *SystemdPortReconfigurePlan           `json:"port_plan,omitempty"`
-	HostSelfUpdate           *HostSelfUpdateRequest                `json:"host_self_update,omitempty"`
-	HostSelfUpdateProof      *HostSelfUpdateAgentProof             `json:"host_self_update_proof,omitempty"`
-	HostSelfUpdateGeneration string                                `json:"host_self_update_generation,omitempty"`
-	HostSelfUpdateGrant      *hostSelfUpdateGrantAuthorizationWire `json:"host_self_update_grant,omitempty"`
-	RuntimeCredential        *runtimeCredentialMutationWire        `json:"runtime_credential,omitempty"`
-	SourcePolicyRevision     int64                                 `json:"source_policy_revision,omitempty"`
-	OwnershipEpoch           int64                                 `json:"ownership_epoch,omitempty"`
-	OwnershipPolicyRevision  int64                                 `json:"ownership_policy_revision,omitempty"`
-	ExecutorPolicyRevision   int64                                 `json:"executor_policy_revision,omitempty"`
-	MutationGrant            string                                `json:"mutation_grant,omitempty"`
+	Version                  int                                    `json:"version"`
+	Operation                string                                 `json:"operation"`
+	ServiceID                string                                 `json:"service_id"`
+	Plan                     *MutationPlan                          `json:"plan,omitempty"`
+	PortPlan                 *SystemdPortReconfigurePlan            `json:"port_plan,omitempty"`
+	HostSelfUpdate           *HostSelfUpdateRequest                 `json:"host_self_update,omitempty"`
+	HostSelfUpdateProof      *HostSelfUpdateAgentProof              `json:"host_self_update_proof,omitempty"`
+	HostSelfUpdateGeneration string                                 `json:"host_self_update_generation,omitempty"`
+	HostSelfUpdateGrant      *hostSelfUpdateGrantAuthorizationWire  `json:"host_self_update_grant,omitempty"`
+	RuntimeCredential        *runtimeCredentialMutationWire         `json:"runtime_credential,omitempty"`
+	SourcePolicyRevision     int64                                  `json:"source_policy_revision,omitempty"`
+	OwnershipEpoch           int64                                  `json:"ownership_epoch,omitempty"`
+	OwnershipPolicyRevision  int64                                  `json:"ownership_policy_revision,omitempty"`
+	ExecutorPolicyRevision   int64                                  `json:"executor_policy_revision,omitempty"`
+	MutationGrant            string                                 `json:"mutation_grant,omitempty"`
+	MutationGrantV2Binding   *contracts.UpdaterMutationGrantBinding `json:"mutation_grant_v2_binding,omitempty"`
 }
 
 type hostSelfUpdateGrantAuthorizationWire struct {

@@ -1,0 +1,48 @@
+name: Generate module lock patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact Updater commit whose module lock should be generated
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: updater-module-lock-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Verify exact source commit
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.source_sha }}"
+      - name: Resolve exact module graph
+        run: go mod tidy
+      - name: Package module-only patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --binary -- go.mod go.sum > module-lock.patch
+          test -s module-lock.patch
+          test -z "$(git status --short --untracked-files=all | grep -v '^.. go.mod$' | grep -v '^.. go.sum$' | grep -v '^?? module-lock.patch$' || true)"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: module-lock-${{ inputs.source_sha }}
+          path: module-lock.patch
+          if-no-files-found: error
+          retention-days: 1

@@ -38,5 +38,14 @@ GOMAXPROCS=2 go test -p 1 ./internal/probe ./internal/hostruntime ./cmd/autostre
 GOMAXPROCS=2 go vet -p 1 ./internal/probe ./internal/hostruntime ./cmd/autostream-updater-agent ./cmd/autostream-local-executor
 ```
 
-Root, systemd, and Docker checks run only in CI fixtures. Release automation is
-build-only in Wave 1 and does not publish GitHub releases or mutate tags.
+Root, systemd, installer, and Docker checks run in required CI fixtures. Their
+evidence gates require each exact source-backed test to report one run, one
+pass, no failures, and no skips; a missing or renamed test therefore fails CI.
+
+Stable `vX.Y.Z` tags use the versioned release workflow described in
+[`docs/release.md`](docs/release.md). The workflow waits for successful CI on
+the exact tag commit, builds the Linux amd64 and arm64 bundles once, verifies
+the manifests and every checksum layer, creates GitHub artifact attestations,
+and publishes a new GitHub Release. It never creates or moves a tag, overwrites
+an existing Release, or deploys to production. The separate manual workflow is
+a build rehearsal and never publishes.

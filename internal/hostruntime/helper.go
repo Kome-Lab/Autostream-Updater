@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	applicationprobe "github.com/Kome-Lab/Autostream-Updater/internal/probe"
 )
 
 type ApplyPlan struct {
@@ -1363,7 +1365,7 @@ func readHealthyTargetVersionWithClient(ctx context.Context, target Target, base
 	if err := checkHealth(checkCtx, &client, target.HealthURL); err != nil {
 		return "", err
 	}
-	return fetchVersion(checkCtx, &client, target.VersionURL)
+	return fetchApplicationIdentityVersion(checkCtx, &client, target)
 }
 
 func reconcileSystemd(ctx context.Context, target Target, plan ApplyPlan, runner CommandRunner) (ApplyResult, error) {
@@ -1602,7 +1604,7 @@ func verifyTarget(ctx context.Context, target Target, expectedVersion string) er
 	var lastErr error
 	for {
 		if err := checkHealth(deadlineCtx, client, target.HealthURL); err == nil {
-			if actual, err := fetchVersion(deadlineCtx, client, target.VersionURL); err == nil && versionsEqual(actual, expectedVersion) {
+			if actual, err := fetchApplicationIdentityVersion(deadlineCtx, client, target); err == nil && versionsEqual(actual, expectedVersion) {
 				return nil
 			} else if err != nil {
 				lastErr = err
@@ -1634,23 +1636,20 @@ func checkHealth(ctx context.Context, client *http.Client, raw string) error {
 	return nil
 }
 
-func fetchVersion(ctx context.Context, client *http.Client, raw string) (string, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
-	resp, err := client.Do(req)
+func fetchApplicationIdentityVersion(ctx context.Context, client *http.Client, target Target) (string, error) {
+	identity, err := (applicationprobe.Client{HTTP: client}).FetchApplicationIdentity(
+		ctx,
+		target.VersionURL,
+		applicationprobe.ExpectedIdentity{
+			ServiceID:      target.TargetID,
+			ServiceType:    target.ServiceType,
+			ConfigRevision: target.ConfigRevision,
+		},
+	)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("version endpoint returned HTTP %d", resp.StatusCode)
-	}
-	var body struct {
-		Version string `json:"version"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil || strings.TrimSpace(body.Version) == "" {
-		return "", errors.New("version endpoint returned no version")
-	}
-	return body.Version, nil
+	return identity.Version, nil
 }
 
 func versionMatches(output, expected string) bool {

@@ -12,6 +12,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Kome-Lab/Autostream-Updater/internal/controlplane"
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const remoteLegacyStageGenerationScanLimit uint64 = 256
@@ -28,13 +31,20 @@ type executorMutationRuntime struct {
 	publicArtifactsOnly         bool
 	localStateDir               string
 	consumeGrant                func(context.Context, string, string, string, MutationGrantBinding, *http.Client) error
+	consumeV2Grant              func(context.Context, string, string, string, contracts.UpdaterMutationGrantConsumeRequest, *http.Client, time.Time) error
+	v2GrantBinding              *contracts.UpdaterMutationGrantBinding
+	now                         func() time.Time
 	dockerPortCrashPointForTest func(string) error
 }
 
 func defaultExecutorMutationRuntime() executorMutationRuntime {
 	return executorMutationRuntime{
-		runner:     OSCommandRunner{NewProcessGroup: true},
-		platformOS: runtime.GOOS, platformArch: runtime.GOARCH, consumeGrant: ConsumeMutationGrant,
+		runner:         OSCommandRunner{NewProcessGroup: true},
+		platformOS:     runtime.GOOS,
+		platformArch:   runtime.GOARCH,
+		consumeGrant:   ConsumeMutationGrant,
+		consumeV2Grant: controlplane.ConsumeMutationGrant,
+		now:            time.Now,
 	}
 }
 
@@ -780,17 +790,12 @@ func executorMutationRequest(ctx context.Context, cfg HelperConfig, target Targe
 		if err := saveExecutorMutationLedger(cfg, working); err != nil {
 			return errors.New("persist grant consumption fence")
 		}
-		binding := MutationGrantBinding{
-			LeaseGeneration: plan.LeaseGeneration, HostID: plan.HostID, TargetID: plan.TargetID,
-			TransportMode: rt.transportMode,
-			ServiceType:   plan.ServiceType, TargetVersion: plan.TargetVersion, DeploymentMode: plan.DeploymentMode,
-			Operation: operation, PlanSHA256: plan.PlanSHA256, SessionID: plan.SessionID,
-			OwnershipEpoch: rt.ownershipEpoch, PolicyRevision: rt.policyRevision,
-		}
 		consumeCtx, cancel := context.WithTimeout(gateCtx, remaining)
 		defer cancel()
-		if err := rt.consumeGrant(consumeCtx, cfg.PanelURL, plan.JobID, grant.Reveal(), binding, rt.httpClient); err != nil {
-			return errors.New("mutation grant rejected")
+		if err := consumeExecutorMutationGrant(
+			consumeCtx, cfg.PanelURL, plan, operation, grant, rt,
+		); err != nil {
+			return err
 		}
 		working.State = remoteLedgerGrantConsumed
 		if err := saveExecutorMutationLedger(cfg, working); err != nil {
@@ -862,6 +867,45 @@ func executorMutationRequest(ctx context.Context, cfg HelperConfig, target Targe
 		return executorFailure("reconcile_required")
 	}
 	return executorMutationOutcome{Result: &result, SessionID: plan.SessionID, PlanSHA256: plan.PlanSHA256}
+}
+
+func consumeExecutorMutationGrant(
+	ctx context.Context,
+	panelURL string,
+	plan MutationPlan,
+	operation string,
+	grant BoundedSecret,
+	rt executorMutationRuntime,
+) error {
+	if rt.v2GrantBinding != nil {
+		if rt.consumeV2Grant == nil || rt.now == nil {
+			return errors.New("v2 mutation grant consumer is unavailable")
+		}
+		if err := rt.consumeV2Grant(
+			ctx,
+			panelURL,
+			plan.JobID,
+			grant.Reveal(),
+			contracts.UpdaterMutationGrantConsumeRequest{Binding: *rt.v2GrantBinding},
+			rt.httpClient,
+			rt.now().UTC(),
+		); err != nil {
+			return errors.New("mutation grant rejected")
+		}
+		return nil
+	}
+	binding := MutationGrantBinding{
+		LeaseGeneration: plan.LeaseGeneration, HostID: plan.HostID, TargetID: plan.TargetID,
+		TransportMode: rt.transportMode,
+		ServiceType:   plan.ServiceType, TargetVersion: plan.TargetVersion, DeploymentMode: plan.DeploymentMode,
+		Operation: operation, PlanSHA256: plan.PlanSHA256, SessionID: plan.SessionID,
+		OwnershipEpoch: rt.ownershipEpoch, PolicyRevision: rt.policyRevision,
+	}
+	if rt.consumeGrant == nil ||
+		rt.consumeGrant(ctx, panelURL, plan.JobID, grant.Reveal(), binding, rt.httpClient) != nil {
+		return errors.New("mutation grant rejected")
+	}
+	return nil
 }
 
 func remoteLedgerRequestFailure(ledger executorMutationLedger, plan MutationPlan, operation string) string {

@@ -19,8 +19,8 @@ func validHelperTestConfig(t *testing.T) HelperConfig {
 		Arch:          runtime.GOARCH,
 		StateDir:      filepath.Join(root, "state"),
 		Targets: []Target{{
-			TargetID: "worker-01", HostID: "edge-01", ServiceType: "worker", DeploymentMode: ModeSystemd,
-			HealthURL: "http://127.0.0.1:8081/health", VersionURL: "http://127.0.0.1:8081/version",
+			TargetID: "worker-01", HostID: "edge-01", ServiceType: "worker", DeploymentMode: ModeSystemd, ConfigRevision: 1,
+			HealthURL: "http://127.0.0.1:8081/health", VersionURL: "http://127.0.0.1:8081/updater/version",
 			Systemd: &SystemdTarget{SystemctlPath: filepath.Join(root, "bin", "systemctl"), RunuserPath: filepath.Join(root, "bin", "runuser"), SmokeUser: "autostream", Unit: "autostream-worker.service", ReleaseRoot: filepath.Join(root, "releases"), CurrentLink: filepath.Join(root, "current"), BinaryPath: "bin/worker"},
 		}},
 	}
@@ -113,9 +113,16 @@ func TestHelperConfigRequiresMatchingHostArchitectureAndFullTargetPolicy(t *test
 	})
 	t.Run("identity-only target", func(t *testing.T) {
 		cfg := validHelperTestConfig(t)
-		cfg.Targets[0] = Target{TargetID: "worker-01", HostID: "edge-01", ServiceType: "worker", DeploymentMode: ModeSystemd}
+		cfg.Targets[0] = Target{TargetID: "worker-01", HostID: "edge-01", ServiceType: "worker", DeploymentMode: ModeSystemd, ConfigRevision: 1}
 		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "health_url") {
 			t.Fatalf("identity-only helper target result = %v", err)
+		}
+	})
+	t.Run("config revision", func(t *testing.T) {
+		cfg := validHelperTestConfig(t)
+		cfg.Targets[0].ConfigRevision = 0
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "config_revision") {
+			t.Fatalf("config revision result = %v", err)
 		}
 	})
 	t.Run("schema", func(t *testing.T) {

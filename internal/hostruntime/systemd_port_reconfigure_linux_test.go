@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 func TestLinuxSystemdPortRuntimeWritesAndRestoresExactSidecar(t *testing.T) {
@@ -203,6 +206,58 @@ func TestLinuxSystemdPortRuntimeConsumesExactPortGrantBinding(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotBinding, expected) {
 		t.Fatalf("grant binding=%+v expected=%+v", gotBinding, expected)
+	}
+}
+
+func TestLinuxSystemdPortRuntimeConsumesExactV2BindingOnce(t *testing.T) {
+	plan := validSystemdPortReconfigurePlan(t)
+	fixedNow := time.Date(2026, time.September, 2, 12, 0, 0, 0, time.UTC)
+	v2Binding := contracts.UpdaterMutationGrantBinding{
+		Lease: contracts.UpdaterLeaseEnvelope{
+			ProtocolVersion: 2,
+			LeaseID:         "lease-port-one",
+			LeaseGeneration: int64(plan.LeaseGeneration),
+		},
+		Operation: contracts.UpdaterMutationPortReconfigure,
+		SessionID: plan.SessionID,
+	}
+	legacyCalls := 0
+	v2Calls := 0
+	var gotRequest contracts.UpdaterMutationGrantConsumeRequest
+	var gotNow time.Time
+	portRuntime := &linuxSystemdPortRuntime{
+		hostID: "host-a", serviceID: "worker-01", serviceType: "worker",
+		panelURL: "https://panel.example.com",
+		consumeGrant: func(context.Context, string, string, string, MutationGrantBinding, *http.Client) error {
+			legacyCalls++
+			return nil
+		},
+		consumeV2Grant: func(
+			_ context.Context,
+			_, _, _ string,
+			request contracts.UpdaterMutationGrantConsumeRequest,
+			_ *http.Client,
+			now time.Time,
+		) error {
+			v2Calls++
+			gotRequest = request
+			gotNow = now
+			return nil
+		},
+		v2GrantBinding: &v2Binding,
+		now:            func() time.Time { return fixedNow },
+	}
+	if err := portRuntime.ConsumeGrant(
+		context.Background(), plan, "port_reconfigure", "v1.2.3",
+		NewBoundedSecret("one-time-v2-mutation-grant"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if legacyCalls != 0 || v2Calls != 1 {
+		t.Fatalf("legacy/v2 consume calls=%d/%d", legacyCalls, v2Calls)
+	}
+	if !reflect.DeepEqual(gotRequest, contracts.UpdaterMutationGrantConsumeRequest{Binding: v2Binding}) || !gotNow.Equal(fixedNow) {
+		t.Fatal("root port gate did not consume the exact v2 binding at the injected time")
 	}
 }
 

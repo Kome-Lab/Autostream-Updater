@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const localExecutorClientTimeout = 5 * time.Second
@@ -28,9 +30,31 @@ type LocalExecutorMutationClient interface {
 	Reconcile(context.Context, MutationPlan, LocalExecutorMutationFence, BoundedSecret) (ApplyResult, error)
 }
 
+// V2MutationGrant keeps the opaque credential separate from its complete,
+// credential-free Contracts binding. The token must never be persisted or
+// logged; the binding is carried only over the authenticated Local Executor
+// socket and consumed exactly once at the root mutation gate.
+type V2MutationGrant struct {
+	Token   BoundedSecret
+	Binding contracts.UpdaterMutationGrantBinding
+}
+
+// LocalExecutorV2MutationClient is optional so a legacy-only executor remains
+// source compatible. A caller holding a v2 binding must fail closed when this
+// interface is unavailable rather than downgrading to the legacy grant shape.
+type LocalExecutorV2MutationClient interface {
+	ApplyV2(context.Context, MutationPlan, LocalExecutorMutationFence, V2MutationGrant) (ApplyResult, error)
+	ReconcileV2(context.Context, MutationPlan, LocalExecutorMutationFence, V2MutationGrant) (ApplyResult, error)
+}
+
 type LocalExecutorPortMutationClient interface {
 	PortReconfigure(context.Context, SystemdPortReconfigurePlan, LocalExecutorMutationFence, BoundedSecret) (SystemdPortReconfigureResult, error)
 	PortReconfigureReconcile(context.Context, SystemdPortReconfigurePlan, LocalExecutorMutationFence, BoundedSecret) (SystemdPortReconfigureResult, error)
+}
+
+type LocalExecutorV2PortMutationClient interface {
+	PortReconfigureV2(context.Context, SystemdPortReconfigurePlan, LocalExecutorMutationFence, V2MutationGrant) (SystemdPortReconfigureResult, error)
+	PortReconfigureReconcileV2(context.Context, SystemdPortReconfigurePlan, LocalExecutorMutationFence, V2MutationGrant) (SystemdPortReconfigureResult, error)
 }
 
 type LocalExecutorRuntimeCredentialClient interface {

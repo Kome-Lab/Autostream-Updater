@@ -20,6 +20,7 @@ jobs:
   go:
     name: Go, boundaries, and cross-build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -36,14 +37,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t go_files < <(find cmd internal -type f -name '*.go' -print | sort)
+          mapfile -t go_files < <(find cmd internal scripts/ci -type f -name '*.go' -print | sort)
           unformatted="$(gofmt -l "${go_files[@]}")"
           test -z "${unformatted}" || {
             printf 'Unformatted Go files:\n%s\n' "${unformatted}" >&2
             exit 1
           }
-      - name: Test
-        run: go test -p 1 ./...
+      - name: Test all packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/normal-go-evidence"
+          go test -json -p 1 ./... |
+            tee "${RUNNER_TEMP}/normal-go-evidence/go-test.json"
       - name: Vet
         run: go vet -p 1 ./...
       - name: Build production entrypoints
@@ -63,13 +69,14 @@ jobs:
                 -o "${RUNNER_TEMP}/updater-cross-build/autostream-local-executor-${arch}" \
                 ./cmd/autostream-local-executor
           done
-      - name: Check installer syntax
+      - name: Check installer and CI script syntax
         shell: bash
         run: |
           set -euo pipefail
           for script in install/install-* install/uninstall-*; do
             bash -n "${script}"
           done
+          find scripts/ci -type f -name '*.sh' -exec bash -n {} +
       - name: Verify systemd unit syntax
         shell: bash
         run: |
@@ -79,18 +86,27 @@ jobs:
           cp systemd/autostream-updater-agent.service.example "${units}/autostream-host-agent.service"
           cp systemd/autostream-local-executor.service.example "${units}/autostream-local-executor.service"
           cp systemd/autostream-local-executor.socket.example "${units}/autostream-local-executor.socket"
-          cp systemd/autostream-updater-self-update-recovery@.service.example "${units}/autostream-host-self-update-recovery@.service"
-          cp systemd/autostream-updater-self-update-recovery@.timer.example "${units}/autostream-host-self-update-recovery@.timer"
+          cp systemd/autostream-host-self-update-recovery@.service.example "${units}/autostream-host-self-update-recovery@.service"
+          cp systemd/autostream-host-self-update-recovery@.timer.example "${units}/autostream-host-self-update-recovery@.timer"
           SYSTEMD_UNIT_PATH="${units}" systemd-analyze verify \
             "${units}/autostream-host-agent.service" \
             "${units}/autostream-local-executor.service" \
             "${units}/autostream-local-executor.socket" \
             "${units}/autostream-host-self-update-recovery@.service" \
             "${units}/autostream-host-self-update-recovery@.timer"
+      - name: Upload normal test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: normal-go-test-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/normal-go-evidence/
+          if-no-files-found: warn
+          retention-days: 7
 
-  root-fixture:
-    name: Linux root-owned runtime fixture
+  application-probes:
+    name: Five-service fresh application identity probes
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     needs: go
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -98,60 +114,339 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - name: Run bounded root fixtures
+      - name: Run exact fresh identity probe suite
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          test_binary="${RUNNER_TEMP}/hostruntime-root.test"
-          scratch="${RUNNER_TEMP}/hostruntime-root"
-          go test -c -p 1 ./internal/hostruntime -o "${test_binary}"
-          getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent
-          getent group autostream-updater >/dev/null 2>&1 || sudo groupadd --system autostream-updater
-          sudo install -d -o root -g root -m 0700 "${scratch}"
+          evidence_dir="${RUNNER_TEMP}/application-probe-evidence"
+          mkdir -p "${evidence_dir}"
+          pattern="$(paste -sd '|' scripts/ci/required-application-probe-tests.txt)"
+          set +e
+          go test -json -p 1 \
+            -run "^(${pattern})$" \
+            -count=1 \
+            ./internal/probe ./internal/hostruntime \
+            > "${evidence_dir}/application-probes.json"
+          status=$?
+          set -e
+          exit "${status}"
+      - name: Require exact probe run/pass evidence and skip zero
+        if: always()
+        shell: bash
+        run: |
+          bash scripts/ci/verify-go-test-evidence.sh \
+            "${RUNNER_TEMP}/application-probe-evidence" \
+            "${GITHUB_WORKSPACE}" \
+            scripts/ci/required-application-probe-tests.txt
+      - name: Upload application probe evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-probe-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/application-probe-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  privileged-linux:
+    name: Required root, socket, peer, upgrade, and rollback suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build bounded Linux test binary and dedicated Agent identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/required-linux-evidence"
+          go test -c -p 1 ./internal/hostruntime \
+            -o "${RUNNER_TEMP}/hostruntime-required.test"
+          sudo install -m 0755 "${RUNNER_TEMP}/hostruntime-required.test" \
+            /usr/local/libexec/autostream-hostruntime-required.test
+          getent group autostream-host-agent >/dev/null 2>&1 ||
+            sudo groupadd --system autostream-host-agent
+          id autostream-host-agent >/dev/null 2>&1 ||
+            sudo useradd --system \
+              --gid autostream-host-agent \
+              --home-dir /var/lib/autostream-host-agent \
+              --shell /usr/sbin/nologin \
+              autostream-host-agent
+          sudo install -d -o autostream-host-agent -g autostream-host-agent -m 0700 \
+            /var/lib/autostream-host-agent \
+            /var/lib/autostream-host-agent/ci-tmp
+          getent group autostream-updater >/dev/null 2>&1 ||
+            sudo groupadd --system autostream-updater
+      - name: Run exact root-owned tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern="$(paste -sd '|' scripts/ci/required-linux-root-tests.txt)"
+          evidence="${RUNNER_TEMP}/required-linux-evidence/root.json"
+          set +e
           sudo /usr/bin/env -i \
             HOME=/root \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-            TMPDIR="${scratch}" \
-            "${test_binary}" \
-            -test.run '^(TestHostAgentConfigurationTransaction.*|TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller|TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock|TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes)$' \
-            -test.count=1 \
-            -test.timeout=10m
+            TMPDIR=/root \
+            TZ=UTC \
+            /usr/local/libexec/autostream-hostruntime-required.test \
+              -test.v=test2json \
+              -test.run "^(${pattern})$" \
+              -test.count=1 \
+              -test.timeout=20m \
+            2>&1 |
+            go tool test2json -t \
+              -p github.com/Kome-Lab/Autostream-Updater/internal/hostruntime \
+              > "${evidence}"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          [[ ${pipeline_status[0]} -eq 0 && ${pipeline_status[1]} -eq 0 ]]
+      - name: Run exact non-root peer credential test
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern="$(paste -sd '|' scripts/ci/required-linux-agent-tests.txt)"
+          evidence="${RUNNER_TEMP}/required-linux-evidence/agent.json"
+          set +e
+          sudo -u autostream-host-agent /usr/bin/env -i \
+            HOME=/var/lib/autostream-host-agent \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            TMPDIR=/var/lib/autostream-host-agent/ci-tmp \
+            TZ=UTC \
+            /usr/local/libexec/autostream-hostruntime-required.test \
+              -test.v=test2json \
+              -test.run "^(${pattern})$" \
+              -test.count=1 \
+              -test.timeout=5m \
+            2>&1 |
+            go tool test2json -t \
+              -p github.com/Kome-Lab/Autostream-Updater/internal/hostruntime \
+              > "${evidence}"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          [[ ${pipeline_status[0]} -eq 0 && ${pipeline_status[1]} -eq 0 ]]
+      - name: Require exact privileged run/pass evidence and skip zero
+        if: always()
+        shell: bash
+        run: |
+          bash scripts/ci/verify-go-test-evidence.sh \
+            "${RUNNER_TEMP}/required-linux-evidence" \
+            "${GITHUB_WORKSPACE}/internal/hostruntime" \
+            scripts/ci/required-linux-root-tests.txt \
+            scripts/ci/required-linux-agent-tests.txt
+      - name: Upload privileged Linux evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: privileged-linux-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/required-linux-evidence/
+          if-no-files-found: error
+          retention-days: 14
 
-  docker-fixture:
-    name: Linux root Docker mutation fixture
+  installers:
+    name: Installer, upgrade, uninstall, preservation, and sandbox fixtures
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     needs: go
-    env:
-      AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - name: Run bounded Docker daemon fixture
+      - name: Prepare version-matched installer fixture inputs
         shell: bash
         run: |
           set -euo pipefail
-          test_binary="${RUNNER_TEMP}/hostruntime-docker.test"
-          fixture_binary="${RUNNER_TEMP}/docker-port-fixture"
-          root_tmp="${RUNNER_TEMP}/docker-port-root-tmp"
-          root_cache="${RUNNER_TEMP}/docker-port-root-gocache"
+          evidence_dir="${RUNNER_TEMP}/installer-evidence"
+          smoke_dir="${RUNNER_TEMP}/installer-smoke"
+          fixture_source="${RUNNER_TEMP}/installer-fixture-source"
+          mkdir -p "${evidence_dir}" "${smoke_dir}"
+          bash scripts/ci/prepare-installer-fixture-source.sh \
+            "${GITHUB_WORKSPACE}" "${fixture_source}"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -p 1 -trimpath -o "${fixture_binary}" \
+            go build -p 1 -trimpath \
+              -o "${smoke_dir}/autostream-host-agent" \
+              ./cmd/autostream-updater-agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -p 1 -trimpath -ldflags="-s -w" \
+              -o "${smoke_dir}/host-runtime-process-fixture" \
+              ./scripts/ci/host-runtime-process-fixture
+      - name: Test Host Agent identity permissions
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash scripts/ci/run-shell-test-evidence.sh \
+            "${RUNNER_TEMP}/installer-evidence/host-agent-identity.json" \
+            HostAgentIdentityPermissionsSmoke -- \
+            docker run --rm \
+              --user 0:0 \
+              --network none \
+              --pids-limit 128 \
+              --memory 256m \
+              --cpus 1 \
+              --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+              --mount "type=bind,source=${RUNNER_TEMP}/installer-smoke,target=/smoke,readonly" \
+              ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+              /bin/bash /workspace/scripts/ci/run-host-agent-identity-permissions-smoke.sh \
+                /smoke/autostream-host-agent
+      - name: Test Host Agent prepare and failure injection
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash scripts/ci/run-shell-test-evidence.sh \
+            "${RUNNER_TEMP}/installer-evidence/host-agent-prepare.json" \
+            HostAgentInstallerPrepareFailureInjectionSmoke -- \
+            docker run --rm \
+              --user 0:0 \
+              --network none \
+              --pids-limit 128 \
+              --memory 256m \
+              --cpus 1 \
+              --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+              --mount "type=bind,source=${RUNNER_TEMP}/installer-fixture-source,target=/fixture,readonly" \
+              --mount "type=bind,source=${RUNNER_TEMP}/installer-smoke,target=/smoke,readonly" \
+              ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+              /bin/bash /workspace/scripts/ci/run-host-agent-installer-prepare-smoke.sh \
+                /fixture /smoke/autostream-host-agent
+      - name: Test Host Agent upgrade rollback and state preservation
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash scripts/ci/run-shell-test-evidence.sh \
+            "${RUNNER_TEMP}/installer-evidence/host-agent-upgrade.json" \
+            HostAgentInstallerUpgradeRollbackPreservationSmoke -- \
+            docker run --rm \
+              --user 0:0 \
+              --network none \
+              --pids-limit 128 \
+              --memory 256m \
+              --cpus 1 \
+              --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+              --mount "type=bind,source=${RUNNER_TEMP}/installer-fixture-source,target=/fixture,readonly" \
+              --mount "type=bind,source=${RUNNER_TEMP}/installer-smoke,target=/smoke,readonly" \
+              ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+              /bin/bash /workspace/scripts/ci/run-host-agent-installer-upgrade-smoke.sh \
+                /fixture /smoke/host-runtime-process-fixture
+      - name: Test Local Executor install, uninstall, and preservation
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash scripts/ci/run-shell-test-evidence.sh \
+            "${RUNNER_TEMP}/installer-evidence/local-executor-installer.json" \
+            LocalExecutorInstallerUninstallPreservationSmoke -- \
+            docker run --rm \
+              --user 0:0 \
+              --network none \
+              --pids-limit 128 \
+              --memory 256m \
+              --cpus 1 \
+              --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
+              --mount "type=bind,source=${RUNNER_TEMP}/installer-fixture-source,target=/fixture,readonly" \
+              ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+              /bin/bash /workspace/scripts/ci/run-local-executor-installer-smoke.sh \
+                /fixture
+      - name: Test Local Executor systemd sandbox negative boundary
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash scripts/ci/run-shell-test-evidence.sh \
+            "${RUNNER_TEMP}/installer-evidence/local-executor-sandbox.json" \
+            LocalExecutorSystemdSandboxNegativeSmoke -- \
+            sudo bash scripts/ci/run-local-executor-systemd-sandbox-smoke.sh
+      - name: Require exact installer run/pass evidence and skip zero
+        if: always()
+        shell: bash
+        run: |
+          bash scripts/ci/verify-shell-test-evidence.sh \
+            "${RUNNER_TEMP}/installer-evidence" \
+            "${GITHUB_WORKSPACE}" \
+            scripts/ci/required-shell-tests.tsv
+      - name: Upload installer evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/installer-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  docker-fixture:
+    name: Required Docker bootstrap, service-update, and rollback suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build bounded Docker fixture binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/required-docker-evidence"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -p 1 -trimpath \
+              -o "${RUNNER_TEMP}/docker-port-fixture" \
               ./internal/hostruntime/testdata/docker-port-fixture
-          go test -c -p 1 ./internal/hostruntime -o "${test_binary}"
-          sudo install -d -o root -g root -m 0700 "${root_tmp}" "${root_cache}"
-          sudo --preserve-env=AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE \
-            /usr/bin/unshare --mount --propagation private \
-            /usr/bin/env \
+          go test -c -p 1 ./internal/hostruntime \
+            -o "${RUNNER_TEMP}/hostruntime-docker.test"
+          sudo install -m 0755 "${RUNNER_TEMP}/docker-port-fixture" \
+            /usr/local/libexec/autostream-docker-port-fixture-ci
+          sudo install -m 0755 "${RUNNER_TEMP}/hostruntime-docker.test" \
+            /usr/local/libexec/autostream-hostruntime-docker.test
+          sudo install -d -o root -g root -m 0700 \
+            "${RUNNER_TEMP}/docker-root-tmp"
+      - name: Run exact Docker daemon and transaction tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern="$(paste -sd '|' scripts/ci/required-docker-tests.txt)"
+          evidence="${RUNNER_TEMP}/required-docker-evidence/docker.json"
+          set +e
+          sudo /usr/bin/unshare --mount --propagation private \
+            /usr/bin/env -i \
+              AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE=1 \
               AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE_MOUNT_NS=1 \
-              AUTOSTREAM_DOCKER_PORT_FIXTURE_BINARY="${fixture_binary}" \
+              AUTOSTREAM_DOCKER_PORT_FIXTURE_BINARY=/usr/local/libexec/autostream-docker-port-fixture-ci \
               HOME=/root \
-              PATH="${PATH}" \
-              GOCACHE="${root_cache}" \
-              TMPDIR="${root_tmp}" \
-              "${test_binary}" \
-              -test.run '^TestDockerPortDaemonSmoke$' \
-              -test.count=1 \
-              -test.timeout=15m
+              PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+              TMPDIR="${RUNNER_TEMP}/docker-root-tmp" \
+              TZ=UTC \
+              /usr/local/libexec/autostream-hostruntime-docker.test \
+                -test.v=test2json \
+                -test.run "^(${pattern})$" \
+                -test.count=1 \
+                -test.timeout=20m \
+            2>&1 |
+            go tool test2json -t \
+              -p github.com/Kome-Lab/Autostream-Updater/internal/hostruntime \
+              > "${evidence}"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          [[ ${pipeline_status[0]} -eq 0 && ${pipeline_status[1]} -eq 0 ]]
+      - name: Require exact Docker run/pass evidence and skip zero
+        if: always()
+        shell: bash
+        run: |
+          bash scripts/ci/verify-go-test-evidence.sh \
+            "${RUNNER_TEMP}/required-docker-evidence" \
+            "${GITHUB_WORKSPACE}/internal/hostruntime" \
+            scripts/ci/required-docker-tests.txt
+      - name: Upload Docker evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-required-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/required-docker-evidence/
+          if-no-files-found: error
+          retention-days: 14

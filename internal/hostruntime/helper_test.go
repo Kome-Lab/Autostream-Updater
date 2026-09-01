@@ -60,7 +60,8 @@ func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
 	sourceVersion := "v1.0.16"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/version") {
-			fmt.Fprintf(w, `{"version":%q}`, sourceVersion)
+			w.Header().Set("Cache-Control", "no-store")
+			fmt.Fprintf(w, `{"version":%q,"service_id":"worker","service_type":"worker","config_revision":1}`, sourceVersion)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -77,7 +78,7 @@ func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := Target{TargetID: "worker", ServiceType: "worker", DeploymentMode: ModeDocker, HealthURL: server.URL + "/health", VersionURL: server.URL + "/version", Docker: &DockerTarget{
+	target := Target{TargetID: "worker", ServiceType: "worker", DeploymentMode: ModeDocker, ConfigRevision: 1, HealthURL: server.URL + "/health", VersionURL: server.URL + "/updater/version", Docker: &DockerTarget{
 		DockerPath: filepath.Join(root, "docker"), ComposeProject: "autostream", ProjectDir: root, ComposeFiles: []string{filepath.Join(root, "compose.yml")}, Service: "worker", ImageRepo: "ghcr.io/kome-lab/autostream-docker/worker", ImageVariable: "AUTOSTREAM_DOCKER_VERSION", VersionEnvFile: versionEnv, CurrentVersion: "v1.9.0", ComposeConfigSHA256: modelDigest,
 	}}
 	runner := &fakeRunner{}
@@ -119,6 +120,60 @@ func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
 	persisted, err := os.ReadFile(versionEnv)
 	if err != nil || string(persisted) != "AUTOSTREAM_DOCKER_VERSION="+version+"@"+testPlatform+"\n" {
 		t.Fatalf("durable version pin = %q err=%v", persisted, err)
+	}
+}
+
+func TestReadHealthyTargetVersionRequiresFreshApplicationIdentity(t *testing.T) {
+	tests := []struct {
+		name       string
+		versionURL string
+		cache      string
+		serviceID  string
+		revision   int
+		wantOK     bool
+	}{
+		{name: "exact identity", versionURL: "/updater/version", cache: "no-store", serviceID: "worker-01", revision: 7, wantOK: true},
+		{name: "cacheable identity", versionURL: "/updater/version", cache: "private", serviceID: "worker-01", revision: 7},
+		{name: "wrong service identity", versionURL: "/updater/version", cache: "no-store", serviceID: "worker-02", revision: 7},
+		{name: "wrong config revision", versionURL: "/updater/version", cache: "no-store", serviceID: "worker-01", revision: 8},
+		{name: "updater health substitution", versionURL: "/health", cache: "no-store", serviceID: "worker-01", revision: 7},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				w.Header().Set("Cache-Control", test.cache)
+				if request.URL.Path == "/health" {
+					_, _ = w.Write([]byte(`{"status":"ok","revision":7}`))
+					return
+				}
+				_, _ = fmt.Fprintf(
+					w,
+					`{"version":"v1.2.3","service_id":%q,"service_type":"worker","config_revision":%d}`,
+					test.serviceID,
+					test.revision,
+				)
+			}))
+			defer server.Close()
+
+			target := Target{
+				TargetID:       "worker-01",
+				ServiceType:    "worker",
+				DeploymentMode: ModeSystemd,
+				ConfigRevision: 7,
+				HealthURL:      server.URL + "/health",
+				VersionURL:     server.URL + test.versionURL,
+			}
+			version, err := readHealthyTargetVersionWithClient(t.Context(), target, server.Client())
+			if test.wantOK {
+				if err != nil || version != "v1.2.3" {
+					t.Fatalf("version=%q err=%v", version, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("unsafe identity was accepted: version=%q", version)
+			}
+		})
 	}
 }
 

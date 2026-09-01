@@ -93,7 +93,7 @@ func TestExecutorWireHasNoArbitraryExecutionFields(t *testing.T) {
 		"internal/hostruntime/local_executor_protocol.go",
 		"internal/hostruntime/mutation_protocol.go",
 		"internal/hostruntime/runtime_token_rotation_protocol.go",
-		"internal/controlplane/v2_boundary.go",
+		"internal/controlplane/client.go",
 	}
 	forbiddenTags := []string{
 		`json:"argv`,

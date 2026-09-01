@@ -35,6 +35,23 @@ type Client struct {
 	HTTP *http.Client
 }
 
+// ValidateApplicationIdentityEndpoint accepts only the application-owned,
+// loopback HTTP route. Updater health and compatibility version endpoints are
+// intentionally not interchangeable with this probe.
+func ValidateApplicationIdentityEndpoint(endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" ||
+		parsed.EscapedPath() != "/updater/version" {
+		return errors.New("application identity endpoint is invalid")
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	if ip == nil || !ip.IsLoopback() || parsed.Port() == "" {
+		return errors.New("application identity endpoint must be loopback-only")
+	}
+	return nil
+}
+
 // FetchApplicationIdentity performs a strict, bounded, non-cacheable identity
 // probe against a loopback-only /updater/version endpoint. It follows no
 // redirects and returns only allow-listed errors without response bodies.
@@ -43,15 +60,8 @@ func (c Client) FetchApplicationIdentity(
 	endpoint string,
 	expected ExpectedIdentity,
 ) (Identity, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "http" || parsed.User != nil ||
-		parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.EscapedPath() != "/updater/version" {
-		return Identity{}, errors.New("application identity endpoint is invalid")
-	}
-	ip := net.ParseIP(parsed.Hostname())
-	if ip == nil || !ip.IsLoopback() || parsed.Port() == "" {
-		return Identity{}, errors.New("application identity endpoint must be loopback-only")
+	if err := ValidateApplicationIdentityEndpoint(endpoint); err != nil {
+		return Identity{}, err
 	}
 	if expected.ServiceID == "" || expected.ServiceID != strings.TrimSpace(expected.ServiceID) ||
 		!validServiceType(expected.ServiceType) ||
@@ -59,7 +69,7 @@ func (c Client) FetchApplicationIdentity(
 		return Identity{}, errors.New("expected application identity is invalid")
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return Identity{}, errors.New("create application identity request")
 	}

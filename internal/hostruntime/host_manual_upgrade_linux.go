@@ -1222,7 +1222,7 @@ func validateManualHostUpgradeInstallation(
 			)
 		}
 		if pair[0] == rt.paths.installedExecutorUnit &&
-			source.digest == manualHostExecutorUnitCorrectedDigest {
+			manualHostExecutorUnitDigestIsCorrected(source.digest) {
 			config := manualHostExecutorUnitMigrationConfig{
 				CandidatePath:  pair[1],
 				InstalledPath:  pair[0],
@@ -1242,7 +1242,7 @@ func validateManualHostUpgradeInstallation(
 			executorUnitConfig = &config
 			executorUnitFinal = manualHostExecutorUnitMigrationIsFinal(executorSnapshot)
 		} else if pair[0] == rt.paths.installedRecoveryService &&
-			source.digest == manualHostRecoveryUnitCorrectedDigest {
+			manualHostRecoveryUnitDigestIsCorrected(source.digest) {
 			config := manualHostRecoveryUnitMigrationConfig{
 				CandidatePath:  pair[1],
 				InstalledPath:  pair[0],
@@ -1261,7 +1261,9 @@ func validateManualHostUpgradeInstallation(
 			}
 			recoveryUnitConfig = &config
 			recoveryUnitFinal =
-				recoverySnapshot.installed.digest == manualHostRecoveryUnitCorrectedDigest &&
+				manualHostRecoveryUnitDigestIsCorrected(
+					recoverySnapshot.installed.digest,
+				) &&
 					!recoverySnapshot.dropInDir.present &&
 					len(recoverySnapshot.dropIns) == 0 &&
 					manualHostRecoveryUnitEffectiveIsFinal(recoverySnapshot.effective)
@@ -1366,7 +1368,7 @@ func migrateManualHostUpgradeRecoveryUnit(
 	installed, err := snapshotManualHostUpgradeFile(
 		snapshot.recoveryUnitConfig.InstalledPath,
 	)
-	if err != nil || installed.digest != manualHostRecoveryUnitCorrectedDigest {
+	if err != nil || !manualHostRecoveryUnitDigestIsCorrected(installed.digest) {
 		return snapshot, errors.New(
 			"snapshot corrected Host recovery unit after migration",
 		)
@@ -1404,7 +1406,7 @@ func migrateManualHostUpgradeExecutorUnit(
 	installed, err := snapshotManualHostUpgradeFile(
 		snapshot.executorUnitConfig.InstalledPath,
 	)
-	if err != nil || installed.digest != manualHostExecutorUnitCorrectedDigest {
+	if err != nil || !manualHostExecutorUnitDigestIsCorrected(installed.digest) {
 		return snapshot, errors.New(
 			"snapshot corrected Local Executor unit after migration",
 		)
@@ -1585,7 +1587,7 @@ func verifyManualHostUpgradeSnapshot(
 			return err
 		}
 		if snapshot.recoveryUnitFinal &&
-			(current.installed.digest != manualHostRecoveryUnitCorrectedDigest ||
+			(!manualHostRecoveryUnitDigestIsCorrected(current.installed.digest) ||
 				current.dropInDir.present ||
 				len(current.dropIns) != 0 ||
 				!manualHostRecoveryUnitEffectiveIsFinal(current.effective)) {

@@ -1,0 +1,85 @@
+name: Release build rehearsal (no publish)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version to embed, for example v1.2.3
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  GOMAXPROCS: "2"
+  GOTOOLCHAIN: local
+
+jobs:
+  rehearsal:
+    name: Build and verify release bundles without publishing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require GitHub-hosted runner
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "${RUNNER_ENVIRONMENT}" = github-hosted
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Require successful CI for this exact commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/ci/wait-for-exact-ci-success.sh \
+            "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" 300
+      - name: Resolve immutable build metadata
+        id: meta
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "${INPUT_VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            printf '%s\n' 'version must be a stable vX.Y.Z value' >&2
+            exit 1
+          }
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          build_date="$(date -u -d "@$(git show -s --format=%ct "${GITHUB_SHA}")" +%Y-%m-%dT%H:%M:%SZ)"
+          printf 'version=%s\n' "${INPUT_VERSION}" >> "${GITHUB_OUTPUT}"
+          printf 'build_date=%s\n' "${build_date}" >> "${GITHUB_OUTPUT}"
+      - name: Build Linux amd64 and arm64 bundles once
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          BUILD_DATE: ${{ steps.meta.outputs.build_date }}
+        run: |
+          bash scripts/ci/build-release-bundles.sh \
+            "${VERSION}" "${GITHUB_SHA}" "${BUILD_DATE}" \
+            "${RUNNER_TEMP}/release-artifacts"
+      - name: Verify manifests and every checksum layer
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          bash scripts/ci/verify-release-bundles.sh \
+            "${RUNNER_TEMP}/release-artifacts" \
+            "${VERSION}" "${GITHUB_SHA}"
+      - name: Upload rehearsal bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: autostream-updater-rehearsal-${{ steps.meta.outputs.version }}-${{ github.sha }}
+          path: ${{ runner.temp }}/release-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+

@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 type HostPullExecutionControlPlane interface {
@@ -136,7 +139,14 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 		return err
 	}
 	if clearActive {
-		if active == nil || job == nil || !sameRecoveredJobIntent(*active, *job) ||
+		if active == nil || job == nil {
+			return errors.New("terminal pull recovery proof does not match the active job")
+		}
+		if job.RecoveryClear {
+			if err := validateV2RecoveryClear(*active, *job, a.Bootstrap.NodeID); err != nil {
+				return err
+			}
+		} else if !sameRecoveredJobIntent(*active, *job) ||
 			!isTerminalUpdateStatus(job.Status) {
 			return errors.New("terminal pull recovery proof does not match the active job")
 		}
@@ -160,6 +170,22 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 	return a.processExecutionJob(ctx, panel, binding, policy, *job)
 }
 
+func validateV2RecoveryClear(active, terminal UpdateJob, updaterID string) error {
+	if active.ProtocolVersion != 2 ||
+		!terminal.RecoveryClear || terminal.ProtocolVersion != 2 ||
+		terminal.ID != active.ID ||
+		active.AgentServiceID != updaterID ||
+		terminal.AgentServiceID != updaterID ||
+		!terminal.ReleaseToken.Empty() ||
+		terminal.LeaseToken != "" ||
+		terminal.LeaseExpiresAt != "" ||
+		terminal.LeaseGeneration != 0 ||
+		!isTerminalUpdateStatus(terminal.Status) {
+		return errors.New("v2 recovery clear does not match the active job")
+	}
+	return nil
+}
+
 func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBinding, policy HostAgentPolicy) error {
 	if !job.ReleaseToken.Empty() {
 		return errors.New("pull_v2 claim unexpectedly contained a release credential")
@@ -174,11 +200,15 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 		job.OwnershipEpoch != binding.OwnershipEpoch ||
 		job.PolicyRevision != policy.Revision ||
 		job.LeaseGeneration == 0 ||
-		!validBoundedSecret(job.LeaseToken) ||
-		job.ReportSequence == 0 ||
-		!versionPattern.MatchString(strings.TrimSpace(job.CurrentVersion)) ||
-		!versionPattern.MatchString(job.EffectiveVersion()) {
+		job.ReportSequence == 0 {
 		return errors.New("pull_v2 claim ownership or lease binding is invalid")
+	}
+	if job.ProtocolVersion == 2 {
+		if job.LeaseToken != "" || !identifierPattern.MatchString(job.CommandID) {
+			return errors.New("pull_v2 v2 claim credential or command binding is invalid")
+		}
+	} else if !validBoundedSecret(job.LeaseToken) {
+		return errors.New("pull_v2 legacy claim lease credential is invalid")
 	}
 	target, ok := hostPullPolicyTarget(policy, job.TargetID)
 	if !ok ||
@@ -189,7 +219,6 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 	if job.EffectiveOperation() == updateJobOperationPortReconfigure {
 		port := job.PortReconfigure
 		if port == nil ||
-			job.EffectiveVersion() != strings.TrimSpace(job.CurrentVersion) ||
 			port.ExpectedSourcePolicyRevision != policy.SourcePolicyRevision ||
 			port.ExpectedUpdaterPolicyRevision != policy.Revision ||
 			port.ExpectedUpdaterPolicyRevision != job.PolicyRevision ||
@@ -200,6 +229,18 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 			target.DesiredEndpoint == nil ||
 			target.DesiredEndpoint.Port != port.NewPort {
 			return errors.New("pull_v2 port claim does not match the active policy")
+		}
+		if job.ProtocolVersion == 2 {
+			if job.CurrentVersion != "" || job.TargetVersion != "" || job.Version != "" {
+				return errors.New("pull_v2 v2 port claim must remain versionless")
+			}
+		} else if !versionPattern.MatchString(job.CurrentVersion) ||
+			!versionPattern.MatchString(job.TargetVersion) ||
+			job.CurrentVersion != strings.TrimSpace(job.CurrentVersion) ||
+			job.TargetVersion != strings.TrimSpace(job.TargetVersion) ||
+			job.Version != "" ||
+			job.TargetVersion != job.CurrentVersion {
+			return errors.New("pull_v2 legacy port claim version binding is invalid")
 		}
 		switch job.DeploymentMode {
 		case ModeSystemd:
@@ -220,23 +261,31 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 		default:
 			return errors.New("pull_v2 port claim deployment mode is unsupported")
 		}
+	} else if !versionPattern.MatchString(job.CurrentVersion) ||
+		!versionPattern.MatchString(job.EffectiveVersion()) ||
+		job.CurrentVersion != strings.TrimSpace(job.CurrentVersion) {
+		return errors.New("pull_v2 claim version binding is invalid")
 	}
 	return nil
 }
 
 func sameRecoveredJobIntent(active, recovered UpdateJob) bool {
-	if active.ID != recovered.ID ||
-		active.EffectiveOperation() != recovered.EffectiveOperation() ||
+	if active.ProtocolVersion != recovered.ProtocolVersion ||
+		active.CommandID != recovered.CommandID ||
+		active.ID != recovered.ID ||
+		active.Operation != recovered.Operation ||
 		active.AgentServiceID != recovered.AgentServiceID ||
 		active.HostID != recovered.HostID ||
 		active.TransportMode != recovered.TransportMode ||
 		active.OwnershipEpoch != recovered.OwnershipEpoch ||
 		active.PolicyRevision != recovered.PolicyRevision ||
 		active.TargetID != recovered.TargetID ||
-		active.EffectiveType() != recovered.EffectiveType() ||
+		active.TargetType != recovered.TargetType ||
+		active.ServiceType != recovered.ServiceType ||
 		active.DeploymentMode != recovered.DeploymentMode ||
-		strings.TrimSpace(active.CurrentVersion) != strings.TrimSpace(recovered.CurrentVersion) ||
-		active.EffectiveVersion() != recovered.EffectiveVersion() {
+		active.CurrentVersion != recovered.CurrentVersion ||
+		active.TargetVersion != recovered.TargetVersion ||
+		active.Version != recovered.Version {
 		return false
 	}
 	if active.EffectiveOperation() == updateJobOperationSoftwareUpdate {
@@ -582,6 +631,14 @@ func (a *HostPullAgent) invokePortExecutionMutation(
 	if operation != "port_reconfigure" && operation != "port_reconfigure_reconcile" {
 		return SystemdPortReconfigureResult{}, errors.New("port mutation operation is invalid")
 	}
+	var requiredV2Executor LocalExecutorV2PortMutationClient
+	if job.ProtocolVersion == 2 {
+		var ok bool
+		requiredV2Executor, ok = a.PortExecutor.(LocalExecutorV2PortMutationClient)
+		if !ok {
+			return SystemdPortReconfigureResult{}, errors.New("local executor does not support v2 port mutation grants")
+		}
+	}
 	grant, err := panel.IssueMutationGrant(ctx, job.ID, MutationGrantRequest{
 		ServiceID: a.Bootstrap.NodeID, LeaseToken: job.LeaseToken,
 		MutationGrantBinding: MutationGrantBinding{
@@ -605,6 +662,32 @@ func (a *HostPullAgent) invokePortExecutionMutation(
 		OwnershipEpoch:          binding.OwnershipEpoch,
 		OwnershipPolicyRevision: job.PolicyRevision,
 		ExecutorPolicyRevision:  policy.LocalExecutorPolicyRevision,
+	}
+	if grant.V2Binding != nil {
+		v2Executor := requiredV2Executor
+		if v2Executor == nil {
+			var ok bool
+			v2Executor, ok = a.PortExecutor.(LocalExecutorV2PortMutationClient)
+			if !ok {
+				return SystemdPortReconfigureResult{}, errors.New("local executor does not support v2 port mutation grants")
+			}
+		}
+		if err := validateV2PortExecutionGrant(
+			hostPullExecutionNow(panel), a.Bootstrap.NodeID, binding, policy,
+			job, plan, operation, *grant.V2Binding,
+		); err != nil {
+			return SystemdPortReconfigureResult{}, err
+		}
+		v2Grant := V2MutationGrant{
+			Token: NewBoundedSecret(grant.Token), Binding: *grant.V2Binding,
+		}
+		if operation == "port_reconfigure" {
+			return v2Executor.PortReconfigureV2(ctx, plan, fence, v2Grant)
+		}
+		return v2Executor.PortReconfigureReconcileV2(ctx, plan, fence, v2Grant)
+	}
+	if job.ProtocolVersion == 2 {
+		return SystemdPortReconfigureResult{}, errors.New("v2 port mutation grant binding is unavailable")
 	}
 	if operation == "port_reconfigure" {
 		return a.PortExecutor.PortReconfigure(ctx, plan, fence, NewBoundedSecret(grant.Token))
@@ -864,6 +947,14 @@ func (a *HostPullAgent) invokeExecutionMutation(
 	plan MutationPlan,
 	operation string,
 ) (ApplyResult, error) {
+	var requiredV2Executor LocalExecutorV2MutationClient
+	if job.ProtocolVersion == 2 {
+		var ok bool
+		requiredV2Executor, ok = a.Executor.(LocalExecutorV2MutationClient)
+		if !ok {
+			return ApplyResult{}, errors.New("local executor does not support v2 mutation grants")
+		}
+	}
 	grant, err := panel.IssueMutationGrant(ctx, job.ID, MutationGrantRequest{
 		ServiceID: a.Bootstrap.NodeID, LeaseToken: job.LeaseToken,
 		MutationGrantBinding: MutationGrantBinding{
@@ -885,10 +976,156 @@ func (a *HostPullAgent) invokeExecutionMutation(
 		OwnershipPolicyRevision: job.PolicyRevision,
 		ExecutorPolicyRevision:  policy.LocalExecutorPolicyRevision,
 	}
+	if grant.V2Binding != nil {
+		v2Executor := requiredV2Executor
+		if v2Executor == nil {
+			var ok bool
+			v2Executor, ok = a.Executor.(LocalExecutorV2MutationClient)
+			if !ok {
+				return ApplyResult{}, errors.New("local executor does not support v2 mutation grants")
+			}
+		}
+		if err := validateV2SoftwareExecutionGrant(
+			hostPullExecutionNow(panel), a.Bootstrap.NodeID, binding, policy,
+			job, plan, operation, *grant.V2Binding,
+		); err != nil {
+			return ApplyResult{}, err
+		}
+		v2Grant := V2MutationGrant{
+			Token: NewBoundedSecret(grant.Token), Binding: *grant.V2Binding,
+		}
+		if operation == "apply" {
+			return v2Executor.ApplyV2(ctx, plan, fence, v2Grant)
+		}
+		return v2Executor.ReconcileV2(ctx, plan, fence, v2Grant)
+	}
+	if job.ProtocolVersion == 2 {
+		return ApplyResult{}, errors.New("v2 mutation grant binding is unavailable")
+	}
 	if operation == "apply" {
 		return a.Executor.Apply(ctx, plan, fence, NewBoundedSecret(grant.Token))
 	}
 	return a.Executor.Reconcile(ctx, plan, fence, NewBoundedSecret(grant.Token))
+}
+
+func hostPullExecutionNow(panel HostPullExecutionControlPlane) time.Time {
+	if clock, ok := panel.(interface{ now() time.Time }); ok {
+		return clock.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func validateV2SoftwareExecutionGrant(
+	now time.Time,
+	updaterID string,
+	hostBinding HostAgentBinding,
+	policy HostAgentPolicy,
+	job UpdateJob,
+	plan MutationPlan,
+	operation string,
+	grantBinding contracts.UpdaterMutationGrantBinding,
+) error {
+	desired, err := validateV2ExecutionGrantCommon(
+		now, updaterID, hostBinding, policy, job,
+		operation, plan.SessionID, grantBinding,
+	)
+	if err != nil {
+		return err
+	}
+	if desired.Operation != contracts.UpdaterDesiredSoftwareUpdate ||
+		desired.SoftwareUpdate == nil ||
+		desired.SoftwareUpdate.ExpectedCurrentVersion != plan.CurrentVersion ||
+		desired.SoftwareUpdate.TargetVersion != plan.TargetVersion ||
+		plan.JobID != job.ID ||
+		plan.HostID != job.HostID ||
+		plan.TargetID != job.TargetID ||
+		plan.ServiceType != job.EffectiveType() ||
+		plan.DeploymentMode != job.DeploymentMode ||
+		plan.CurrentVersion != job.CurrentVersion ||
+		plan.TargetVersion != job.EffectiveVersion() ||
+		plan.LeaseGeneration != job.LeaseGeneration ||
+		plan.ConfigSHA256 != policy.LocalExecutorPolicySHA256 {
+		return errors.New("v2 mutation grant does not match the software update plan")
+	}
+	return nil
+}
+
+func validateV2PortExecutionGrant(
+	now time.Time,
+	updaterID string,
+	hostBinding HostAgentBinding,
+	policy HostAgentPolicy,
+	job UpdateJob,
+	plan SystemdPortReconfigurePlan,
+	operation string,
+	grantBinding contracts.UpdaterMutationGrantBinding,
+) error {
+	desired, err := validateV2ExecutionGrantCommon(
+		now, updaterID, hostBinding, policy, job,
+		operation, plan.SessionID, grantBinding,
+	)
+	if err != nil {
+		return err
+	}
+	if desired.Operation != contracts.UpdaterDesiredPortReconfigure ||
+		desired.PortReconfigure == nil ||
+		job.PortReconfigure == nil ||
+		desired.PortReconfigure.PortPlanSHA256 != job.PortReconfigure.PortPlanSHA256 ||
+		!v2PortDesiredMatchesPlan(desired.PortReconfigure, plan) ||
+		plan.JobID != job.ID ||
+		plan.HostID != job.HostID ||
+		plan.TargetID != job.TargetID ||
+		plan.ServiceType != job.EffectiveType() ||
+		plan.effectiveDeploymentMode() != job.DeploymentMode ||
+		plan.ExpectedUpdaterPolicyRevision != job.PolicyRevision ||
+		plan.OwnershipEpoch != job.OwnershipEpoch ||
+		plan.LeaseGeneration != job.LeaseGeneration {
+		return errors.New("v2 mutation grant does not match the port reconfiguration plan")
+	}
+	return nil
+}
+
+func validateV2ExecutionGrantCommon(
+	now time.Time,
+	updaterID string,
+	hostBinding HostAgentBinding,
+	policy HostAgentPolicy,
+	job UpdateJob,
+	operation string,
+	sessionID string,
+	grantBinding contracts.UpdaterMutationGrantBinding,
+) (contracts.UpdaterDesiredOperation, error) {
+	if job.ProtocolVersion != 2 || job.LeaseToken != "" ||
+		contracts.ValidateUpdaterMutationGrantBinding(now, grantBinding) != nil ||
+		grantBinding.Operation != contracts.UpdaterMutationOperation(operation) ||
+		grantBinding.SessionID != sessionID {
+		return contracts.UpdaterDesiredOperation{}, errors.New("v2 mutation grant binding is invalid")
+	}
+	lease := grantBinding.Lease
+	command := lease.Command
+	authorization := command.MutationAuthorization
+	target := authorization.Target
+	policyTarget, ok := hostPullPolicyTarget(policy, job.TargetID)
+	if !ok ||
+		command.CommandID != job.CommandID ||
+		authorization.JobID != job.ID ||
+		authorization.UpdaterID != updaterID ||
+		authorization.UpdaterID != job.AgentServiceID ||
+		authorization.HostID != hostBinding.ExecutionHostID ||
+		authorization.HostID != job.HostID ||
+		authorization.DesiredRevision != policy.Revision ||
+		authorization.DesiredRevision != job.PolicyRevision ||
+		authorization.Fence != hostBinding.OwnershipEpoch ||
+		authorization.Fence != job.OwnershipEpoch ||
+		lease.LeaseGeneration != int64(job.LeaseGeneration) ||
+		target.TargetKind != contracts.UpdaterTargetApplication ||
+		target.ServiceID != job.TargetID ||
+		string(target.ServiceType) != job.EffectiveType() ||
+		string(target.DeploymentMode) != job.DeploymentMode ||
+		target.ExpectedConfigRevision != policyTarget.appliedConfigRevision() {
+		return contracts.UpdaterDesiredOperation{}, errors.New("v2 mutation grant does not match the claimed job and active policy")
+	}
+	return command.DesiredOperation, nil
 }
 
 func (a *HostPullAgent) emitExecutionReport(

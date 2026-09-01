@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	applicationprobe "github.com/Kome-Lab/Autostream-Updater/internal/probe"
 )
 
 var (
@@ -25,6 +27,7 @@ type Target struct {
 	HostID         string         `json:"host_id,omitempty"`
 	ServiceType    string         `json:"service_type"`
 	DeploymentMode string         `json:"deployment_mode"`
+	ConfigRevision int64          `json:"config_revision"`
 	HealthURL      string         `json:"health_url,omitempty"`
 	VersionURL     string         `json:"version_url,omitempty"`
 	BackupArgv     []string       `json:"backup_argv,omitempty"`
@@ -70,11 +73,14 @@ func (t Target) Validate() error {
 	default:
 		return fmt.Errorf("unsupported service_type %q", t.ServiceType)
 	}
+	if t.ConfigRevision < 1 {
+		return errors.New("config_revision is required")
+	}
 	if err := validateLoopbackEndpoint(t.HealthURL, "health_url"); err != nil {
 		return err
 	}
-	if err := validateLoopbackEndpoint(t.VersionURL, "version_url"); err != nil {
-		return err
+	if err := applicationprobe.ValidateApplicationIdentityEndpoint(t.VersionURL); err != nil {
+		return errors.New("version_url must be the loopback application identity probe")
 	}
 	if (t.ServiceType == "control_panel" || t.ServiceType == "observability") && len(t.BackupArgv) == 0 {
 		return errors.New("backup_argv is required for database-owning services")

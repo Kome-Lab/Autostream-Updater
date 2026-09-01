@@ -489,6 +489,9 @@ func TestNewHostPullAgentUsesDedicatedStateDirectory(t *testing.T) {
 	if agent.StateDir != HostPullAgentStateDir {
 		t.Fatalf("state dir = %q, want %q", agent.StateDir, HostPullAgentStateDir)
 	}
+	if _, ok := agent.ControlPlane.(*V2PanelClient); !ok {
+		t.Fatalf("default control plane = %T, want strict v2 adapter", agent.ControlPlane)
+	}
 }
 
 func TestObserveOnlyHostAgentFailsClosedWhenJournalCannotOpen(t *testing.T) {

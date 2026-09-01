@@ -14,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Kome-Lab/Autostream-Updater/internal/controlplane"
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const (
@@ -32,6 +35,9 @@ type linuxSystemdPortRuntime struct {
 	runner           CommandRunner
 	httpClient       *http.Client
 	consumeGrant     func(context.Context, string, string, string, MutationGrantBinding, *http.Client) error
+	consumeV2Grant   func(context.Context, string, string, string, contracts.UpdaterMutationGrantConsumeRequest, *http.Client, time.Time) error
+	v2GrantBinding   *contracts.UpdaterMutationGrantBinding
+	now              func() time.Time
 	requireRootOwned bool
 }
 
@@ -96,13 +102,23 @@ func newPlatformSystemdPortExecution(
 	if consumeGrant == nil {
 		consumeGrant = ConsumeMutationGrant
 	}
+	consumeV2Grant := remoteRuntime.consumeV2Grant
+	if consumeV2Grant == nil {
+		consumeV2Grant = controlplane.ConsumeMutationGrant
+	}
+	now := remoteRuntime.now
+	if now == nil {
+		now = time.Now
+	}
 	portRuntime := &linuxSystemdPortRuntime{
 		adapter: adapter, hostID: policy.HostID,
 		serviceID: target.ServiceID, serviceType: target.ServiceType,
 		listenHost: target.LocalListen.Host, panelURL: policy.Mutation.PanelURL,
 		systemctlPath: secured.Systemd.SystemctlPath,
 		runner:        runner, httpClient: remoteRuntime.httpClient,
-		consumeGrant: consumeGrant, requireRootOwned: true,
+		consumeGrant: consumeGrant, consumeV2Grant: consumeV2Grant,
+		v2GrantBinding: remoteRuntime.v2GrantBinding, now: now,
+		requireRootOwned: true,
 	}
 	return portRuntime, state, nil
 }
@@ -147,32 +163,46 @@ func (r *linuxSystemdPortRuntime) ConsumeGrant(
 		plan.ServiceType != r.serviceType ||
 		(operation != "port_reconfigure" && operation != "port_reconfigure_reconcile") ||
 		!versionPattern.MatchString(currentVersion) ||
-		!validBoundedSecret(grant.Reveal()) ||
-		r.consumeGrant == nil {
+		!validBoundedSecret(grant.Reveal()) {
 		return errors.New("systemd port grant binding is invalid")
-	}
-	binding := MutationGrantBinding{
-		LeaseGeneration: plan.LeaseGeneration,
-		HostID:          plan.HostID,
-		TransportMode:   HostTransportPullV2,
-		TargetID:        plan.TargetID,
-		ServiceType:     plan.ServiceType,
-		TargetVersion:   currentVersion,
-		DeploymentMode:  ModeSystemd,
-		JobOperation:    "port_reconfigure",
-		Operation:       operation,
-		PlanSHA256:      plan.PortPlanSHA256,
-		SessionID:       plan.SessionID,
-		OwnershipEpoch:  plan.OwnershipEpoch,
-		PolicyRevision:  plan.ExpectedUpdaterPolicyRevision,
-		PortReconfigure: plan.mutationGrantBinding(),
 	}
 	consumeCtx, cancel := context.WithTimeout(ctx, systemdPortGrantTimeout)
 	defer cancel()
-	if err := r.consumeGrant(
-		consumeCtx, r.panelURL, plan.JobID, grant.Reveal(), binding, r.httpClient,
-	); err != nil {
-		return errors.New("systemd port mutation grant rejected")
+	if r.v2GrantBinding != nil {
+		if r.consumeV2Grant == nil || r.now == nil ||
+			r.consumeV2Grant(
+				consumeCtx,
+				r.panelURL,
+				plan.JobID,
+				grant.Reveal(),
+				contracts.UpdaterMutationGrantConsumeRequest{Binding: *r.v2GrantBinding},
+				r.httpClient,
+				r.now().UTC(),
+			) != nil {
+			return errors.New("systemd port mutation grant rejected")
+		}
+	} else {
+		binding := MutationGrantBinding{
+			LeaseGeneration: plan.LeaseGeneration,
+			HostID:          plan.HostID,
+			TransportMode:   HostTransportPullV2,
+			TargetID:        plan.TargetID,
+			ServiceType:     plan.ServiceType,
+			TargetVersion:   currentVersion,
+			DeploymentMode:  ModeSystemd,
+			JobOperation:    "port_reconfigure",
+			Operation:       operation,
+			PlanSHA256:      plan.PortPlanSHA256,
+			SessionID:       plan.SessionID,
+			OwnershipEpoch:  plan.OwnershipEpoch,
+			PolicyRevision:  plan.ExpectedUpdaterPolicyRevision,
+			PortReconfigure: plan.mutationGrantBinding(),
+		}
+		if r.consumeGrant == nil || r.consumeGrant(
+			consumeCtx, r.panelURL, plan.JobID, grant.Reveal(), binding, r.httpClient,
+		) != nil {
+			return errors.New("systemd port mutation grant rejected")
+		}
 	}
 	return nil
 }

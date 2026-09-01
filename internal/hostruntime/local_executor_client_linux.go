@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 func (c LocalExecutorClient) Probe(ctx context.Context, serviceID string) (LocalExecutorProbe, error) {
@@ -64,7 +66,7 @@ func (c LocalExecutorClient) Probe(ctx context.Context, serviceID string) (Local
 }
 
 func (c LocalExecutorClient) Stage(ctx context.Context, plan MutationPlan, fence LocalExecutorMutationFence) (MutationStageResult, error) {
-	response, err := c.executeMutation(ctx, "stage", plan, fence, "")
+	response, err := c.executeMutation(ctx, "stage", plan, fence, "", nil)
 	if err != nil {
 		return MutationStageResult{}, err
 	}
@@ -78,11 +80,19 @@ func (c LocalExecutorClient) Stage(ctx context.Context, plan MutationPlan, fence
 }
 
 func (c LocalExecutorClient) Apply(ctx context.Context, plan MutationPlan, fence LocalExecutorMutationFence, grant BoundedSecret) (ApplyResult, error) {
-	return c.executeMutationResult(ctx, "apply", plan, fence, grant)
+	return c.executeMutationResult(ctx, "apply", plan, fence, grant, nil)
 }
 
 func (c LocalExecutorClient) Reconcile(ctx context.Context, plan MutationPlan, fence LocalExecutorMutationFence, grant BoundedSecret) (ApplyResult, error) {
-	return c.executeMutationResult(ctx, "reconcile", plan, fence, grant)
+	return c.executeMutationResult(ctx, "reconcile", plan, fence, grant, nil)
+}
+
+func (c LocalExecutorClient) ApplyV2(ctx context.Context, plan MutationPlan, fence LocalExecutorMutationFence, grant V2MutationGrant) (ApplyResult, error) {
+	return c.executeMutationResult(ctx, "apply", plan, fence, grant.Token, &grant.Binding)
+}
+
+func (c LocalExecutorClient) ReconcileV2(ctx context.Context, plan MutationPlan, fence LocalExecutorMutationFence, grant V2MutationGrant) (ApplyResult, error) {
+	return c.executeMutationResult(ctx, "reconcile", plan, fence, grant.Token, &grant.Binding)
 }
 
 func (c LocalExecutorClient) PortReconfigure(
@@ -91,7 +101,7 @@ func (c LocalExecutorClient) PortReconfigure(
 	fence LocalExecutorMutationFence,
 	grant BoundedSecret,
 ) (SystemdPortReconfigureResult, error) {
-	return c.executePortMutation(ctx, "port_reconfigure", plan, fence, grant)
+	return c.executePortMutation(ctx, "port_reconfigure", plan, fence, grant, nil)
 }
 
 func (c LocalExecutorClient) PortReconfigureReconcile(
@@ -100,11 +110,29 @@ func (c LocalExecutorClient) PortReconfigureReconcile(
 	fence LocalExecutorMutationFence,
 	grant BoundedSecret,
 ) (SystemdPortReconfigureResult, error) {
-	return c.executePortMutation(ctx, "port_reconfigure_reconcile", plan, fence, grant)
+	return c.executePortMutation(ctx, "port_reconfigure_reconcile", plan, fence, grant, nil)
 }
 
-func (c LocalExecutorClient) executeMutationResult(ctx context.Context, operation string, plan MutationPlan, fence LocalExecutorMutationFence, grant BoundedSecret) (ApplyResult, error) {
-	response, err := c.executeMutation(ctx, operation, plan, fence, grant)
+func (c LocalExecutorClient) PortReconfigureV2(
+	ctx context.Context,
+	plan SystemdPortReconfigurePlan,
+	fence LocalExecutorMutationFence,
+	grant V2MutationGrant,
+) (SystemdPortReconfigureResult, error) {
+	return c.executePortMutation(ctx, "port_reconfigure", plan, fence, grant.Token, &grant.Binding)
+}
+
+func (c LocalExecutorClient) PortReconfigureReconcileV2(
+	ctx context.Context,
+	plan SystemdPortReconfigurePlan,
+	fence LocalExecutorMutationFence,
+	grant V2MutationGrant,
+) (SystemdPortReconfigureResult, error) {
+	return c.executePortMutation(ctx, "port_reconfigure_reconcile", plan, fence, grant.Token, &grant.Binding)
+}
+
+func (c LocalExecutorClient) executeMutationResult(ctx context.Context, operation string, plan MutationPlan, fence LocalExecutorMutationFence, grant BoundedSecret, v2Binding *contracts.UpdaterMutationGrantBinding) (ApplyResult, error) {
+	response, err := c.executeMutation(ctx, operation, plan, fence, grant, v2Binding)
 	if err != nil {
 		return ApplyResult{}, err
 	}
@@ -116,9 +144,16 @@ func (c LocalExecutorClient) executeMutationResult(ctx context.Context, operatio
 	return *response.Result, nil
 }
 
-func (c LocalExecutorClient) executeMutation(ctx context.Context, operation string, plan MutationPlan, fence LocalExecutorMutationFence, grant BoundedSecret) (LocalExecutorResponse, error) {
+func (c LocalExecutorClient) executeMutation(ctx context.Context, operation string, plan MutationPlan, fence LocalExecutorMutationFence, grant BoundedSecret, v2Binding *contracts.UpdaterMutationGrantBinding) (LocalExecutorResponse, error) {
 	if err := plan.Validate(); err != nil {
 		return LocalExecutorResponse{}, errors.New("local executor mutation plan is invalid")
+	}
+	if v2Binding != nil {
+		if err := validateV2SoftwareMutationGrantBinding(
+			time.Now().UTC(), *v2Binding, operation, plan, fence, nil, nil,
+		); err != nil {
+			return LocalExecutorResponse{}, errors.New("local executor v2 mutation binding is invalid")
+		}
 	}
 	socketPath := strings.TrimSpace(c.SocketPath)
 	if socketPath == "" {
@@ -155,6 +190,7 @@ func (c LocalExecutorClient) executeMutation(ctx context.Context, operation stri
 		OwnershipPolicyRevision: fence.OwnershipPolicyRevision,
 		ExecutorPolicyRevision:  fence.ExecutorPolicyRevision,
 		MutationGrant:           grant,
+		MutationGrantV2Binding:  v2Binding,
 	}
 	if err := EncodeLocalExecutorRequest(connection, request); err != nil {
 		return LocalExecutorResponse{}, errors.New("send local executor mutation request")
@@ -178,9 +214,17 @@ func (c LocalExecutorClient) executePortMutation(
 	plan SystemdPortReconfigurePlan,
 	fence LocalExecutorMutationFence,
 	grant BoundedSecret,
+	v2Binding *contracts.UpdaterMutationGrantBinding,
 ) (SystemdPortReconfigureResult, error) {
 	if err := plan.Validate(); err != nil {
 		return SystemdPortReconfigureResult{}, errors.New("local executor port plan is invalid")
+	}
+	if v2Binding != nil {
+		if err := validateV2PortMutationGrantBinding(
+			time.Now().UTC(), *v2Binding, operation, plan, fence, nil, nil,
+		); err != nil {
+			return SystemdPortReconfigureResult{}, errors.New("local executor v2 port binding is invalid")
+		}
 	}
 	socketPath := strings.TrimSpace(c.SocketPath)
 	if socketPath == "" {
@@ -217,6 +261,7 @@ func (c LocalExecutorClient) executePortMutation(
 		OwnershipPolicyRevision: fence.OwnershipPolicyRevision,
 		ExecutorPolicyRevision:  fence.ExecutorPolicyRevision,
 		MutationGrant:           grant,
+		MutationGrantV2Binding:  v2Binding,
 	}
 	if err := EncodeLocalExecutorRequest(connection, request); err != nil {
 		return SystemdPortReconfigureResult{}, errors.New("send local executor port mutation request")

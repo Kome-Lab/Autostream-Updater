@@ -3,6 +3,7 @@ module github.com/Kome-Lab/Autostream-Updater
 go 1.26.5
 
 require (
+	github.com/example/autostream-contracts v0.0.0
 	github.com/in-toto/attestation v1.2.0
 	github.com/klauspost/compress v1.19.2
 	github.com/sigstore/protobuf-specs v0.5.1
@@ -11,6 +12,8 @@ require (
 	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.36.11
 )
+
+replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v0.0.0-20260901201426-181825ab7dab
 
 require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect

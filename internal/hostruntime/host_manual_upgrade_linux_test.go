@@ -2465,7 +2465,7 @@ func TestManualHostUpgradeMigratesLegacyRecoveryUnitDuringBootstrap(
 	}
 	installed, err := os.ReadFile(fixture.runtime.paths.installedRecoveryService)
 	if err != nil || manualHostRecoveryUnitDigest(installed) !=
-		manualHostRecoveryUnitCorrectedDigest {
+		manualHostRecoveryUnitUpdaterCorrectedDigest {
 		t.Fatalf("migrated recovery unit digest=%s err=%v", manualHostRecoveryUnitDigest(installed), err)
 	}
 	if _, err := os.Lstat(
@@ -2507,7 +2507,7 @@ func TestManualHostUpgradeMigratesLegacyExecutorUnitDuringBootstrap(
 	}
 	installed, err := os.ReadFile(fixture.runtime.paths.installedExecutorUnit)
 	if err != nil || manualHostExecutorUnitTestDigest(installed) !=
-		manualHostExecutorUnitCorrectedDigest {
+		manualHostExecutorUnitUpdaterCorrectedDigest {
 		t.Fatalf("migrated executor unit digest=%s err=%v", manualHostExecutorUnitTestDigest(installed), err)
 	}
 	if fixture.runner.recoveryReloads != 1 {
@@ -3408,7 +3408,7 @@ func assertManualHostUpgradeRecoveryUnitConverged(
 	t.Helper()
 	installed, err := os.ReadFile(fixture.runtime.paths.installedRecoveryService)
 	if err != nil || manualHostRecoveryUnitDigest(installed) !=
-		manualHostRecoveryUnitCorrectedDigest {
+		manualHostRecoveryUnitUpdaterCorrectedDigest {
 		t.Fatalf("recovery unit did not converge: err=%v", err)
 	}
 	if _, err := os.Lstat(

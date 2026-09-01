@@ -1,16 +1,13 @@
-name: Release build (no publish)
+name: Publish versioned release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Version to embed, for example v1.2.3
-        required: true
-        type: string
+  push:
+    tags:
+      - "v*"
 
-permissions:
-  actions: read
-  contents: read
+concurrency:
+  group: updater-release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   GOMAXPROCS: "2"
@@ -18,8 +15,19 @@ env:
 
 jobs:
   build:
-    name: Build signed-input release bundle without publishing
+    name: Verify tag, wait for exact CI, build once, and attest
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
     steps:
       - name: Require GitHub-hosted runner
         shell: bash
@@ -29,156 +37,129 @@ jobs:
           set -euo pipefail
           test "${RUNNER_ENVIRONMENT}" = github-hosted
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - name: Require successful CI for this exact commit
+      - name: Require immutable stable tag and absent release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_CREATED: ${{ github.event.created }}
+          TAG_FORCED: ${{ github.event.forced }}
+        run: |
+          set -euo pipefail
+          test "${TAG_CREATED}" = true
+          test "${TAG_FORCED}" = false
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            printf '%s\n' 'release tag must be a stable vX.Y.Z tag' >&2
+            exit 1
+          }
+          test "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" = "${GITHUB_SHA}"
+          bash scripts/ci/verify-github-release-tag.sh \
+            "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" "${GITHUB_SHA}"
+          if gh release view "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            printf 'GitHub Release already exists and will not be overwritten: %s\n' \
+              "${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+      - name: Require successful CI for this exact tag commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          runs="${RUNNER_TEMP}/ci-runs.json"
-          gh api \
-            --header 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&per_page=100" \
-            > "${runs}"
-          jq -e --arg sha "${GITHUB_SHA}" \
-            'any(.workflow_runs[]?; .head_sha == $sha and .status == "completed" and .conclusion == "success")' \
-            "${runs}" >/dev/null
-      - name: Resolve build metadata
+          bash scripts/ci/wait-for-exact-ci-success.sh \
+            "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" 1800
+      - name: Resolve immutable build metadata
         id: meta
         shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ ! "${INPUT_VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "version must look like v1.2.3" >&2
-            exit 1
-          fi
-          printf 'version=%s\n' "${INPUT_VERSION}" >> "${GITHUB_OUTPUT}"
-          printf 'build_date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
-      - name: Test production packages
-        run: go test -p 1 ./...
-      - name: Build immutable Linux bundles
+          build_date="$(date -u -d "@$(git show -s --format=%ct "${GITHUB_SHA}")" +%Y-%m-%dT%H:%M:%SZ)"
+          artifact_name="autostream-updater-${GITHUB_REF_NAME}-${GITHUB_SHA}"
+          printf 'version=%s\n' "${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
+          printf 'build_date=%s\n' "${build_date}" >> "${GITHUB_OUTPUT}"
+          printf 'artifact_name=%s\n' "${artifact_name}" >> "${GITHUB_OUTPUT}"
+      - name: Build Linux amd64 and arm64 bundles once
         shell: bash
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           BUILD_DATE: ${{ steps.meta.outputs.build_date }}
         run: |
-          set -euo pipefail
-          rm -rf staging artifacts
-          mkdir -p staging artifacts
-          ldflags="-s -w -X github.com/Kome-Lab/Autostream-Updater/internal/version.Version=${VERSION} -X github.com/Kome-Lab/Autostream-Updater/internal/version.Commit=${GITHUB_SHA} -X github.com/Kome-Lab/Autostream-Updater/internal/version.BuildDate=${BUILD_DATE}"
-          for arch in amd64 arm64; do
-            artifact="autostream-host-agent_${VERSION}_linux_${arch}"
-            root="staging/${artifact}"
-            mkdir -p "${root}/bin" "${root}/install" "${root}/systemd"
-            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
-              go build -p 1 -trimpath -ldflags="${ldflags}" \
-                -o "${root}/bin/autostream-host-agent" \
-                ./cmd/autostream-updater-agent
-            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
-              go build -p 1 -trimpath -ldflags="${ldflags}" \
-                -o "${root}/bin/autostream-local-executor" \
-                ./cmd/autostream-local-executor
-            cp install/install-autostream-updater-agent "${root}/install/install-autostream-host-agent"
-            cp install/uninstall-autostream-updater-agent "${root}/install/uninstall-autostream-host-agent"
-            cp install/install-autostream-local-executor install/uninstall-autostream-local-executor "${root}/install/"
-            chmod 0755 "${root}/install/"*
-            cp install/autostream-updater-agent.json.example "${root}/autostream-host-agent.json.example"
-            cp install/autostream-local-executor-policy.json.example "${root}/autostream-local-executor-policy.json.example"
-            cp docs/runtime.md "${root}/README.md"
-            cp docs/local-executor.md "${root}/README.local-executor.md"
-            cp docs/contracts-boundary.md "${root}/CONTRACTS-BOUNDARY.md"
-            cp systemd/autostream-updater-agent.service.example "${root}/systemd/autostream-host-agent.service"
-            cp systemd/autostream-local-executor.service.example "${root}/systemd/autostream-local-executor.service"
-            cp systemd/autostream-local-executor.socket.example "${root}/systemd/autostream-local-executor.socket"
-            cp systemd/autostream-local-executor.tmpfiles.example "${root}/systemd/autostream-local-executor.tmpfiles"
-            cp systemd/autostream-updater-self-update-recovery@.service.example "${root}/systemd/autostream-host-self-update-recovery@.service"
-            cp systemd/autostream-updater-self-update-recovery@.timer.example "${root}/systemd/autostream-host-self-update-recovery@.timer"
-            jq -n \
-              --arg version "${VERSION}" \
-              --arg commit "${GITHUB_SHA}" \
-              --arg build_date "${BUILD_DATE}" \
-              --arg arch "${arch}" \
-              --arg archive_name "${artifact}.tar.gz" \
-              --arg artifact_root "${artifact}" \
-              '{
-                schema_version: 1,
-                component: "host-agent",
-                source_version: $version,
-                commit: $commit,
-                build_date: $build_date,
-                platform: {os: "linux", arch: $arch},
-                archive: {name: $archive_name, root: $artifact_root},
-                compatibility: {
-                  minimum_agent_version: null,
-                  minimum_panel_version: $version,
-                  rollback_compatible: true,
-                  database_schema: "none"
-                }
-              }' > "${root}/artifact-manifest.json"
-            (cd "${root}" && find . -type f ! -name checksums.txt -print0 | sort -z | xargs -0 sha256sum > checksums.txt)
-            tar -C staging -czf "artifacts/${artifact}.tar.gz" "${artifact}"
-            (cd artifacts && sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256")
-          done
-          amd64_archive="autostream-host-agent_${VERSION}_linux_amd64.tar.gz"
-          arm64_archive="autostream-host-agent_${VERSION}_linux_arm64.tar.gz"
-          amd64_sha="$(awk 'NR == 1 {print $1}' "artifacts/${amd64_archive}.sha256")"
-          arm64_sha="$(awk 'NR == 1 {print $1}' "artifacts/${arm64_archive}.sha256")"
-          amd64_size="$(stat -c %s "artifacts/${amd64_archive}")"
-          arm64_size="$(stat -c %s "artifacts/${arm64_archive}")"
-          jq -n \
-            --arg version "${VERSION}" \
-            --arg commit "${GITHUB_SHA}" \
-            --arg published_at "${BUILD_DATE}" \
-            --arg amd64_name "${amd64_archive}" \
-            --arg amd64_sha "${amd64_sha}" \
-            --argjson amd64_size "${amd64_size}" \
-            --arg arm64_name "${arm64_archive}" \
-            --arg arm64_sha "${arm64_sha}" \
-            --argjson arm64_size "${arm64_size}" \
-            '{
-              schema_version: 1,
-              release_id: $version,
-              channel: "host-agent",
-              published_at: $published_at,
-              commit: $commit,
-              agent_version: $version,
-              protocol_version: 2,
-              observe_only: false,
-              local_executor_protocol_version: 2,
-              local_executor_probe_only: false,
-              local_executor_protocol_min_version: 1,
-              local_executor_protocol_max_version: 2,
-              local_executor_probe_compatible: true,
-              local_executor_mutation_protocol_version: 2,
-              local_executor_mutation_enabled: true,
-              local_executor_mutation_requires_root_policy: true,
-              recovery_protocol_version: 2,
-              minimum_panel_version: $version,
-              artifacts: [
-                {os: "linux", arch: "amd64", name: $amd64_name, size: $amd64_size, sha256: $amd64_sha},
-                {os: "linux", arch: "arm64", name: $arm64_name, size: $arm64_size, sha256: $arm64_sha}
-              ]
-            }' > artifacts/host-agent-manifest.json
-          jq -e \
-            '(.schema_version == 1) and
-             (.protocol_version == 2) and
-             (.local_executor_protocol_version == 2) and
-             (.local_executor_mutation_protocol_version == 2) and
-             (.recovery_protocol_version == 2) and
-             (.artifacts | length == 2)' \
-            artifacts/host-agent-manifest.json >/dev/null
-          (cd artifacts && sha256sum host-agent-manifest.json > host-agent-manifest.json.sha256)
-          (cd artifacts && sha256sum -- *.tar.gz *.tar.gz.sha256 host-agent-manifest.json host-agent-manifest.json.sha256 > SHA256SUMS)
-      - name: Upload build-only bundle
+          bash scripts/ci/build-release-bundles.sh \
+            "${VERSION}" "${GITHUB_SHA}" "${BUILD_DATE}" \
+            "${RUNNER_TEMP}/release-artifacts"
+      - name: Verify manifests and every checksum layer
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          bash scripts/ci/verify-release-bundles.sh \
+            "${RUNNER_TEMP}/release-artifacts" \
+            "${VERSION}" "${GITHUB_SHA}"
+      - name: Attest runtime manifest as one exact subject
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-checksums: ${{ runner.temp }}/release-artifacts/host-agent-manifest.json.sha256
+      - name: Attest every release file
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ runner.temp }}/release-artifacts/*
+      - name: Upload exact release payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: autostream-updater-${{ steps.meta.outputs.version }}-${{ github.sha }}
-          path: artifacts/
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-artifacts/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
+
+  publish:
+    name: Reverify and publish immutable GitHub Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: build
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Download exact build output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: artifacts
+      - name: Reverify tag, absent release, manifests, and checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "${VERSION}" = "${GITHUB_REF_NAME}"
+          test "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" = "${GITHUB_SHA}"
+          bash scripts/ci/verify-github-release-tag.sh \
+            "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" "${GITHUB_SHA}"
+          if gh release view "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            printf 'GitHub Release already exists and will not be overwritten: %s\n' \
+              "${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          bash scripts/ci/verify-release-bundles.sh \
+            artifacts "${VERSION}" "${GITHUB_SHA}"
+      - name: Publish GitHub Release without tag mutation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "AutoStream Updater ${GITHUB_REF_NAME}" \
+            --notes "Immutable AutoStream Updater release for commit ${GITHUB_SHA}. No production deployment is performed by this workflow."

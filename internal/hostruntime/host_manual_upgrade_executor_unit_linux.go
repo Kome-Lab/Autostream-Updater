@@ -13,14 +13,27 @@ import (
 	"syscall"
 )
 
-// v1.9.16 installed an explicit User=root/Group=root.  On systemd 255 that
-// form can remove CAP_SETUID from the service's effective set, which prevents
-// the root executor from running its candidate smoke check through runuser.
-// Only this exact legacy template may be migrated automatically.
+// v1.9.16 installed an explicit User=root/Group=root. On systemd 255 that form
+// can remove CAP_SETUID from the service's effective set, which prevents the
+// root executor from running its candidate smoke check through runuser. The
+// Control Panel and independent Updater templates differ only in their exact
+// Documentation URL, so both byte-exact generations remain recognized.
 const (
-	manualHostExecutorUnitLegacyDigest    = "3d2e6157df4c99d0feb6a3567ae6b7bb54bab2e37bd7adaa8de5a1b00ec4f4b5"
-	manualHostExecutorUnitCorrectedDigest = "eab31390eacea5f8d0cc5da2666142df4322e50863cba01fb3127bea64362dac"
+	manualHostExecutorUnitControlPanelLegacyDigest    = "3d2e6157df4c99d0feb6a3567ae6b7bb54bab2e37bd7adaa8de5a1b00ec4f4b5"
+	manualHostExecutorUnitControlPanelCorrectedDigest = "eab31390eacea5f8d0cc5da2666142df4322e50863cba01fb3127bea64362dac"
+	manualHostExecutorUnitUpdaterLegacyDigest         = "4650220b10a21063e15f9a0a121bc0cd078f5d2f684c601fa50a95b04ae88225"
+	manualHostExecutorUnitUpdaterCorrectedDigest      = "548db8de58ecfddc59f64abd408fe1bae3cfd8e35c2a664c0a81038debfac8c5"
 )
+
+func manualHostExecutorUnitDigestIsLegacy(digest string) bool {
+	return digest == manualHostExecutorUnitControlPanelLegacyDigest ||
+		digest == manualHostExecutorUnitUpdaterLegacyDigest
+}
+
+func manualHostExecutorUnitDigestIsCorrected(digest string) bool {
+	return digest == manualHostExecutorUnitControlPanelCorrectedDigest ||
+		digest == manualHostExecutorUnitUpdaterCorrectedDigest
+}
 
 type manualHostExecutorUnitMigrationConfig struct {
 	CandidatePath  string
@@ -48,7 +61,7 @@ func migrateManualHostExecutorUnitForward(
 	if err != nil {
 		return err
 	}
-	if snapshot.installed.digest == manualHostExecutorUnitCorrectedDigest {
+	if manualHostExecutorUnitDigestIsCorrected(snapshot.installed.digest) {
 		if snapshot.needDaemonReload {
 			if err := reloadManualHostExecutorUnitSystemd(ctx, config.Runner); err != nil {
 				return err
@@ -64,7 +77,7 @@ func migrateManualHostExecutorUnitForward(
 		return nil
 	}
 
-	if snapshot.installed.digest != manualHostExecutorUnitLegacyDigest {
+	if !manualHostExecutorUnitDigestIsLegacy(snapshot.installed.digest) {
 		return errors.New("installed Local Executor unit is not a known migration source")
 	}
 	if err := replaceManualHostExecutorUnit(ctx, snapshot, config); err != nil {
@@ -107,7 +120,7 @@ func inspectManualHostExecutorUnitMigration(
 	config manualHostExecutorUnitMigrationConfig,
 ) (manualHostExecutorUnitMigrationSnapshot, error) {
 	candidate, err := snapshotManualHostUpgradeFile(config.CandidatePath)
-	if err != nil || candidate.digest != manualHostExecutorUnitCorrectedDigest ||
+	if err != nil || !manualHostExecutorUnitDigestIsCorrected(candidate.digest) ||
 		candidate.info.Mode().Perm() != 0o644 ||
 		manualHostExecutorUnitLinkCount(candidate.info) != 1 ||
 		(!config.AllowTestPaths && !isRootOwner(candidate.info)) {
@@ -117,8 +130,8 @@ func inspectManualHostExecutorUnitMigration(
 	}
 	installed, err := snapshotManualHostUpgradeFile(config.InstalledPath)
 	if err != nil ||
-		(installed.digest != manualHostExecutorUnitLegacyDigest &&
-			installed.digest != manualHostExecutorUnitCorrectedDigest) ||
+		(!manualHostExecutorUnitDigestIsLegacy(installed.digest) &&
+			!manualHostExecutorUnitDigestIsCorrected(installed.digest)) ||
 		installed.info.Mode().Perm() != 0o644 ||
 		manualHostExecutorUnitLinkCount(installed.info) != 1 ||
 		(!config.AllowTestPaths && !isRootOwner(installed.info)) {
@@ -249,7 +262,8 @@ func replaceManualHostExecutorUnit(
 		return errors.New("close Local Executor unit staging file before replacement")
 	}
 	staged, err := snapshotManualHostUpgradeFile(temporaryPath)
-	if err != nil || staged.digest != manualHostExecutorUnitCorrectedDigest ||
+	if err != nil || staged.digest != snapshot.candidate.digest ||
+		!manualHostExecutorUnitDigestIsCorrected(staged.digest) ||
 		staged.info.Mode().Perm() != 0o644 ||
 		manualHostExecutorUnitLinkCount(staged.info) != 1 ||
 		(!config.AllowTestPaths && !isRootOwner(staged.info)) {
@@ -269,14 +283,18 @@ func replaceManualHostExecutorUnit(
 	if err := config.SyncDirectory(filepath.Dir(config.InstalledPath)); err != nil {
 		return fmt.Errorf("sync corrected Local Executor unit replacement: %w", err)
 	}
-	return requireManualHostExecutorUnitInstalledCorrected(config)
+	return requireManualHostExecutorUnitInstalledCorrected(
+		config, snapshot.candidate.digest,
+	)
 }
 
 func requireManualHostExecutorUnitInstalledCorrected(
 	config manualHostExecutorUnitMigrationConfig,
+	expectedDigest string,
 ) error {
 	installed, err := snapshotManualHostUpgradeFile(config.InstalledPath)
-	if err != nil || installed.digest != manualHostExecutorUnitCorrectedDigest ||
+	if err != nil || !manualHostExecutorUnitDigestIsCorrected(expectedDigest) ||
+		installed.digest != expectedDigest ||
 		installed.info.Mode().Perm() != 0o644 ||
 		manualHostExecutorUnitLinkCount(installed.info) != 1 ||
 		(!config.AllowTestPaths && !isRootOwner(installed.info)) {
@@ -315,7 +333,7 @@ func manualHostExecutorUnitSnapshotMatches(
 func manualHostExecutorUnitMigrationIsFinal(
 	snapshot manualHostExecutorUnitMigrationSnapshot,
 ) bool {
-	return snapshot.installed.digest == manualHostExecutorUnitCorrectedDigest &&
+	return manualHostExecutorUnitDigestIsCorrected(snapshot.installed.digest) &&
 		len(snapshot.dropInPaths) == 0 && !snapshot.needDaemonReload
 }
 

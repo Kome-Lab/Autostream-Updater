@@ -23,10 +23,26 @@ func (LocalExecutorClient) Reconcile(context.Context, MutationPlan, LocalExecuto
 	return ApplyResult{}, errors.New("local executor client requires Linux")
 }
 
+func (LocalExecutorClient) ApplyV2(context.Context, MutationPlan, LocalExecutorMutationFence, V2MutationGrant) (ApplyResult, error) {
+	return ApplyResult{}, errors.New("local executor client requires Linux")
+}
+
+func (LocalExecutorClient) ReconcileV2(context.Context, MutationPlan, LocalExecutorMutationFence, V2MutationGrant) (ApplyResult, error) {
+	return ApplyResult{}, errors.New("local executor client requires Linux")
+}
+
 func (LocalExecutorClient) PortReconfigure(context.Context, SystemdPortReconfigurePlan, LocalExecutorMutationFence, BoundedSecret) (SystemdPortReconfigureResult, error) {
 	return SystemdPortReconfigureResult{}, errors.New("local executor client requires Linux")
 }
 
 func (LocalExecutorClient) PortReconfigureReconcile(context.Context, SystemdPortReconfigurePlan, LocalExecutorMutationFence, BoundedSecret) (SystemdPortReconfigureResult, error) {
+	return SystemdPortReconfigureResult{}, errors.New("local executor client requires Linux")
+}
+
+func (LocalExecutorClient) PortReconfigureV2(context.Context, SystemdPortReconfigurePlan, LocalExecutorMutationFence, V2MutationGrant) (SystemdPortReconfigureResult, error) {
+	return SystemdPortReconfigureResult{}, errors.New("local executor client requires Linux")
+}
+
+func (LocalExecutorClient) PortReconfigureReconcileV2(context.Context, SystemdPortReconfigurePlan, LocalExecutorMutationFence, V2MutationGrant) (SystemdPortReconfigureResult, error) {
 	return SystemdPortReconfigureResult{}, errors.New("local executor client requires Linux")
 }

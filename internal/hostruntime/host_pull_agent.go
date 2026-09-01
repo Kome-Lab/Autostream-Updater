@@ -245,7 +245,7 @@ func NewHostPullAgent(bootstrap Config, options HostPullAgentOptions) (*HostPull
 		Logf:                      logf,
 	}
 	if agent.ControlPlane == nil {
-		agent.ControlPlane = PanelClient{
+		agent.ControlPlane = NewV2PanelClient(PanelClient{
 			BaseURL: bootstrap.PanelURL,
 			Token:   bootstrap.RuntimeToken,
 			HTTP:    options.HTTPClient,
@@ -255,7 +255,7 @@ func NewHostPullAgent(bootstrap Config, options HostPullAgentOptions) (*HostPull
 			VersionProvider: func() string {
 				return agent.currentAgentVersion()
 			},
-		}
+		})
 	}
 	if agent.SelfUpdateGrantIssuer == nil {
 		agent.SelfUpdateGrantIssuer = PanelClient{

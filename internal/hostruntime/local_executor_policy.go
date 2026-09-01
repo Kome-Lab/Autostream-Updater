@@ -270,6 +270,7 @@ func (t LocalExecutorTarget) runtimeTarget(hostID string) Target {
 		HostID:         hostID,
 		ServiceType:    t.ServiceType,
 		DeploymentMode: t.DeploymentMode,
+		ConfigRevision: t.ConfigRevision,
 		HealthURL:      base + "/health",
 		VersionURL:     base + "/updater/version",
 		Systemd:        t.Systemd,

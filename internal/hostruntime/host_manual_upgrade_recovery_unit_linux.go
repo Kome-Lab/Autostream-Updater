@@ -15,9 +15,21 @@ import (
 )
 
 const (
-	manualHostRecoveryUnitLegacyDigest    = "751c69c970407b4873d403971a192b33320d44b352aba58a9ab56c2fa1e1309c"
-	manualHostRecoveryUnitCorrectedDigest = "d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd"
+	manualHostRecoveryUnitControlPanelLegacyDigest    = "751c69c970407b4873d403971a192b33320d44b352aba58a9ab56c2fa1e1309c"
+	manualHostRecoveryUnitControlPanelCorrectedDigest = "d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd"
+	manualHostRecoveryUnitUpdaterLegacyDigest         = "92e4a01f8d56a65104a3eb02dfc09232eced767e05087c4bc4a2ffc16d15d563"
+	manualHostRecoveryUnitUpdaterCorrectedDigest      = "562108006e7c18430cb00b5622bfe7ee3a590e2773d50ac8cf16cac788d963b0"
 )
+
+func manualHostRecoveryUnitDigestIsLegacy(digest string) bool {
+	return digest == manualHostRecoveryUnitControlPanelLegacyDigest ||
+		digest == manualHostRecoveryUnitUpdaterLegacyDigest
+}
+
+func manualHostRecoveryUnitDigestIsCorrected(digest string) bool {
+	return digest == manualHostRecoveryUnitControlPanelCorrectedDigest ||
+		digest == manualHostRecoveryUnitUpdaterCorrectedDigest
+}
 
 var manualHostRecoveryUnitKnownDropIns = map[string]string{
 	"10-executable-guard.conf":      "264b1b3e55d6f4551af36daa2cc34d19baa162b21b0c724d0c62459eefe006fe",
@@ -77,19 +89,19 @@ func migrateManualHostRecoveryUnitForward(
 	if err != nil {
 		return err
 	}
-	if snapshot.installed.digest == manualHostRecoveryUnitCorrectedDigest &&
+	if manualHostRecoveryUnitDigestIsCorrected(snapshot.installed.digest) &&
 		!snapshot.dropInDir.present &&
 		len(snapshot.dropIns) == 0 &&
 		manualHostRecoveryUnitEffectiveIsFinal(snapshot.effective) {
 		return nil
 	}
 
-	if snapshot.installed.digest == manualHostRecoveryUnitLegacyDigest {
+	if manualHostRecoveryUnitDigestIsLegacy(snapshot.installed.digest) {
 		if err := replaceManualHostRecoveryUnit(snapshot, config); err != nil {
 			return err
 		}
 	}
-	if err := requireManualHostRecoveryUnitInstalledCorrected(config); err != nil {
+	if err := requireManualHostRecoveryUnitInstalledCorrected(config, ""); err != nil {
 		return err
 	}
 	if err := reloadManualHostRecoveryUnitSystemd(ctx, config.Runner); err != nil {
@@ -99,7 +111,7 @@ func migrateManualHostRecoveryUnitForward(
 	if err != nil {
 		return err
 	}
-	if current.installed.digest != manualHostRecoveryUnitCorrectedDigest {
+	if !manualHostRecoveryUnitDigestIsCorrected(current.installed.digest) {
 		return errors.New("corrected Host recovery unit was not retained after daemon-reload")
 	}
 	for _, state := range current.effective {
@@ -118,7 +130,7 @@ func migrateManualHostRecoveryUnitForward(
 	if err != nil {
 		return err
 	}
-	if final.installed.digest != manualHostRecoveryUnitCorrectedDigest ||
+	if !manualHostRecoveryUnitDigestIsCorrected(final.installed.digest) ||
 		final.dropInDir.present ||
 		len(final.dropIns) != 0 ||
 		!manualHostRecoveryUnitEffectiveIsFinal(final.effective) {
@@ -151,7 +163,7 @@ func inspectManualHostRecoveryUnitMigration(
 	config manualHostRecoveryUnitMigrationConfig,
 ) (manualHostRecoveryUnitMigrationSnapshot, error) {
 	candidate, err := snapshotManualHostUpgradeFile(config.CandidatePath)
-	if err != nil || candidate.digest != manualHostRecoveryUnitCorrectedDigest ||
+	if err != nil || !manualHostRecoveryUnitDigestIsCorrected(candidate.digest) ||
 		candidate.info.Mode().Perm() != 0o644 ||
 		manualHostRecoveryUnitLinkCount(candidate.info) != 1 ||
 		(!config.AllowTestPaths && !manualHostRecoveryUnitRootOwned(candidate.info)) {
@@ -161,8 +173,8 @@ func inspectManualHostRecoveryUnitMigration(
 	}
 	installed, err := snapshotManualHostUpgradeFile(config.InstalledPath)
 	if err != nil ||
-		(installed.digest != manualHostRecoveryUnitLegacyDigest &&
-			installed.digest != manualHostRecoveryUnitCorrectedDigest) ||
+		(!manualHostRecoveryUnitDigestIsLegacy(installed.digest) &&
+			!manualHostRecoveryUnitDigestIsCorrected(installed.digest)) ||
 		installed.info.Mode().Perm() != 0o644 ||
 		manualHostRecoveryUnitLinkCount(installed.info) != 1 ||
 		(!config.AllowTestPaths && !manualHostRecoveryUnitRootOwned(installed.info)) {
@@ -187,7 +199,7 @@ func inspectManualHostRecoveryUnitMigration(
 			)
 		}
 		if state.needDaemonReload {
-			if installed.digest != manualHostRecoveryUnitCorrectedDigest ||
+			if !manualHostRecoveryUnitDigestIsCorrected(installed.digest) ||
 				!manualHostRecoveryUnitPathsAreKnown(state.dropInPaths, knownDropIns) {
 				return manualHostRecoveryUnitMigrationSnapshot{}, fmt.Errorf(
 					"%s requires an unexpected daemon-reload", state.unit,
@@ -351,7 +363,8 @@ func replaceManualHostRecoveryUnit(
 		return errors.New("close Host recovery unit staging file before replacement")
 	}
 	staged, err := snapshotManualHostUpgradeFile(temporaryPath)
-	if err != nil || staged.digest != manualHostRecoveryUnitCorrectedDigest ||
+	if err != nil || staged.digest != snapshot.candidate.digest ||
+		!manualHostRecoveryUnitDigestIsCorrected(staged.digest) ||
 		staged.info.Mode().Perm() != 0o644 ||
 		manualHostRecoveryUnitLinkCount(staged.info) != 1 ||
 		(!config.AllowTestPaths && !manualHostRecoveryUnitRootOwned(staged.info)) {
@@ -368,14 +381,20 @@ func replaceManualHostRecoveryUnit(
 	if err := config.SyncDirectory(filepath.Dir(config.InstalledPath)); err != nil {
 		return fmt.Errorf("sync corrected Host recovery unit replacement: %w", err)
 	}
-	return requireManualHostRecoveryUnitInstalledCorrected(config)
+	return requireManualHostRecoveryUnitInstalledCorrected(
+		config, snapshot.candidate.digest,
+	)
 }
 
 func requireManualHostRecoveryUnitInstalledCorrected(
 	config manualHostRecoveryUnitMigrationConfig,
+	expectedDigest string,
 ) error {
 	installed, err := snapshotManualHostUpgradeFile(config.InstalledPath)
-	if err != nil || installed.digest != manualHostRecoveryUnitCorrectedDigest ||
+	if err != nil || !manualHostRecoveryUnitDigestIsCorrected(installed.digest) ||
+		(expectedDigest != "" &&
+			(!manualHostRecoveryUnitDigestIsCorrected(expectedDigest) ||
+				installed.digest != expectedDigest)) ||
 		installed.info.Mode().Perm() != 0o644 ||
 		manualHostRecoveryUnitLinkCount(installed.info) != 1 ||
 		(!config.AllowTestPaths && !manualHostRecoveryUnitRootOwned(installed.info)) {

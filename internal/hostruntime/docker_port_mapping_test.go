@@ -789,7 +789,8 @@ func TestTrustedDockerSoftwareUpdatePreservesPortMappingDuringForcedRollback(t *
 	const newSource = "v1.6.0"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/version") {
-			_, _ = fmt.Fprintf(w, `{"version":%q}`, oldSource)
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = fmt.Fprintf(w, `{"version":%q,"service_id":"worker-01","service_type":"worker","config_revision":1}`, oldSource)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -820,8 +821,8 @@ func TestTrustedDockerSoftwareUpdatePreservesPortMappingDuringForcedRollback(t *
 		t.Fatal(err)
 	}
 	target := Target{
-		TargetID: "worker-01", HostID: "edge-01", ServiceType: "worker", DeploymentMode: ModeDocker,
-		HealthURL: server.URL + "/health", VersionURL: server.URL + "/version",
+		TargetID: "worker-01", HostID: "edge-01", ServiceType: "worker", DeploymentMode: ModeDocker, ConfigRevision: 1,
+		HealthURL: server.URL + "/health", VersionURL: server.URL + "/updater/version",
 		Docker: &DockerTarget{
 			DockerPath: filepath.Join(root, "docker"), ComposeProject: "autostream", ProjectDir: root,
 			ComposeFiles: []string{filepath.Join(root, "compose.yml")}, Service: "worker", ImageRepo: imageRepo,

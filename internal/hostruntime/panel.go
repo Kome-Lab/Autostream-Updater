@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"github.com/Kome-Lab/Autostream-Updater/internal/version"
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 type UpdateJob struct {
+	ProtocolVersion int                              `json:"protocol_version,omitempty"`
+	CommandID       string                           `json:"command_id,omitempty"`
 	ID              string                           `json:"id"`
 	Operation       string                           `json:"operation,omitempty"`
 	PortReconfigure *SystemdPortMutationGrantBinding `json:"port_reconfigure,omitempty"`
@@ -47,11 +50,14 @@ type UpdateJob struct {
 	ReportSequence   uint64 `json:"-"`
 	LeaseGeneration  uint64 `json:"lease_generation,omitempty"`
 	RecoveryRequired bool   `json:"recovery_required,omitempty"`
+	RecoveryClear    bool   `json:"-"`
 }
 
 const (
 	updateJobOperationSoftwareUpdate  = "software_update"
 	updateJobOperationPortReconfigure = "port_reconfigure"
+	updateJobOperationBootstrap       = "bootstrap"
+	updateJobOperationHostSelfUpdate  = "host_self_update"
 )
 
 func (j UpdateJob) EffectiveOperation() string {
@@ -73,6 +79,10 @@ func (j UpdateJob) validateOperationUnion() error {
 			j.PortReconfigure == nil ||
 			j.PortReconfigure.validatePortJobContract(j.DeploymentMode) != nil {
 			return errors.New("port reconfiguration job contract is invalid")
+		}
+	case updateJobOperationBootstrap, updateJobOperationHostSelfUpdate:
+		if j.ProtocolVersion != 2 || j.PortReconfigure != nil {
+			return errors.New("v2 updater job contract is invalid")
 		}
 	default:
 		return errors.New("update job operation is invalid")
@@ -258,8 +268,9 @@ type MutationGrantRequest struct {
 }
 
 type MutationGrant struct {
-	Token     string `json:"grant_token"`
-	ExpiresAt string `json:"expires_at"`
+	Token     string                                 `json:"grant_token"`
+	ExpiresAt string                                 `json:"expires_at"`
+	V2Binding *contracts.UpdaterMutationGrantBinding `json:"-"`
 }
 
 type PanelClient struct {
@@ -471,7 +482,10 @@ func IsPermanentReportError(err error) bool {
 	if !errors.As(err, &httpErr) {
 		return false
 	}
-	return httpErr.Status == http.StatusNotFound || (httpErr.Status == http.StatusConflict && (httpErr.Code == "system_update_lease_invalid" || httpErr.Code == "system_update_sequence_stale"))
+	return httpErr.Status == http.StatusNotFound ||
+		(httpErr.Status == http.StatusConflict && (httpErr.Code == "system_update_lease_invalid" ||
+			httpErr.Code == "system_update_sequence_stale" || httpErr.Code == "stale_generation" ||
+			httpErr.Code == "stale_fence"))
 }
 
 var errNoContent = errors.New("no content")

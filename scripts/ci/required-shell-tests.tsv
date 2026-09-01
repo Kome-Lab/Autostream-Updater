@@ -1,0 +1,5 @@
+HostAgentIdentityPermissionsSmoke	scripts/ci/run-host-agent-identity-permissions-smoke.sh
+HostAgentInstallerPrepareFailureInjectionSmoke	scripts/ci/run-host-agent-installer-prepare-smoke.sh
+HostAgentInstallerUpgradeRollbackPreservationSmoke	scripts/ci/run-host-agent-installer-upgrade-smoke.sh
+LocalExecutorInstallerUninstallPreservationSmoke	scripts/ci/run-local-executor-installer-smoke.sh
+LocalExecutorSystemdSandboxNegativeSmoke	scripts/ci/run-local-executor-systemd-sandbox-smoke.sh

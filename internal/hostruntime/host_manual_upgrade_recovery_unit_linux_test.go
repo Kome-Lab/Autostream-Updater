@@ -69,6 +69,60 @@ func TestMigrateManualHostRecoveryUnitCorrectedNoOp(t *testing.T) {
 	}
 }
 
+func TestMigrateManualHostRecoveryUnitControlPanelLegacy(t *testing.T) {
+	fixture := newManualHostRecoveryUnitFixture(
+		t, controlPanelLegacyManualHostRecoveryUnitBytes(t),
+	)
+	if err := migrateManualHostRecoveryUnitForward(
+		context.Background(), fixture.config(),
+	); err != nil {
+		t.Fatalf("migrateManualHostRecoveryUnitForward: %v", err)
+	}
+	assertManualHostRecoveryUnitConverged(t, fixture)
+	if fixture.runner.reloads != 2 {
+		t.Fatalf("daemon-reload calls=%d, want 2", fixture.runner.reloads)
+	}
+}
+
+func TestMigrateManualHostRecoveryUnitControlPanelCorrectedNoOp(t *testing.T) {
+	corrected := controlPanelCorrectedManualHostRecoveryUnitBytes(t)
+	fixture := newManualHostRecoveryUnitFixture(t, corrected)
+	if err := migrateManualHostRecoveryUnitForward(
+		context.Background(), fixture.config(),
+	); err != nil {
+		t.Fatalf("migrateManualHostRecoveryUnitForward: %v", err)
+	}
+	installed, err := os.ReadFile(fixture.installedPath)
+	if err != nil || string(installed) != string(corrected) {
+		t.Fatalf("Control Panel corrected recovery unit changed: err=%v", err)
+	}
+	if fixture.runner.reloads != 0 {
+		t.Fatalf("daemon-reload calls=%d, want 0", fixture.runner.reloads)
+	}
+}
+
+func TestMigrateManualHostRecoveryUnitControlPanelCandidate(t *testing.T) {
+	corrected := controlPanelCorrectedManualHostRecoveryUnitBytes(t)
+	fixture := newManualHostRecoveryUnitFixture(
+		t, controlPanelLegacyManualHostRecoveryUnitBytes(t),
+	)
+	if err := os.WriteFile(fixture.candidatePath, corrected, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateManualHostRecoveryUnitForward(
+		context.Background(), fixture.config(),
+	); err != nil {
+		t.Fatalf("migrateManualHostRecoveryUnitForward: %v", err)
+	}
+	installed, err := os.ReadFile(fixture.installedPath)
+	if err != nil || string(installed) != string(corrected) {
+		t.Fatalf("Control Panel recovery candidate was not retained: err=%v", err)
+	}
+	if fixture.runner.reloads != 2 {
+		t.Fatalf("daemon-reload calls=%d, want 2", fixture.runner.reloads)
+	}
+}
+
 func TestMigrateManualHostRecoveryUnitRemovesEmptyKnownDropInDirectory(
 	t *testing.T,
 ) {
@@ -234,7 +288,7 @@ func TestMigrateManualHostRecoveryUnitRejectsHardlinkAddedAfterSnapshot(
 			}
 			installed, readErr := os.ReadFile(fixture.installedPath)
 			if readErr != nil || manualHostRecoveryUnitDigest(installed) !=
-				manualHostRecoveryUnitLegacyDigest {
+				manualHostRecoveryUnitUpdaterLegacyDigest {
 				t.Fatalf("post-snapshot hardlink changed base err=%v", readErr)
 			}
 		})
@@ -540,7 +594,7 @@ func correctedManualHostRecoveryUnitBytes(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	if got := manualHostRecoveryUnitDigest(data); got !=
-		"d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd" {
+		manualHostRecoveryUnitUpdaterCorrectedDigest {
 		t.Fatalf("production recovery unit digest=%s", got)
 	}
 	return data
@@ -548,7 +602,54 @@ func correctedManualHostRecoveryUnitBytes(t *testing.T) []byte {
 
 func legacyManualHostRecoveryUnitBytes(t *testing.T) []byte {
 	t.Helper()
-	corrected := string(correctedManualHostRecoveryUnitBytes(t))
+	data := legacyManualHostRecoveryUnitBytesFromCorrected(
+		t, correctedManualHostRecoveryUnitBytes(t),
+	)
+	if got := manualHostRecoveryUnitDigest(data); got !=
+		manualHostRecoveryUnitUpdaterLegacyDigest {
+		t.Fatalf("Updater legacy recovery unit digest=%s", got)
+	}
+	return data
+}
+
+func controlPanelCorrectedManualHostRecoveryUnitBytes(t *testing.T) []byte {
+	t.Helper()
+	updater := string(correctedManualHostRecoveryUnitBytes(t))
+	corrected := strings.Replace(
+		updater,
+		"Documentation=https://github.com/Kome-Lab/Autostream-Updater\n",
+		"Documentation=https://github.com/Kome-Lab/Autostream-ControlPanel\n",
+		1,
+	)
+	if corrected == updater {
+		t.Fatal("failed to construct Control Panel recovery unit")
+	}
+	data := []byte(corrected)
+	if got := manualHostRecoveryUnitDigest(data); got !=
+		manualHostRecoveryUnitControlPanelCorrectedDigest {
+		t.Fatalf("Control Panel corrected recovery unit digest=%s", got)
+	}
+	return data
+}
+
+func controlPanelLegacyManualHostRecoveryUnitBytes(t *testing.T) []byte {
+	t.Helper()
+	data := legacyManualHostRecoveryUnitBytesFromCorrected(
+		t, controlPanelCorrectedManualHostRecoveryUnitBytes(t),
+	)
+	if got := manualHostRecoveryUnitDigest(data); got !=
+		manualHostRecoveryUnitControlPanelLegacyDigest {
+		t.Fatalf("Control Panel legacy recovery unit digest=%s", got)
+	}
+	return data
+}
+
+func legacyManualHostRecoveryUnitBytesFromCorrected(
+	t *testing.T,
+	correctedBytes []byte,
+) []byte {
+	t.Helper()
+	corrected := string(correctedBytes)
 	legacy := strings.Replace(
 		corrected,
 		"ConditionPathExists=/var/lib/autostream-local-executor/host-self-update/state.json\n"+
@@ -559,12 +660,7 @@ func legacyManualHostRecoveryUnitBytes(t *testing.T) []byte {
 	if legacy == corrected {
 		t.Fatal("production recovery unit does not contain corrected guard sequence")
 	}
-	data := []byte(legacy)
-	if got := manualHostRecoveryUnitDigest(data); got !=
-		"751c69c970407b4873d403971a192b33320d44b352aba58a9ab56c2fa1e1309c" {
-		t.Fatalf("legacy recovery unit digest=%s", got)
-	}
-	return data
+	return []byte(legacy)
 }
 
 func manualHostRecoveryUnitDigest(data []byte) string {
@@ -582,7 +678,7 @@ func assertManualHostRecoveryUnitConverged(
 		t.Fatal(err)
 	}
 	if got := manualHostRecoveryUnitDigest(installed); got !=
-		"d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd" {
+		manualHostRecoveryUnitUpdaterCorrectedDigest {
 		t.Fatalf("installed recovery unit digest=%s", got)
 	}
 }
