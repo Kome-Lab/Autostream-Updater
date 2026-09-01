@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically recover an unverified AutoStream Host Agent A/B update for slot %i
+Documentation=https://github.com/Kome-Lab/Autostream-Updater
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=15s
+AccuracySec=1s
+RandomizedDelaySec=2s
+Persistent=true
+Unit=autostream-host-self-update-recovery@%i.service
+
+[Install]
+WantedBy=timers.target

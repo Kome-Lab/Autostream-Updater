@@ -1,0 +1,38 @@
+{
+  "schema_version": 2,
+  "protocol_version": 2,
+  "host_id": "replace-with-execution-host-id",
+  "agent_uid": 12345,
+  "agent_gid": 12345,
+  "socket_path": "/run/autostream-local-executor/executor.sock",
+  "source_policy_revision": 1,
+  "projection_revision": 1,
+  "policy_revision": 1,
+  "mutation": {
+    "panel_url": "https://control.example.com"
+  },
+  "targets": [
+    {
+      "service_id": "replace-with-worker-service-id",
+      "service_type": "worker",
+      "deployment_mode": "systemd",
+      "endpoint_revision": 1,
+      "config_revision": 1,
+      "config_sha256": "sha256:abd22ff855895ba4c67b6ebdccd98e7f45916d8e96d05c3708614648c639d6ee",
+      "local_listen_endpoint": {
+        "host": "127.0.0.1",
+        "port": 8084
+      },
+      "systemd": {
+        "systemctl_path": "/usr/bin/systemctl",
+        "runuser_path": "/usr/sbin/runuser",
+        "smoke_user": "autostream",
+        "unit": "autostream-worker.service",
+        "release_root": "/opt/autostream/worker/releases",
+        "current_link": "/opt/autostream/worker/current",
+        "binary_path": "bin/autostream-worker",
+        "required_paths": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+[Unit]
+Description=AutoStream root-owned bounded local update executor
+Documentation=https://github.com/Kome-Lab/Autostream-Updater
+Requires=autostream-local-executor.socket
+After=autostream-local-executor.socket systemd-tmpfiles-setup.service
+
+[Service]
+Type=simple
+# Inherit the system manager's root identity. An explicit User=root/Group=root
+# can remove CAP_SETUID from the effective set on systemd 255, while this
+# policy-bounded executor needs it only to run candidate smoke checks via
+# /usr/sbin/runuser.
+ExecStart=/usr/local/libexec/autostream-local-executor run --policy /etc/autostream-local-executor/policy.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=control-group
+UMask=0077
+Environment=HOME=/
+Environment=DOCKER_CONFIG=/etc/autostream-local-executor/docker
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SETUID CAP_SETGID
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SocketBindDeny=any
+InaccessiblePaths=/etc/autostream
+ReadOnlyPaths=/etc/autostream-local-executor
+ReadWritePaths=/etc/autostream-host-agent
+ReadWritePaths=/var/lib/autostream-local-executor
+ReadWritePaths=-/opt/autostream/control-panel
+ReadWritePaths=-/opt/autostream/worker
+ReadWritePaths=-/opt/autostream/encoder-recorder
+ReadWritePaths=-/opt/autostream/discord-bot
+ReadWritePaths=-/opt/autostream/observability
+ReadWritePaths=-/opt/autostream/host-agent
+ReadWritePaths=-/opt/autostream/local-executor
+ReadWritePaths=-/var/backups/autostream/control-panel
+ReadWritePaths=-/var/backups/autostream/observability
+StateDirectory=autostream-local-executor
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

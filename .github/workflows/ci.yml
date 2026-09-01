@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: updater-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOMAXPROCS: "2"
+  GOTOOLCHAIN: local
+
+jobs:
+  go:
+    name: Go, boundaries, and cross-build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Verify generated module state
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Verify formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t go_files < <(find cmd internal -type f -name '*.go' -print | sort)
+          unformatted="$(gofmt -l "${go_files[@]}")"
+          test -z "${unformatted}" || {
+            printf 'Unformatted Go files:\n%s\n' "${unformatted}" >&2
+            exit 1
+          }
+      - name: Test
+        run: go test -p 1 ./...
+      - name: Vet
+        run: go vet -p 1 ./...
+      - name: Build production entrypoints
+        run: go build -p 1 ./cmd/autostream-updater-agent ./cmd/autostream-local-executor
+      - name: Cross-build Linux production entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/updater-cross-build"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+              go build -p 1 -trimpath \
+                -o "${RUNNER_TEMP}/updater-cross-build/autostream-host-agent-${arch}" \
+                ./cmd/autostream-updater-agent
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+              go build -p 1 -trimpath \
+                -o "${RUNNER_TEMP}/updater-cross-build/autostream-local-executor-${arch}" \
+                ./cmd/autostream-local-executor
+          done
+      - name: Check installer syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in install/install-* install/uninstall-*; do
+            bash -n "${script}"
+          done
+      - name: Verify systemd unit syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          units="${RUNNER_TEMP}/updater-units"
+          mkdir -p "${units}"
+          cp systemd/autostream-updater-agent.service.example "${units}/autostream-host-agent.service"
+          cp systemd/autostream-local-executor.service.example "${units}/autostream-local-executor.service"
+          cp systemd/autostream-local-executor.socket.example "${units}/autostream-local-executor.socket"
+          cp systemd/autostream-updater-self-update-recovery@.service.example "${units}/autostream-host-self-update-recovery@.service"
+          cp systemd/autostream-updater-self-update-recovery@.timer.example "${units}/autostream-host-self-update-recovery@.timer"
+          SYSTEMD_UNIT_PATH="${units}" systemd-analyze verify \
+            "${units}/autostream-host-agent.service" \
+            "${units}/autostream-local-executor.service" \
+            "${units}/autostream-local-executor.socket" \
+            "${units}/autostream-host-self-update-recovery@.service" \
+            "${units}/autostream-host-self-update-recovery@.timer"
+
+  root-fixture:
+    name: Linux root-owned runtime fixture
+    runs-on: ubuntu-24.04
+    needs: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Run bounded root fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_binary="${RUNNER_TEMP}/hostruntime-root.test"
+          scratch="${RUNNER_TEMP}/hostruntime-root"
+          go test -c -p 1 ./internal/hostruntime -o "${test_binary}"
+          getent group autostream-host-agent >/dev/null 2>&1 || sudo groupadd --system autostream-host-agent
+          getent group autostream-updater >/dev/null 2>&1 || sudo groupadd --system autostream-updater
+          sudo install -d -o root -g root -m 0700 "${scratch}"
+          sudo /usr/bin/env -i \
+            HOME=/root \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            TMPDIR="${scratch}" \
+            "${test_binary}" \
+            -test.run '^(TestHostAgentConfigurationTransaction.*|TestManualHostUpgradeLocksFenceLegacyUpdateHostInstaller|TestAcquireManualHostUpgradeTargetLocksInteroperatesWithLegacyTargetLock|TestHostRuntimeSetupAndLifecycleLocksUsePermanentStrongInodes)$' \
+            -test.count=1 \
+            -test.timeout=10m
+
+  docker-fixture:
+    name: Linux root Docker mutation fixture
+    runs-on: ubuntu-24.04
+    needs: go
+    env:
+      AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Run bounded Docker daemon fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_binary="${RUNNER_TEMP}/hostruntime-docker.test"
+          fixture_binary="${RUNNER_TEMP}/docker-port-fixture"
+          root_tmp="${RUNNER_TEMP}/docker-port-root-tmp"
+          root_cache="${RUNNER_TEMP}/docker-port-root-gocache"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -p 1 -trimpath -o "${fixture_binary}" \
+              ./internal/hostruntime/testdata/docker-port-fixture
+          go test -c -p 1 ./internal/hostruntime -o "${test_binary}"
+          sudo install -d -o root -g root -m 0700 "${root_tmp}" "${root_cache}"
+          sudo --preserve-env=AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE \
+            /usr/bin/unshare --mount --propagation private \
+            /usr/bin/env \
+              AUTOSTREAM_DOCKER_PORT_DAEMON_SMOKE_MOUNT_NS=1 \
+              AUTOSTREAM_DOCKER_PORT_FIXTURE_BINARY="${fixture_binary}" \
+              HOME=/root \
+              PATH="${PATH}" \
+              GOCACHE="${root_cache}" \
+              TMPDIR="${root_tmp}" \
+              "${test_binary}" \
+              -test.run '^TestDockerPortDaemonSmoke$' \
+              -test.count=1 \
+              -test.timeout=15m

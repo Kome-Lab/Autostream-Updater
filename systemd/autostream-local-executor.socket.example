@@ -1,0 +1,18 @@
+[Unit]
+Description=AutoStream local executor Unix socket
+Documentation=https://github.com/Kome-Lab/Autostream-Updater
+After=systemd-tmpfiles-setup.service
+Requires=systemd-tmpfiles-setup.service
+
+[Socket]
+ListenStream=/run/autostream-local-executor/executor.sock
+FileDescriptorName=autostream-local-executor
+SocketUser=root
+SocketGroup=autostream-host-agent
+SocketMode=0660
+DirectoryMode=0750
+RemoveOnStop=true
+Service=autostream-local-executor.service
+
+[Install]
+WantedBy=sockets.target

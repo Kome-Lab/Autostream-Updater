@@ -1,0 +1,2 @@
+d /run/autostream-local-executor 0750 root autostream-host-agent -
+d /run/autostream-updater 0700 root root -

@@ -1,0 +1,1414 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly AGENT_USER="autostream-host-agent"
+readonly AGENT_GROUP="autostream-host-agent"
+readonly CONFIG_DIR="/etc/autostream-local-executor"
+readonly POLICY_DEST="${CONFIG_DIR}/policy.json"
+readonly BINARY_DEST="/usr/local/libexec/autostream-local-executor"
+readonly SERVICE_DEST="/etc/systemd/system/autostream-local-executor.service"
+readonly SOCKET_DEST="/etc/systemd/system/autostream-local-executor.socket"
+readonly TMPFILES_DEST="/etc/tmpfiles.d/autostream-local-executor.conf"
+readonly SERVICE_NAME="autostream-local-executor.service"
+readonly SOCKET_NAME="autostream-local-executor.socket"
+readonly HOST_AGENT_SERVICE_NAME="autostream-host-agent.service"
+readonly SOCKET_DIR="/run/autostream-local-executor"
+readonly UPDATER_RUNTIME_DIR="/run/autostream-updater"
+readonly SHARED_HOST_SETUP_LOCK="${UPDATER_RUNTIME_DIR}/.autostream-runtime-host-setup.lock"
+readonly HOST_LIFECYCLE_LOCK="${UPDATER_RUNTIME_DIR}/.autostream-host-lifecycle.lock"
+readonly STATE_DIR="/var/lib/autostream-local-executor"
+readonly DOCKER_CONFIG_DIR="${CONFIG_DIR}/docker"
+readonly DOCKER_CONFIG_FILE="${DOCKER_CONFIG_DIR}/config.json"
+readonly EXECUTOR_DATA_DIR="/opt/autostream/local-executor"
+readonly PORT_CONFIG_DIR="${EXECUTOR_DATA_DIR}/ports"
+readonly DOCKER_VERSION_DIR="${EXECUTOR_DATA_DIR}/docker"
+readonly DOCKER_PORT_CONFIG_DIR="${DOCKER_VERSION_DIR}/ports"
+readonly HOST_RUNTIME_ROOT="/opt/autostream/host-agent"
+readonly HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"
+readonly ARTIFACT_MANIFEST_NAME="artifact-manifest.json"
+readonly MAX_ARCHIVE_SIZE=268435456
+
+usage() {
+  printf '%s\n' "Usage: install-autostream-local-executor --policy PATH"
+}
+
+die() {
+  printf 'install-autostream-local-executor: %s\n' "$*" >&2
+  exit 1
+}
+
+pending_cleanup_signal=""
+
+defer_cleanup_signals() {
+  trap 'pending_cleanup_signal=INT' INT
+  trap 'pending_cleanup_signal=TERM' TERM
+}
+
+resume_cleanup_signals() {
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  local deferred_signal=${pending_cleanup_signal}
+  pending_cleanup_signal=""
+  case "${deferred_signal}" in
+    "") return 0 ;;
+    INT) return 130 ;;
+    TERM) return 143 ;;
+    *) return 1 ;;
+  esac
+}
+
+arm_cleanup_handler() {
+  local handler=$1
+  trap "${handler}" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+validate_root_parent_chain() {
+  local label=${2:-policy source}
+  local current
+  local parent
+  local mode
+  current=$(dirname -- "$1")
+  while true; do
+    [[ -d ${current} && ! -L ${current} ]] || die "${label} parents must be non-symlink directories"
+    [[ $(stat -c '%U:%G' -- "${current}") == "root:root" ]] || \
+      die "${label} parents must be owned by root:root"
+    mode=$(stat -c '%a' -- "${current}")
+    (( (8#${mode} & 0022) == 0 )) || \
+      die "${label} parents must not be writable by group or other"
+    parent=$(dirname -- "${current}")
+    [[ ${parent} == "${current}" ]] && break
+    current=${parent}
+  done
+}
+
+acquire_shared_host_setup_lock() {
+  local directory_identity
+  local fd_identity
+  local lock_created=false
+
+  # The published lock path is permanent coordination state. Never unlink it:
+  # doing so while another process holds the old inode would split the lock.
+  validate_root_parent_chain "${UPDATER_RUNTIME_DIR}" "shared host-setup lock"
+  if [[ -e ${UPDATER_RUNTIME_DIR} || -L ${UPDATER_RUNTIME_DIR} ]]; then
+    [[ -d ${UPDATER_RUNTIME_DIR} &&
+      ! -L ${UPDATER_RUNTIME_DIR} &&
+      $(readlink -f -- "${UPDATER_RUNTIME_DIR}") == "${UPDATER_RUNTIME_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${UPDATER_RUNTIME_DIR}") == "root:root:700" ]] || \
+      die "shared host-setup lock directory is unsafe"
+  else
+    install -d -o root -g root -m 0700 "${UPDATER_RUNTIME_DIR}" || \
+      die "could not create the shared host-setup lock directory"
+    [[ -d ${UPDATER_RUNTIME_DIR} &&
+      ! -L ${UPDATER_RUNTIME_DIR} &&
+      $(readlink -f -- "${UPDATER_RUNTIME_DIR}") == "${UPDATER_RUNTIME_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${UPDATER_RUNTIME_DIR}") == "root:root:700" ]] || \
+      die "could not create a safe shared host-setup lock directory"
+    sync -f /run
+  fi
+  validate_root_parent_chain "${SHARED_HOST_SETUP_LOCK}" "shared host-setup lock"
+  directory_identity="$(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}")" || \
+    die "could not record the shared host-setup lock directory identity"
+
+  if [[ -e ${SHARED_HOST_SETUP_LOCK} || -L ${SHARED_HOST_SETUP_LOCK} ]]; then
+    [[ -f ${SHARED_HOST_SETUP_LOCK} &&
+      ! -L ${SHARED_HOST_SETUP_LOCK} &&
+      $(readlink -f -- "${SHARED_HOST_SETUP_LOCK}") == "${SHARED_HOST_SETUP_LOCK}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" ]] || \
+      die "shared host-setup lock path is unsafe"
+  else
+    lock_created=true
+  fi
+  exec 8<>"${SHARED_HOST_SETUP_LOCK}" || die "could not open the shared host-setup lock"
+  fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)" || \
+    die "could not record the shared host-setup lock identity"
+  [[ $(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}") == "${directory_identity}" &&
+    -f ${SHARED_HOST_SETUP_LOCK} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK} &&
+    -f /proc/self/fd/8 &&
+    $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/8) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK}")" ]] || \
+    die "shared host-setup lock identity changed while being opened"
+  if [[ ${lock_created} == true ]]; then
+    sync -f "${UPDATER_RUNTIME_DIR}"
+  fi
+  flock -n 8 || die "another AutoStream installer is provisioning shared host state"
+  [[ $(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}") == "${directory_identity}" &&
+    -f ${SHARED_HOST_SETUP_LOCK} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK} &&
+    -f /proc/self/fd/8 &&
+    $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/8) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK}")" ]] || \
+    die "shared host-setup lock identity changed after acquisition"
+}
+
+acquire_host_lifecycle_lock() {
+  local directory_identity
+  local fd_identity
+  local lock_created=false
+
+  validate_root_parent_chain "${HOST_LIFECYCLE_LOCK}" "Host lifecycle lock"
+  [[ -d ${UPDATER_RUNTIME_DIR} &&
+    ! -L ${UPDATER_RUNTIME_DIR} &&
+    $(readlink -f -- "${UPDATER_RUNTIME_DIR}") == "${UPDATER_RUNTIME_DIR}" &&
+    $(stat -c '%U:%G:%a' -- "${UPDATER_RUNTIME_DIR}") == "root:root:700" ]] || \
+    die "Host lifecycle lock directory is unsafe"
+  directory_identity="$(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}")" || \
+    die "could not record the Host lifecycle lock directory identity"
+
+  if [[ -e ${HOST_LIFECYCLE_LOCK} || -L ${HOST_LIFECYCLE_LOCK} ]]; then
+    [[ -f ${HOST_LIFECYCLE_LOCK} &&
+      ! -L ${HOST_LIFECYCLE_LOCK} &&
+      $(readlink -f -- "${HOST_LIFECYCLE_LOCK}") == "${HOST_LIFECYCLE_LOCK}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" ]] || \
+      die "Host lifecycle lock path is unsafe"
+  else
+    lock_created=true
+  fi
+  exec 9<>"${HOST_LIFECYCLE_LOCK}" || die "could not open the Host lifecycle lock"
+  fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)" || \
+    die "could not record the Host lifecycle lock identity"
+  [[ $(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}") == "${directory_identity}" &&
+    -f ${HOST_LIFECYCLE_LOCK} &&
+    ! -L ${HOST_LIFECYCLE_LOCK} &&
+    -f /proc/self/fd/9 &&
+    $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/9) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${HOST_LIFECYCLE_LOCK}")" ]] || \
+    die "Host lifecycle lock identity changed while being opened"
+  if [[ ${lock_created} == true ]]; then
+    sync -f "${UPDATER_RUNTIME_DIR}"
+  fi
+  flock -n 9 || die "another privileged Host lifecycle operation is active"
+  [[ $(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}") == "${directory_identity}" &&
+    -f ${HOST_LIFECYCLE_LOCK} &&
+    ! -L ${HOST_LIFECYCLE_LOCK} &&
+    -f /proc/self/fd/9 &&
+    $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/9) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${HOST_LIFECYCLE_LOCK}")" ]] || \
+    die "Host lifecycle lock identity changed after acquisition"
+}
+
+policy_source=
+case "${1:-}" in
+  --policy)
+    [[ $# -eq 2 ]] || {
+      usage >&2
+      exit 1
+    }
+    policy_source=$2
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
+
+for command in awk basename chmod chown dirname find flock getent id install jq mkdir mktemp mv pwd readlink rm rmdir sha256sum sort stat sync systemctl systemd-tmpfiles tar uname uniq; do
+  command -v "${command}" >/dev/null 2>&1 || die "required command ${command} is unavailable"
+done
+
+[[ ${EUID} -eq 0 ]] || die "must run as root"
+[[ ${policy_source} == /* ]] || die "--policy must be an absolute path"
+[[ -f ${policy_source} && ! -L ${policy_source} ]] || die "policy source must be a regular non-symlink file"
+validate_root_parent_chain "${policy_source}"
+[[ $(stat -c '%U:%G:%a' -- "${policy_source}") == "root:root:600" ]] || \
+  die "policy source must be root:root 0600"
+
+readonly RELEASE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+ARTIFACT_ID="$(basename -- "${RELEASE_ROOT}")" || die "could not resolve the Host Agent release directory name"
+readonly ARTIFACT_ID
+if [[ ! ${ARTIFACT_ID} =~ ^autostream-host-agent_(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?)_linux_(amd64|arm64)$ ]]; then
+  die "the extracted Host Agent directory name is invalid: ${ARTIFACT_ID}"
+fi
+readonly VERSION="${BASH_REMATCH[1]}"
+readonly ARCH="${BASH_REMATCH[4]}"
+case "$(uname -m)" in
+  x86_64) readonly HOST_ARCH="amd64" ;;
+  aarch64|arm64) readonly HOST_ARCH="arm64" ;;
+  *) die "unsupported host architecture: $(uname -m)" ;;
+esac
+[[ ${ARCH} == "${HOST_ARCH}" ]] || \
+  die "artifact architecture ${ARCH} does not match host ${HOST_ARCH}"
+
+ARTIFACT_PARENT="$(dirname -- "${RELEASE_ROOT}")" || die "could not resolve the release parent directory"
+readonly ARTIFACT_PARENT
+readonly ARCHIVE_NAME="${ARTIFACT_ID}.tar.gz"
+readonly ARCHIVE_SOURCE="${ARTIFACT_PARENT}/${ARCHIVE_NAME}"
+readonly RUNNING_INSTALLER_SOURCE="${RELEASE_ROOT}/install/install-autostream-local-executor"
+readonly RUNNING_HOST_BINARY_SOURCE="${RELEASE_ROOT}/bin/autostream-host-agent"
+readonly RUNNING_BINARY_SOURCE="${RELEASE_ROOT}/bin/autostream-local-executor"
+readonly RUNNING_SERVICE_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.service"
+readonly RUNNING_SOCKET_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.socket"
+readonly RUNNING_TMPFILES_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.tmpfiles"
+
+validate_root_owned_release_source() {
+  local source=$1
+  local source_mode
+  [[ -f ${source} && ! -L ${source} ]] || die "release asset ${source} is missing or unsafe"
+  [[ $(stat -c '%U:%G' -- "${source}") == "root:root" ]] || \
+    die "release asset ${source} must be owned by root:root"
+  source_mode=$(stat -c '%a' -- "${source}")
+  (( (8#${source_mode} & 0022) == 0 )) || \
+    die "release asset ${source} must not be writable by group or other"
+  validate_root_parent_chain "${source}" "release source"
+}
+
+for source in \
+  "${RUNNING_INSTALLER_SOURCE}" \
+  "${RUNNING_HOST_BINARY_SOURCE}" \
+  "${RUNNING_BINARY_SOURCE}" \
+  "${RUNNING_SERVICE_SOURCE}" \
+  "${RUNNING_SOCKET_SOURCE}" \
+  "${RUNNING_TMPFILES_SOURCE}" \
+  "${ARCHIVE_SOURCE}"; do
+  validate_root_owned_release_source "${source}"
+done
+
+ARTIFACT_SOURCE_SIZE="$(stat -c %s -- "${ARCHIVE_SOURCE}")" || \
+  die "could not determine the source archive size"
+[[ ${ARTIFACT_SOURCE_SIZE} =~ ^[1-9][0-9]*$ ]] || die "source archive size is invalid"
+[[ ${ARTIFACT_SOURCE_SIZE} -le ${MAX_ARCHIVE_SIZE} ]] || \
+  die "source archive exceeds the ${MAX_ARCHIVE_SIZE}-byte limit"
+readonly ARTIFACT_SOURCE_SIZE
+
+BUNDLE_STAGE=""
+cleanup_bundle_stage() {
+  local status=$?
+  trap '' INT TERM
+  trap - EXIT
+  if [[ -n ${BUNDLE_STAGE:-} &&
+    ${BUNDLE_STAGE} == /var/tmp/autostream-local-executor-install.* &&
+    -d ${BUNDLE_STAGE} &&
+    ! -L ${BUNDLE_STAGE} ]]; then
+    rm -rf -- "${BUNDLE_STAGE}"
+  fi
+  exit "${status}"
+}
+arm_cleanup_handler cleanup_bundle_stage
+
+defer_cleanup_signals
+BUNDLE_STAGE="$(mktemp -d /var/tmp/autostream-local-executor-install.XXXXXXXX)" || \
+  die "could not create the private bundle staging directory"
+resume_cleanup_signals || die "installation was interrupted while creating the private bundle stage"
+[[ -n ${BUNDLE_STAGE} &&
+  ${BUNDLE_STAGE} == /var/tmp/autostream-local-executor-install.* &&
+  -d ${BUNDLE_STAGE} &&
+  ! -L ${BUNDLE_STAGE} ]] || die "private bundle staging directory is invalid"
+[[ $(readlink -f -- "${BUNDLE_STAGE}") == "${BUNDLE_STAGE}" &&
+  $(stat -c '%U:%G:%a' -- "${BUNDLE_STAGE}") == "root:root:700" ]] || \
+  die "private bundle staging directory ownership, mode, or canonical path is invalid"
+readonly BUNDLE_STAGE
+readonly UNPACK_DIR="${BUNDLE_STAGE}/unpack"
+
+install -d -o root -g root -m 0700 "${UNPACK_DIR}"
+
+copy_stable_bundle_archive() {
+  local source_identity
+  local source_sha256
+  source_identity="$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${ARCHIVE_SOURCE}")"
+  source_sha256="$(sha256sum -- "${ARCHIVE_SOURCE}" | awk 'NR == 1 { print $1 }')"
+  install -o root -g root -m 0600 "${ARCHIVE_SOURCE}" "${BUNDLE_STAGE}/${ARCHIVE_NAME}"
+  validate_root_owned_release_source "${ARCHIVE_SOURCE}"
+  [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${ARCHIVE_SOURCE}") == "${source_identity}" ]] || \
+    die "bundle archive identity changed while it was copied"
+  [[ $(sha256sum -- "${ARCHIVE_SOURCE}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "bundle archive content changed while it was copied"
+  [[ $(sha256sum -- "${BUNDLE_STAGE}/${ARCHIVE_NAME}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "staged bundle archive differs from its source"
+}
+
+copy_stable_bundle_archive
+ARTIFACT_SHA256="$(
+  sha256sum -- "${BUNDLE_STAGE}/${ARCHIVE_NAME}" | awk 'NR == 1 { print $1 }'
+)" || die "could not calculate the bundle archive digest"
+[[ ${ARTIFACT_SHA256} =~ ^[0-9a-f]{64}$ ]] || die "bundle archive digest is invalid"
+readonly ARTIFACT_SHA256
+ARTIFACT_SIZE="$(stat -c %s -- "${BUNDLE_STAGE}/${ARCHIVE_NAME}")" || \
+  die "could not determine the staged archive size"
+[[ ${ARTIFACT_SIZE} =~ ^[1-9][0-9]*$ ]] || die "staged archive size is invalid"
+[[ ${ARTIFACT_SIZE} -le ${MAX_ARCHIVE_SIZE} ]] || \
+  die "staged archive exceeds the ${MAX_ARCHIVE_SIZE}-byte limit"
+[[ ${ARTIFACT_SIZE} == "${ARTIFACT_SOURCE_SIZE}" ]] || \
+  die "staged bundle archive size differs from its source"
+readonly ARTIFACT_SIZE
+
+tar -tzf "${BUNDLE_STAGE}/${ARCHIVE_NAME}" > "${BUNDLE_STAGE}/archive.list"
+[[ -s ${BUNDLE_STAGE}/archive.list ]] || die "bundle archive is empty"
+while IFS= read -r entry; do
+  [[ ${entry} == "${ARTIFACT_ID}" || ${entry} == "${ARTIFACT_ID}/" ||
+    ${entry} == "${ARTIFACT_ID}/"* ]] || \
+    die "bundle archive contains a path outside ${ARTIFACT_ID}: ${entry}"
+  [[ ${entry} != /* &&
+    ${entry} != *\\* &&
+    ${entry} != ../* &&
+    ${entry} != *"/../"* &&
+    ${entry} != *"/.." &&
+    ${entry} != *"/./"* &&
+    ${entry} != *"/." &&
+    ${entry} != *"//"* ]] || \
+    die "bundle archive contains an unsafe path: ${entry}"
+done < "${BUNDLE_STAGE}/archive.list"
+duplicate_paths="$(
+  awk '{ sub(/\/$/, ""); print }' "${BUNDLE_STAGE}/archive.list" |
+    LC_ALL=C sort |
+    uniq -d
+)"
+[[ -z ${duplicate_paths} ]] || die "bundle archive contains duplicate paths"
+while IFS= read -r entry; do
+  case "${entry:0:1}" in
+    -|d) ;;
+    *) die "bundle archive contains a non-regular entry" ;;
+  esac
+done < <(tar -tvzf "${BUNDLE_STAGE}/${ARCHIVE_NAME}")
+
+tar --no-same-owner --no-same-permissions \
+  -xzf "${BUNDLE_STAGE}/${ARCHIVE_NAME}" \
+  -C "${UNPACK_DIR}"
+readonly EXTRACTED_ROOT="${UNPACK_DIR}/${ARTIFACT_ID}"
+[[ -d ${EXTRACTED_ROOT} && ! -L ${EXTRACTED_ROOT} ]] || \
+  die "bundle archive root is missing or unsafe"
+[[ -z $(find "${UNPACK_DIR}" -mindepth 1 -maxdepth 1 ! -name "${ARTIFACT_ID}" -print -quit) ]] || \
+  die "bundle archive contains more than one top-level path"
+[[ -z $(find "${EXTRACTED_ROOT}" -type l -print -quit) ]] || \
+  die "bundle archive must not contain symlinks"
+[[ -f ${EXTRACTED_ROOT}/checksums.txt && ! -L ${EXTRACTED_ROOT}/checksums.txt ]] || \
+  die "bundle checksums.txt is missing or unsafe"
+[[ -f ${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME} &&
+  ! -L ${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME} ]] || \
+  die "bundle ${ARTIFACT_MANIFEST_NAME} is missing or unsafe"
+
+verify_release_checksum_inventory() {
+  local root=$1
+  local checksum_entry
+  local checked_path
+  local release_file
+  local relative_path
+  local -A listed=()
+  while IFS= read -r checksum_entry; do
+    [[ ${checksum_entry} =~ ^[0-9a-f]{64}\ \ (.+)$ ]] || \
+      die "inner checksum entry has an invalid format"
+    checked_path="${BASH_REMATCH[1]}"
+    [[ ${checked_path} == ./* ]] || die "inner checksum entry must use a ./ relative path"
+    checked_path="${checked_path#./}"
+    [[ -n ${checked_path} &&
+      ${checked_path} != /* &&
+      ${checked_path} != ./* &&
+      ${checked_path} != *\\* &&
+      ${checked_path} != ../* &&
+      ${checked_path} != *"/../"* &&
+      ${checked_path} != *"/.." &&
+      ${checked_path} != *"/./"* &&
+      ${checked_path} != *"/." &&
+      ${checked_path} != *"//"* &&
+      ${checked_path} != "checksums.txt" ]] || die "inner checksum entry has an unsafe path"
+    [[ -z ${listed["${checked_path}"]+present} ]] || \
+      die "inner checksum entry is duplicated: ${checked_path}"
+    listed["${checked_path}"]=1
+    [[ -f ${root}/${checked_path} && ! -L ${root}/${checked_path} ]] || \
+      die "inner checksum entry does not name a regular file: ${checked_path}"
+  done < "${root}/checksums.txt"
+  [[ ${#listed[@]} -gt 0 ]] || die "bundle checksums.txt contains no files"
+  while IFS= read -r -d '' release_file; do
+    relative_path="${release_file#"${root}/"}"
+    [[ ${relative_path} == "checksums.txt" ]] && continue
+    [[ -n ${listed["${relative_path}"]+present} ]] || \
+      die "release file is not listed in checksums.txt: ${relative_path}"
+  done < <(find "${root}" -type f -print0)
+  [[ -z $(find "${root}" -mindepth 1 ! -type d ! -type f -print -quit) ]] || \
+    die "bundle tree contains a symlink or non-regular file"
+}
+
+verify_release_checksum_inventory "${EXTRACTED_ROOT}"
+(cd -- "${EXTRACTED_ROOT}" && sha256sum --check --strict checksums.txt)
+
+jq -e \
+  --arg version "${VERSION}" \
+  --arg arch "${ARCH}" \
+  --arg archive_name "${ARCHIVE_NAME}" \
+  --arg artifact_id "${ARTIFACT_ID}" \
+  '((keys | sort) ==
+      ["archive", "build_date", "commit", "compatibility", "component",
+       "platform", "schema_version", "source_version"]) and
+   (.schema_version == 1) and
+   (.component == "host-agent") and
+   (.source_version == $version) and
+   (.commit | type == "string" and test("^[0-9a-f]{40}$")) and
+   (.build_date | type == "string" and
+    test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+   (.platform |
+     ((keys | sort) == ["arch", "os"]) and
+     (.os == "linux") and
+     (.arch == $arch)) and
+   (.archive |
+     ((keys | sort) == ["name", "root"]) and
+     (.name == $archive_name) and
+     (.root == $artifact_id)) and
+   (.compatibility |
+     ((keys | sort) ==
+       ["database_schema", "minimum_agent_version", "minimum_panel_version",
+        "rollback_compatible"]) and
+     (.minimum_agent_version == null) and
+     (.minimum_panel_version == $version) and
+     (.rollback_compatible == true) and
+     (.database_schema == "none"))' \
+  "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}" >/dev/null || \
+  die "${ARTIFACT_MANIFEST_NAME} does not authorize this exact Host Agent bundle"
+MANIFEST_COMMIT="$(jq -er '.commit' "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}")" || \
+  die "could not read the bundle commit"
+readonly MANIFEST_COMMIT
+MANIFEST_BUILD_DATE="$(jq -er '.build_date' "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}")" || \
+  die "could not read the bundle build date"
+readonly MANIFEST_BUILD_DATE
+
+readonly HOST_BINARY_SOURCE="${EXTRACTED_ROOT}/bin/autostream-host-agent"
+readonly BINARY_SOURCE="${EXTRACTED_ROOT}/bin/autostream-local-executor"
+readonly SERVICE_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-local-executor.service"
+readonly SOCKET_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-local-executor.socket"
+readonly TMPFILES_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-local-executor.tmpfiles"
+readonly VERIFIED_INSTALLER_SOURCE="${EXTRACTED_ROOT}/install/install-autostream-local-executor"
+
+for source in \
+  "${HOST_BINARY_SOURCE}" \
+  "${BINARY_SOURCE}" \
+  "${SERVICE_SOURCE}" \
+  "${SOCKET_SOURCE}" \
+  "${TMPFILES_SOURCE}" \
+  "${VERIFIED_INSTALLER_SOURCE}"; do
+  [[ -f ${source} && ! -L ${source} ]] || \
+    die "required verified Host Agent bundle file is missing or unsafe: ${source}"
+done
+[[ -x ${HOST_BINARY_SOURCE} && -x ${BINARY_SOURCE} ]] || \
+  die "Host Agent bundle binaries are not executable"
+[[ $(sha256sum -- "${RUNNING_INSTALLER_SOURCE}" | awk 'NR == 1 { print $1 }') == \
+  "$(sha256sum -- "${VERIFIED_INSTALLER_SOURCE}" | awk 'NR == 1 { print $1 }')" ]] || \
+  die "running local executor installer does not match the verified bundle"
+
+verify_binary_identity() {
+  local binary_path=$1
+  local binary_name=$2
+  local binary_version_output
+  local expected_identity
+  binary_version_output="$("${binary_path}" --version)" || \
+    die "${binary_name} binary identity command failed"
+  expected_identity="$(
+    printf '%s %s\ncommit: %s\nbuild_date: %s' \
+      "${binary_name}" "${VERSION}" "${MANIFEST_COMMIT}" "${MANIFEST_BUILD_DATE}"
+    if [[ ${binary_name} == "autostream-local-executor" ]]; then
+      printf '\nmutation_protocol: 2\nrecovery_protocol: 2'
+    fi
+  )"
+  [[ ${binary_version_output} == "${expected_identity}" ]] || \
+    die "${binary_name} binary identity does not match ${ARTIFACT_MANIFEST_NAME}"
+}
+
+verify_binary_identity "${HOST_BINARY_SOURCE}" "autostream-host-agent"
+verify_binary_identity "${BINARY_SOURCE}" "autostream-local-executor"
+
+acquire_shared_host_setup_lock
+acquire_host_lifecycle_lock
+
+getent passwd "${AGENT_USER}" >/dev/null 2>&1 || \
+  die "${AGENT_USER} must be installed before the local executor"
+getent group "${AGENT_GROUP}" >/dev/null 2>&1 || \
+  die "${AGENT_GROUP} must be installed before the local executor"
+readonly agent_uid=$(id -u "${AGENT_USER}")
+readonly agent_gid=$(getent group "${AGENT_GROUP}" | awk -F: 'NR == 1 { print $3 }')
+[[ ${agent_uid} =~ ^[0-9]+$ && ${agent_uid} -ne 0 ]] || die "Host Agent UID is invalid"
+[[ ${agent_gid} =~ ^[0-9]+$ && ${agent_gid} -ne 0 ]] || die "Host Agent GID is invalid"
+[[ $(id -g "${AGENT_USER}") == "${agent_gid}" ]] || die "Host Agent primary group is invalid"
+
+copy_verified_release_file() {
+  local source=$1
+  local destination=$2
+  local owner=$3
+  local group=$4
+  local mode=$5
+  local label=$6
+  local source_identity
+  local source_sha256
+  [[ -f ${source} && ! -L ${source} ]] || die "${label} release source is missing or unsafe"
+  source_identity=$(stat -c '%d:%i:%s:%Y:%f' -- "${source}")
+  source_sha256=$(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }')
+  install -o "${owner}" -g "${group}" -m "${mode}" "${source}" "${destination}"
+  [[ -f ${source} && ! -L ${source} ]] || die "${label} release source changed while it was copied"
+  [[ $(stat -c '%d:%i:%s:%Y:%f' -- "${source}") == "${source_identity}" ]] || \
+    die "${label} release source identity changed while it was copied"
+  [[ $(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "${label} release source content changed while it was copied"
+  [[ $(sha256sum -- "${destination}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "staged ${label} does not match the verified release source"
+}
+
+config_dir_existed=false
+config_dir_identity=""
+usr_local_libexec_dir_existed=false
+usr_local_libexec_dir_identity=""
+systemd_system_dir_existed=false
+systemd_system_dir_identity=""
+etc_tmpfiles_dir_existed=false
+etc_tmpfiles_dir_identity=""
+release_root_existed=false
+release_root_identity=""
+executor_data_dir_existed=false
+executor_data_dir_identity=""
+port_config_dir_existed=false
+port_config_dir_identity=""
+docker_version_dir_existed=false
+docker_version_dir_identity=""
+docker_port_config_dir_existed=false
+docker_port_config_dir_identity=""
+docker_config_dir_existed=false
+docker_config_dir_identity=""
+socket_dir_existed=false
+socket_dir_identity=""
+updater_runtime_dir_existed=false
+updater_runtime_dir_identity=""
+state_dir_existed=false
+state_dir_identity=""
+state_root_snapshot=""
+state_snapshot=""
+state_snapshot_ready=false
+policy_existed=false
+policy_identity=""
+binary_existed=false
+binary_identity=""
+service_existed=false
+service_identity=""
+socket_existed=false
+socket_identity=""
+tmpfiles_existed=false
+tmpfiles_identity=""
+policy_stage=""
+binary_stage=""
+service_stage=""
+socket_stage=""
+tmpfiles_stage=""
+policy_backup=""
+binary_backup=""
+service_backup=""
+socket_backup=""
+tmpfiles_backup=""
+policy_replacement_started=false
+binary_replacement_started=false
+service_replacement_started=false
+socket_replacement_started=false
+tmpfiles_replacement_started=false
+commit_started=false
+managed_file_change_started=false
+installation_complete=false
+was_socket_enabled=false
+was_socket_active=false
+was_service_active=false
+service_quiesce_attempted=false
+socket_quiesce_attempted=false
+socket_activation_attempted=false
+service_activation_attempted=false
+tmpfiles_creation_attempted=false
+
+create_temp_file() {
+  local variable=$1
+  local template=$2
+  local temp_path=""
+  defer_cleanup_signals
+  temp_path=$(mktemp "${template}") || die "could not create temporary file from ${template}"
+  printf -v "${variable}" '%s' "${temp_path}"
+  resume_cleanup_signals || die "installation was interrupted while journaling a temporary file"
+}
+
+move_with_journal() {
+  local source=$1
+  local destination=$2
+  local journal_variable=$3
+  defer_cleanup_signals
+  printf -v "${journal_variable}" '%s' true
+  mv -fT -- "${source}" "${destination}"
+  resume_cleanup_signals || die "installation was interrupted while journaling ${destination}"
+}
+
+create_managed_directory() {
+  local path=$1
+  local owner=$2
+  local group=$3
+  local mode=$4
+  local existed_variable=$5
+  local identity_variable=$6
+  local identity
+  [[ ! -e ${path} && ! -L ${path} ]] || die "${path} appeared after preflight"
+  defer_cleanup_signals
+  mkdir -- "${path}" || die "could not create ${path}"
+  printf -v "${existed_variable}" '%s' false
+  identity=$(stat -c '%d:%i' -- "${path}") || die "could not record the identity of ${path}"
+  printf -v "${identity_variable}" '%s' "${identity}"
+  chown "${owner}:${group}" -- "${path}" || die "could not set the owner of ${path}"
+  chmod "${mode}" -- "${path}" || die "could not set the mode of ${path}"
+  resume_cleanup_signals || die "installation was interrupted while journaling ${path}"
+}
+
+rollback_created_directory() {
+  local path=$1
+  local expected_identity=$2
+  local label=${3:-directory}
+  if [[ -z ${expected_identity} ||
+    ! -d ${path} ||
+    -L ${path} ||
+    $(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) != "${expected_identity}" ]]; then
+    printf '%s\n' "install-autostream-local-executor: rollback refused changed ${label}; inspect ${path}" >&2
+    return 1
+  fi
+  if ! rmdir -- "${path}"; then
+    printf '%s\n' "install-autostream-local-executor: rollback could not remove new ${label}; inspect ${path}" >&2
+    return 1
+  fi
+}
+
+remove_fresh_empty_directory() {
+  local path=$1
+  local existed=$2
+  local expected_metadata=$3
+  local expected_identity=${4:-${release_root_identity}}
+  if [[ ${existed} == true ]]; then
+    return
+  fi
+  if [[ ! -d ${path} ||
+    -L ${path} ||
+    $(stat -c '%U:%G:%a' -- "${path}" 2>/dev/null || true) != "${expected_metadata}" ]]; then
+    printf '%s\n' "install-autostream-local-executor: rollback refused changed directory; inspect ${path}" >&2
+    return 1
+  fi
+  rollback_created_directory "${path}" "${expected_identity}" "${path} directory"
+}
+
+rollback_prerequisite_directories() {
+  local failed=false
+  if [[ ${docker_config_dir_existed} == false && -n ${docker_config_dir_identity} ]] &&
+    ! rollback_created_directory \
+      "${DOCKER_CONFIG_DIR}" "${docker_config_dir_identity}" "Docker config directory"; then
+    failed=true
+  fi
+  if [[ ${config_dir_existed} == false && -n ${config_dir_identity} ]] &&
+    ! rollback_created_directory "${CONFIG_DIR}" "${config_dir_identity}" \
+      "Local Executor config directory"; then
+    failed=true
+  fi
+  if [[ ${docker_port_config_dir_existed} == false && -n ${docker_port_config_dir_identity} ]] &&
+    ! rollback_created_directory \
+      "${DOCKER_PORT_CONFIG_DIR}" "${docker_port_config_dir_identity}" "Docker port directory"; then
+    failed=true
+  fi
+  if [[ ${docker_version_dir_existed} == false && -n ${docker_version_dir_identity} ]] &&
+    ! rollback_created_directory \
+      "${DOCKER_VERSION_DIR}" "${docker_version_dir_identity}" "Docker data directory"; then
+    failed=true
+  fi
+  if [[ ${port_config_dir_existed} == false && -n ${port_config_dir_identity} ]] &&
+    ! rollback_created_directory \
+      "${PORT_CONFIG_DIR}" "${port_config_dir_identity}" "port data directory"; then
+    failed=true
+  fi
+  if [[ ${executor_data_dir_existed} == false && -n ${executor_data_dir_identity} ]] &&
+    ! rollback_created_directory \
+      "${EXECUTOR_DATA_DIR}" "${executor_data_dir_identity}" "Local Executor data directory"; then
+    failed=true
+  fi
+  if [[ ${etc_tmpfiles_dir_existed} == false && -n ${etc_tmpfiles_dir_identity} ]] &&
+    ! rollback_created_directory \
+      /etc/tmpfiles.d "${etc_tmpfiles_dir_identity}" "/etc/tmpfiles.d directory"; then
+    failed=true
+  fi
+  if [[ ${systemd_system_dir_existed} == false && -n ${systemd_system_dir_identity} ]] &&
+    ! rollback_created_directory \
+      /etc/systemd/system "${systemd_system_dir_identity}" "/etc/systemd/system directory"; then
+    failed=true
+  fi
+  if [[ ${usr_local_libexec_dir_existed} == false && -n ${usr_local_libexec_dir_identity} ]] &&
+    ! rollback_created_directory \
+      /usr/local/libexec "${usr_local_libexec_dir_identity}" "/usr/local/libexec directory"; then
+    failed=true
+  fi
+  [[ ${failed} == false ]]
+}
+
+unit_active_state() {
+  local unit=$1
+  local state=""
+  local status=0
+  if state=$(systemctl is-active "${unit}" 2>/dev/null); then
+    status=0
+  else
+    status=$?
+  fi
+  case "${status}:${state}" in
+    0:active) printf '%s\n' active ;;
+    3:inactive|4:inactive|4:unknown) printf '%s\n' inactive ;;
+    *) die "could not establish a stable active state for ${unit}" ;;
+  esac
+}
+
+unit_enabled_state() {
+  local unit=$1
+  local state=""
+  local status=0
+  if state=$(systemctl is-enabled "${unit}" 2>/dev/null); then
+    status=0
+  else
+    status=$?
+  fi
+  case "${status}:${state}" in
+    0:enabled) printf '%s\n' enabled ;;
+    1:disabled|1:not-found|4:not-found) printf '%s\n' disabled ;;
+    *) die "could not establish a stable enablement state for ${unit}" ;;
+  esac
+}
+
+verify_unit_inactive() {
+  local unit=$1
+  [[ $(unit_active_state "${unit}") == "inactive" ]] || die "${unit} must be inactive"
+}
+
+verify_unit_disabled() {
+  local unit=$1
+  [[ $(unit_enabled_state "${unit}") == "disabled" ]] || die "${unit} must be disabled"
+}
+
+verify_initial_runtime_state() {
+  local expected_socket_enabled=disabled
+  local expected_socket_active=inactive
+  local expected_service_active=inactive
+  [[ ${was_socket_enabled} == true ]] && expected_socket_enabled=enabled
+  [[ ${was_socket_active} == true ]] && expected_socket_active=active
+  [[ ${was_service_active} == true ]] && expected_service_active=active
+  [[ $(unit_enabled_state "${SOCKET_NAME}") == "${expected_socket_enabled}" &&
+    $(unit_active_state "${SOCKET_NAME}") == "${expected_socket_active}" &&
+    $(unit_active_state "${SERVICE_NAME}") == "${expected_service_active}" ]]
+}
+
+restore_initial_runtime_state() {
+  local failed=false
+  if [[ ${was_socket_enabled} == true ]]; then
+    systemctl enable "${SOCKET_NAME}" >/dev/null 2>&1 || true
+  else
+    systemctl disable "${SOCKET_NAME}" >/dev/null 2>&1 || true
+  fi
+  if [[ ${was_service_active} == true ]]; then
+    systemctl start "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  fi
+  if [[ ${was_socket_active} == true ]]; then
+    systemctl start "${SOCKET_NAME}" >/dev/null 2>&1 || true
+  fi
+  if ! verify_initial_runtime_state; then
+    failed=true
+  fi
+  [[ ${failed} == false ]]
+}
+
+validate_executor_state_tree() {
+  local root=$1
+  local root_device
+  local entry
+  root_device=$(stat -c '%d' -- "${root}") || die "could not read the Local Executor state filesystem"
+  while IFS= read -r -d '' entry; do
+    if [[ -L ${entry} || ( ! -d ${entry} && ! -f ${entry} ) ]]; then
+      printf '%s\n' "install-autostream-local-executor: Local Executor state contains a symlink or special file: ${entry}" >&2
+      return 1
+    fi
+    if [[ $(stat -c '%d' -- "${entry}") != "${root_device}" ]]; then
+      printf '%s\n' "install-autostream-local-executor: Local Executor state contains a nested mount: ${entry}" >&2
+      return 1
+    fi
+  done < <(find "${root}" -xdev -mindepth 1 -print0)
+}
+
+snapshot_executor_state() {
+  [[ ${state_dir_existed} == true ]] || return 0
+  [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} &&
+    $(stat -c '%d:%i' -- "${STATE_DIR}") == "${state_dir_identity}" ]] || \
+    die "Local Executor state directory changed before snapshot"
+  validate_executor_state_tree "${STATE_DIR}" || \
+    die "existing Local Executor state is unsafe to snapshot"
+  state_snapshot="${BUNDLE_STAGE}/local-executor-state.before.tar"
+  tar --numeric-owner --one-file-system -cpf "${state_snapshot}" -C "${STATE_DIR}" . || \
+    die "could not snapshot existing Local Executor state"
+  [[ -f ${state_snapshot} && ! -L ${state_snapshot} ]] || \
+    die "Local Executor state snapshot is missing or unsafe"
+  state_snapshot_ready=true
+}
+
+capture_fresh_runtime_directory() {
+  local path=$1
+  local existed=$2
+  local identity_variable=$3
+  if [[ ${existed} == false && -d ${path} && ! -L ${path} ]]; then
+    printf -v "${identity_variable}" '%s' "$(stat -c '%d:%i' -- "${path}")"
+  fi
+}
+
+restore_executor_state() {
+  local root_device
+  local entry
+  local snapshot_device
+  local snapshot_inode
+  local snapshot_uid
+  local snapshot_gid
+  local snapshot_mode
+  if [[ ${state_dir_existed} == true && ${state_snapshot_ready} == true ]]; then
+    IFS=: read -r snapshot_device snapshot_inode snapshot_uid snapshot_gid snapshot_mode \
+      <<<"${state_root_snapshot}"
+    [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} &&
+      $(stat -c '%d:%i' -- "${STATE_DIR}") == "${snapshot_device}:${snapshot_inode}" ]] || {
+      printf '%s\n' 'install-autostream-local-executor: rollback refused a replaced state root' >&2
+      return 1
+    }
+    validate_executor_state_tree "${STATE_DIR}" || return 1
+    find "${STATE_DIR}" -xdev -mindepth 1 -delete || return 1
+    tar --numeric-owner --same-owner --same-permissions -xpf "${state_snapshot}" \
+      -C "${STATE_DIR}" || return 1
+    chown "${snapshot_uid}:${snapshot_gid}" -- "${STATE_DIR}" || return 1
+    chmod "${snapshot_mode}" -- "${STATE_DIR}" || return 1
+    [[ $(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}") == "${state_root_snapshot}" ]] || \
+      return 1
+    return
+  fi
+  if [[ ${state_dir_existed} == false && -n ${state_dir_identity} ]]; then
+    [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} &&
+      $(stat -c '%d:%i' -- "${STATE_DIR}" 2>/dev/null || true) == "${state_dir_identity}" ]] || \
+      return 1
+    root_device=$(stat -c '%d' -- "${STATE_DIR}") || return 1
+    while IFS= read -r -d '' entry; do
+      [[ ! -L ${entry} && ( -d ${entry} || -f ${entry} ) &&
+        $(stat -c '%d' -- "${entry}") == "${root_device}" ]] || return 1
+    done < <(find "${STATE_DIR}" -xdev -mindepth 1 -print0)
+    find "${STATE_DIR}" -xdev -mindepth 1 -delete || return 1
+    rollback_created_directory "${STATE_DIR}" "${state_dir_identity}" "Local Executor state directory" ||
+      return 1
+    state_dir_identity=""
+  fi
+}
+
+cleanup_prerequisites() {
+  local status=$?
+  local rollback_failed=false
+  local release_root_path=${EXECUTOR_DATA_DIR%/*}
+  trap '' INT TERM
+  trap - EXIT
+  [[ -z ${policy_stage:-} ]] || rm -f -- "${policy_stage}"
+  [[ -z ${binary_stage:-} ]] || rm -f -- "${binary_stage}"
+  [[ -z ${service_stage:-} ]] || rm -f -- "${service_stage}"
+  [[ -z ${socket_stage:-} ]] || rm -f -- "${socket_stage}"
+  [[ -z ${tmpfiles_stage:-} ]] || rm -f -- "${tmpfiles_stage}"
+  rollback_prerequisite_directories || rollback_failed=true
+  if ! remove_fresh_empty_directory \
+    "${release_root_path}" "${release_root_existed}" "root:root:755"; then
+    rollback_failed=true
+  fi
+  if [[ -n ${BUNDLE_STAGE:-} &&
+    ${BUNDLE_STAGE} == /var/tmp/autostream-local-executor-install.* &&
+    -d ${BUNDLE_STAGE} &&
+    ! -L ${BUNDLE_STAGE} ]]; then
+    rm -rf -- "${BUNDLE_STAGE}"
+  fi
+  if [[ ${rollback_failed} == true ]]; then
+    exit 1
+  fi
+  exit "${status}"
+}
+
+verify_existing() {
+  local path=$1
+  local expected=$2
+  local label=$3
+  local existed_variable=$4
+  local identity_variable=$5
+  if [[ ! -e ${path} && ! -L ${path} ]]; then
+    printf -v "${existed_variable}" '%s' false
+    return 0
+  fi
+  [[ -f ${path} && ! -L ${path} ]] || die "${label} destination is not a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "${expected}" ]] || \
+    die "${label} destination owner or mode drifted"
+  printf -v "${existed_variable}" '%s' true
+  printf -v "${identity_variable}" '%s' "$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${path}")"
+}
+
+validate_managed_runtime_binary() {
+  local current_target
+  local resolved
+  local expected_resolved
+  local release_sha256
+  local active_sha256
+  [[ -L ${BINARY_DEST} ]] || return 1
+  validate_root_parent_chain "${BINARY_DEST}" "binary destination"
+  [[ $(stat -c '%U:%G' -- "${BINARY_DEST}") == "root:root" ]] || \
+    die "managed A/B binary link must be owned by root:root"
+  [[ $(readlink -- "${BINARY_DEST}") == "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" ]] || \
+    die "binary destination symlink is outside the fixed Host Agent A/B runtime"
+  [[ -L ${HOST_RUNTIME_CURRENT} ]] || \
+    die "managed A/B binary is missing the fixed current symlink"
+  [[ $(stat -c '%U:%G' -- "${HOST_RUNTIME_CURRENT}") == "root:root" ]] || \
+    die "managed A/B current symlink must be owned by root:root"
+  current_target=$(readlink -- "${HOST_RUNTIME_CURRENT}")
+  [[ ${current_target} == "slots/a" || ${current_target} == "slots/b" ]] || \
+    die "managed A/B current symlink points outside the fixed slots"
+  expected_resolved="${HOST_RUNTIME_ROOT}/${current_target}/bin/autostream-local-executor"
+  resolved=$(readlink -f -- "${BINARY_DEST}") || \
+    die "managed A/B binary link could not be resolved"
+  [[ ${resolved} == "${expected_resolved}" ]] || \
+    die "managed A/B binary resolved outside the active fixed slot"
+  [[ -f ${resolved} && ! -L ${resolved} ]] || \
+    die "managed A/B binary must resolve to a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${resolved}") == "root:root:755" ]] || \
+    die "managed A/B binary owner or mode drifted"
+  validate_root_parent_chain "${resolved}" "managed A/B binary"
+  release_sha256=$(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')
+  active_sha256=$(sha256sum -- "${resolved}" | awk 'NR == 1 { print $1 }')
+  [[ ${active_sha256} == "${release_sha256}" ]] || \
+    die "managed A/B binary does not match this verified Host Agent release"
+}
+
+binary_managed_link=false
+verify_existing \
+  "${POLICY_DEST}" "root:root:600" "policy" policy_existed policy_identity
+if [[ -L ${BINARY_DEST} ]]; then
+  validate_managed_runtime_binary
+  binary_managed_link=true
+else
+  verify_existing \
+    "${BINARY_DEST}" "root:root:755" "binary" binary_existed binary_identity
+fi
+verify_existing \
+  "${SERVICE_DEST}" "root:root:644" "service unit" service_existed service_identity
+verify_existing \
+  "${SOCKET_DEST}" "root:root:644" "socket unit" socket_existed socket_identity
+verify_existing \
+  "${TMPFILES_DEST}" "root:root:644" "tmpfiles policy" tmpfiles_existed tmpfiles_identity
+
+verify_unit_inactive "${HOST_AGENT_SERVICE_NAME}"
+verify_unit_disabled "${HOST_AGENT_SERVICE_NAME}"
+arm_cleanup_handler cleanup_prerequisites
+
+ensure_root_directory() {
+  local path=$1
+  local create_mode=$2
+  local existed_variable=${3:-release_root_existed}
+  local identity_variable=${4:-release_root_identity}
+  local mode
+  if [[ -e ${path} || -L ${path} ]]; then
+    [[ -d ${path} && ! -L ${path} ]] || die "${path} must be a non-symlink directory"
+    [[ $(stat -c '%U:%G' -- "${path}") == "root:root" ]] || die "${path} must be owned by root:root"
+    mode=$(stat -c '%a' -- "${path}")
+    (( (8#${mode} & 0022) == 0 )) || die "${path} must not be writable by group or other"
+    printf -v "${existed_variable}" '%s' true
+    printf -v "${identity_variable}" '%s' "$(stat -c '%d:%i' -- "${path}")"
+    return
+  fi
+  create_managed_directory \
+    "${path}" root root "${create_mode}" "${existed_variable}" "${identity_variable}"
+}
+
+ensure_root_directory "${CONFIG_DIR}" 0700 config_dir_existed config_dir_identity
+[[ $(stat -c '%U:%G:%a' -- "${CONFIG_DIR}") == "root:root:700" ]] || \
+  die "${CONFIG_DIR} must be root:root 0700"
+ensure_root_directory /usr/local/libexec 0755 \
+  usr_local_libexec_dir_existed usr_local_libexec_dir_identity
+ensure_root_directory \
+  /etc/systemd/system 0755 systemd_system_dir_existed systemd_system_dir_identity
+ensure_root_directory /etc/tmpfiles.d 0755 \
+  etc_tmpfiles_dir_existed etc_tmpfiles_dir_identity
+if [[ -e /opt/autostream || -L /opt/autostream ]]; then
+  release_root_existed=true
+fi
+ensure_root_directory /opt/autostream 0755
+ensure_root_directory \
+  "${EXECUTOR_DATA_DIR}" 0700 executor_data_dir_existed executor_data_dir_identity
+ensure_root_directory \
+  "${PORT_CONFIG_DIR}" 0700 port_config_dir_existed port_config_dir_identity
+ensure_root_directory \
+  "${DOCKER_VERSION_DIR}" 0700 docker_version_dir_existed docker_version_dir_identity
+ensure_root_directory \
+  "${DOCKER_PORT_CONFIG_DIR}" 0700 \
+  docker_port_config_dir_existed docker_port_config_dir_identity
+ensure_root_directory \
+  "${DOCKER_CONFIG_DIR}" 0700 docker_config_dir_existed docker_config_dir_identity
+for private_dir in "${EXECUTOR_DATA_DIR}" "${PORT_CONFIG_DIR}" "${DOCKER_VERSION_DIR}" "${DOCKER_PORT_CONFIG_DIR}" "${DOCKER_CONFIG_DIR}"; do
+  [[ $(stat -c '%U:%G:%a' -- "${private_dir}") == "root:root:700" ]] || \
+    die "${private_dir} must be root:root 0700"
+done
+unexpected_docker_config=$(find "${DOCKER_CONFIG_DIR}" -mindepth 1 -maxdepth 1 ! -name config.json -print -quit)
+[[ -z ${unexpected_docker_config} ]] || \
+  die "${DOCKER_CONFIG_DIR} must contain only config.json"
+if [[ -e ${DOCKER_CONFIG_FILE} || -L ${DOCKER_CONFIG_FILE} ]]; then
+  [[ -f ${DOCKER_CONFIG_FILE} && ! -L ${DOCKER_CONFIG_FILE} ]] || \
+    die "${DOCKER_CONFIG_FILE} must be a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${DOCKER_CONFIG_FILE}") == "root:root:600" ]] || \
+    die "${DOCKER_CONFIG_FILE} must be root:root 0600"
+fi
+
+if [[ -e ${SOCKET_DIR} || -L ${SOCKET_DIR} ]]; then
+  [[ -d ${SOCKET_DIR} && ! -L ${SOCKET_DIR} ]] || die "socket path must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${SOCKET_DIR}") == "root:${AGENT_GROUP}:750" ]] || \
+    die "socket directory must be root:${AGENT_GROUP} 0750"
+  socket_dir_existed=true
+  socket_dir_identity=$(stat -c '%d:%i' -- "${SOCKET_DIR}")
+fi
+if [[ -e ${UPDATER_RUNTIME_DIR} || -L ${UPDATER_RUNTIME_DIR} ]]; then
+  [[ -d ${UPDATER_RUNTIME_DIR} && ! -L ${UPDATER_RUNTIME_DIR} ]] || \
+    die "updater runtime path must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${UPDATER_RUNTIME_DIR}") == "root:root:700" ]] || \
+    die "updater runtime directory must be root:root 0700"
+  updater_runtime_dir_existed=true
+  updater_runtime_dir_identity=$(stat -c '%d:%i' -- "${UPDATER_RUNTIME_DIR}")
+fi
+if [[ -e ${STATE_DIR} || -L ${STATE_DIR} ]]; then
+  [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} ]] || die "state path must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${STATE_DIR}") == "root:root:700" ]] || \
+    die "state directory must be root:root 0700"
+  state_dir_existed=true
+  state_dir_identity=$(stat -c '%d:%i' -- "${STATE_DIR}")
+  state_root_snapshot=$(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}")
+fi
+
+create_temp_file policy_stage "${CONFIG_DIR}/.policy.json.new.XXXXXX"
+create_temp_file binary_stage /usr/local/libexec/.autostream-local-executor.new.XXXXXX
+create_temp_file service_stage /etc/systemd/system/.autostream-local-executor.service.new.XXXXXX
+create_temp_file socket_stage /etc/systemd/system/.autostream-local-executor.socket.new.XXXXXX
+create_temp_file tmpfiles_stage /etc/tmpfiles.d/.autostream-local-executor.conf.new.XXXXXX
+
+cleanup() {
+  local status=$?
+  local rollback_failed=false
+  local runtime_quiesced=true
+  local state_rollback_ready=true
+  local observed_service_state=""
+  local observed_socket_state=""
+  local observed_socket_enabled=""
+  trap '' INT TERM
+  trap - EXIT
+  rm -f -- "${policy_stage}" "${binary_stage}" "${service_stage}" "${socket_stage}" "${tmpfiles_stage}"
+  if [[ ${installation_complete} == true ]]; then
+    rm -f -- "${policy_backup}" "${binary_backup}" "${service_backup}" "${socket_backup}" "${tmpfiles_backup}"
+    rm -rf -- "${BUNDLE_STAGE}"
+    exit "${status}"
+  fi
+  if [[ ${commit_started} == true ]]; then
+    socket_quiesce_attempted=true
+    if ! systemctl disable --now "${SOCKET_NAME}" >/dev/null 2>&1; then
+      printf '%s\n' 'install-autostream-local-executor: rollback disable command failed; checking the resulting state' >&2
+    fi
+    observed_socket_state=$(unit_active_state "${SOCKET_NAME}" 2>/dev/null || true)
+    observed_socket_enabled=$(unit_enabled_state "${SOCKET_NAME}" 2>/dev/null || true)
+    if [[ ${observed_socket_state} != "inactive" ||
+      ${observed_socket_enabled} != "disabled" ]]; then
+      runtime_quiesced=false
+    fi
+    service_quiesce_attempted=true
+    if ! systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1; then
+      printf '%s\n' 'install-autostream-local-executor: rollback stop command failed; checking the resulting state' >&2
+    fi
+    observed_service_state=$(unit_active_state "${SERVICE_NAME}" 2>/dev/null || true)
+    observed_socket_state=$(unit_active_state "${SOCKET_NAME}" 2>/dev/null || true)
+    observed_socket_enabled=$(unit_enabled_state "${SOCKET_NAME}" 2>/dev/null || true)
+    if [[ ${observed_service_state} != "inactive" ||
+      ${observed_socket_state} != "inactive" ||
+      ${observed_socket_enabled} != "disabled" ]]; then
+      runtime_quiesced=false
+    fi
+    if [[ ${runtime_quiesced} == false &&
+      ( ${managed_file_change_started} == true ||
+        ${socket_activation_attempted} == true ||
+        ${service_activation_attempted} == true ) ]]; then
+      printf '%s\n' 'install-autostream-local-executor: rollback refused to mutate managed files or state before the socket and executor converged to disabled and inactive' >&2
+      rollback_failed=true
+    fi
+    if [[ ${managed_file_change_started} == false &&
+      ${socket_activation_attempted} == false &&
+      ${service_activation_attempted} == false ]]; then
+      if ! restore_initial_runtime_state; then
+        printf '%s\n' 'install-autostream-local-executor: early rollback could not restore the original socket and service states' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${runtime_quiesced} == true ]]; then
+      if [[ ${socket_activation_attempted} == true ||
+        ${service_activation_attempted} == true ]]; then
+        if [[ ${state_dir_existed} == false &&
+          ( -e ${STATE_DIR} || -L ${STATE_DIR} ) ]]; then
+          if [[ ! -d ${STATE_DIR} ||
+            -L ${STATE_DIR} ||
+            $(stat -c '%U:%G:%a' -- "${STATE_DIR}" 2>/dev/null || true) != "root:root:700" ]]; then
+            printf '%s\n' 'install-autostream-local-executor: rollback refused an unsafe fresh state root' >&2
+            state_rollback_ready=false
+            rollback_failed=true
+          else
+            capture_fresh_runtime_directory \
+              "${STATE_DIR}" "${state_dir_existed}" state_dir_identity
+          fi
+        fi
+        if [[ ${state_rollback_ready} == true ]] &&
+          ! restore_executor_state; then
+          rollback_failed=true
+        fi
+      fi
+      restore_file \
+        "${policy_backup}" "${POLICY_DEST}" "${policy_existed}" "${policy_replacement_started}" ||
+        rollback_failed=true
+      if [[ ${binary_managed_link} == false ]]; then
+        restore_file \
+          "${binary_backup}" "${BINARY_DEST}" "${binary_existed}" "${binary_replacement_started}" ||
+          rollback_failed=true
+      fi
+      restore_file \
+        "${service_backup}" "${SERVICE_DEST}" "${service_existed}" "${service_replacement_started}" ||
+        rollback_failed=true
+      restore_file \
+        "${socket_backup}" "${SOCKET_DEST}" "${socket_existed}" "${socket_replacement_started}" ||
+        rollback_failed=true
+      restore_file \
+        "${tmpfiles_backup}" "${TMPFILES_DEST}" "${tmpfiles_existed}" "${tmpfiles_replacement_started}" ||
+        rollback_failed=true
+      systemctl daemon-reload >/dev/null 2>&1 || rollback_failed=true
+      if [[ ${tmpfiles_creation_attempted} == true ]]; then
+        capture_fresh_runtime_directory \
+          "${SOCKET_DIR}" "${socket_dir_existed}" socket_dir_identity
+        capture_fresh_runtime_directory \
+          "${UPDATER_RUNTIME_DIR}" "${updater_runtime_dir_existed}" updater_runtime_dir_identity
+      fi
+      if [[ ${socket_dir_existed} == false && -n ${socket_dir_identity} ]] &&
+        ! rollback_created_directory \
+          "${SOCKET_DIR}" "${socket_dir_identity}" "Local Executor socket directory"; then
+        rollback_failed=true
+      fi
+      if [[ ${updater_runtime_dir_existed} == false && -n ${updater_runtime_dir_identity} ]] &&
+        ! rollback_created_directory \
+          "${UPDATER_RUNTIME_DIR}" "${updater_runtime_dir_identity}" "updater runtime directory"; then
+        rollback_failed=true
+      fi
+      if ! restore_initial_runtime_state; then
+        printf '%s\n' 'install-autostream-local-executor: rollback could not restore the original socket and service states' >&2
+        rollback_failed=true
+      fi
+    fi
+  fi
+  if ! rollback_prerequisite_directories; then
+    rollback_failed=true
+  fi
+  if
+    remove_fresh_empty_directory /opt/autostream "${release_root_existed}" "root:root:755"
+  then
+    :
+  else
+    rollback_failed=true
+  fi
+  if [[ ${runtime_quiesced} == true ]]; then
+    rm -f -- "${policy_backup}" "${binary_backup}" "${service_backup}" "${socket_backup}" "${tmpfiles_backup}"
+  fi
+  rm -rf -- "${BUNDLE_STAGE}"
+  if [[ ${rollback_failed} == true ]]; then
+    exit 1
+  fi
+  exit "${status}"
+}
+
+restore_file() {
+  local backup=$1
+  local destination=$2
+  local existed=$3
+  local replacement_started=$4
+  [[ ${replacement_started} == true ]] || return 0
+  if [[ -n ${backup} && -e ${backup} ]]; then
+    rm -f -- "${destination}" || return 1
+    mv -fT -- "${backup}" "${destination}" || return 1
+  elif [[ ${existed} == true ]]; then
+    [[ -e ${destination} || -L ${destination} ]] || return 1
+  else
+    rm -f -- "${destination}" || return 1
+  fi
+}
+
+backup_file() {
+  local source=$1
+  local directory=$2
+  local template=$3
+  local existed=$4
+  local expected_identity=$5
+  local backup_variable=$6
+  local replacement_variable=$7
+  local backup=""
+  if [[ ${existed} == false ]]; then
+    return 0
+  fi
+  [[ -f ${source} && ! -L ${source} &&
+    $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${source}") == "${expected_identity}" ]] || \
+    die "managed destination changed before backup: ${source}"
+  create_temp_file backup "${directory}/${template}.XXXXXX"
+  rm -f -- "${backup}"
+  printf -v "${backup_variable}" '%s' "${backup}"
+  move_with_journal "${source}" "${backup}" "${replacement_variable}"
+}
+
+arm_cleanup_handler cleanup
+
+policy_source_identity=$(stat -c '%d:%i:%s:%Y:%f' -- "${policy_source}")
+policy_source_sha256=$(sha256sum -- "${policy_source}" | awk 'NR == 1 { print $1 }')
+install -o root -g root -m 0600 "${policy_source}" "${policy_stage}"
+[[ $(stat -c '%d:%i:%s:%Y:%f' -- "${policy_source}") == "${policy_source_identity}" ]] || \
+  die "policy source changed while it was copied"
+[[ $(sha256sum -- "${policy_source}" | awk 'NR == 1 { print $1 }') == "${policy_source_sha256}" ]] || \
+  die "policy source content changed while it was copied"
+[[ $(sha256sum -- "${policy_stage}" | awk 'NR == 1 { print $1 }') == "${policy_source_sha256}" ]] || \
+  die "staged policy does not match the verified source"
+copy_verified_release_file "${BINARY_SOURCE}" "${binary_stage}" root root 0755 "binary"
+copy_verified_release_file "${SERVICE_SOURCE}" "${service_stage}" root root 0644 "service unit"
+copy_verified_release_file "${SOCKET_SOURCE}" "${socket_stage}" root root 0644 "socket unit"
+copy_verified_release_file "${TMPFILES_SOURCE}" "${tmpfiles_stage}" root root 0644 "tmpfiles policy"
+
+"${binary_stage}" --version >/dev/null
+policy_validation=$("${binary_stage}" validate-policy --policy "${policy_stage}")
+policy_uid=$(awk -F': ' '$1 == "agent_uid" { print $2 }' <<<"${policy_validation}")
+policy_gid=$(awk -F': ' '$1 == "agent_gid" { print $2 }' <<<"${policy_validation}")
+[[ ${policy_uid} == "${agent_uid}" ]] || die "policy agent_uid does not match ${AGENT_USER}"
+[[ ${policy_gid} == "${agent_gid}" ]] || die "policy agent_gid does not match ${AGENT_GROUP}"
+if [[ ${binary_managed_link} == true ]]; then
+  validate_managed_runtime_binary
+fi
+
+socket_enabled_state=$(unit_enabled_state "${SOCKET_NAME}")
+socket_active_state=$(unit_active_state "${SOCKET_NAME}")
+service_active_state=$(unit_active_state "${SERVICE_NAME}")
+[[ ${socket_enabled_state} == "enabled" ]] && was_socket_enabled=true
+[[ ${socket_active_state} == "active" ]] && was_socket_active=true
+[[ ${service_active_state} == "active" ]] && was_service_active=true
+verify_unit_inactive "${HOST_AGENT_SERVICE_NAME}"
+verify_unit_disabled "${HOST_AGENT_SERVICE_NAME}"
+
+commit_started=true
+socket_quiesce_attempted=true
+systemctl disable --now "${SOCKET_NAME}" >/dev/null 2>&1 || \
+  die "could not disable the Local Executor socket"
+verify_unit_inactive "${SOCKET_NAME}"
+verify_unit_disabled "${SOCKET_NAME}"
+service_quiesce_attempted=true
+systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || \
+  die "could not stop the Local Executor service"
+verify_unit_inactive "${SERVICE_NAME}"
+verify_unit_inactive "${SOCKET_NAME}"
+verify_unit_disabled "${SOCKET_NAME}"
+verify_unit_inactive "${SERVICE_NAME}"
+snapshot_executor_state
+verify_unit_inactive "${HOST_AGENT_SERVICE_NAME}"
+verify_unit_disabled "${HOST_AGENT_SERVICE_NAME}"
+
+managed_file_change_started=true
+backup_file \
+  "${POLICY_DEST}" "${CONFIG_DIR}" .policy.json.backup \
+  "${policy_existed}" "${policy_identity}" policy_backup policy_replacement_started
+if [[ ${binary_managed_link} == false ]]; then
+  backup_file \
+    "${BINARY_DEST}" /usr/local/libexec .autostream-local-executor.backup \
+    "${binary_existed}" "${binary_identity}" binary_backup binary_replacement_started
+fi
+backup_file \
+  "${SERVICE_DEST}" /etc/systemd/system .autostream-local-executor.service.backup \
+  "${service_existed}" "${service_identity}" service_backup service_replacement_started
+backup_file \
+  "${SOCKET_DEST}" /etc/systemd/system .autostream-local-executor.socket.backup \
+  "${socket_existed}" "${socket_identity}" socket_backup socket_replacement_started
+backup_file \
+  "${TMPFILES_DEST}" /etc/tmpfiles.d .autostream-local-executor.conf.backup \
+  "${tmpfiles_existed}" "${tmpfiles_identity}" tmpfiles_backup tmpfiles_replacement_started
+
+move_with_journal "${policy_stage}" "${POLICY_DEST}" policy_replacement_started
+if [[ ${binary_managed_link} == false ]]; then
+  move_with_journal "${binary_stage}" "${BINARY_DEST}" binary_replacement_started
+else
+  rm -f -- "${binary_stage}"
+fi
+move_with_journal "${service_stage}" "${SERVICE_DEST}" service_replacement_started
+move_with_journal "${socket_stage}" "${SOCKET_DEST}" socket_replacement_started
+move_with_journal "${tmpfiles_stage}" "${TMPFILES_DEST}" tmpfiles_replacement_started
+
+[[ -f ${POLICY_DEST} && ! -L ${POLICY_DEST} &&
+  $(stat -c '%U:%G:%a' -- "${POLICY_DEST}") == "root:root:600" &&
+  $(sha256sum -- "${POLICY_DEST}" | awk 'NR == 1 { print $1 }') == "${policy_source_sha256}" ]] || \
+  die "installed policy failed verification"
+[[ -f ${SERVICE_DEST} && ! -L ${SERVICE_DEST} &&
+  $(stat -c '%U:%G:%a' -- "${SERVICE_DEST}") == "root:root:644" ]] || \
+  die "installed service unit failed verification"
+[[ -f ${SOCKET_DEST} && ! -L ${SOCKET_DEST} &&
+  $(stat -c '%U:%G:%a' -- "${SOCKET_DEST}") == "root:root:644" ]] || \
+  die "installed socket unit failed verification"
+[[ -f ${TMPFILES_DEST} && ! -L ${TMPFILES_DEST} &&
+  $(stat -c '%U:%G:%a' -- "${TMPFILES_DEST}") == "root:root:644" ]] || \
+  die "installed tmpfiles policy failed verification"
+if [[ ${binary_managed_link} == true ]]; then
+  validate_managed_runtime_binary
+else
+  [[ -f ${BINARY_DEST} && ! -L ${BINARY_DEST} &&
+    $(stat -c '%U:%G:%a' -- "${BINARY_DEST}") == "root:root:755" &&
+    $(sha256sum -- "${BINARY_DEST}" | awk 'NR == 1 { print $1 }') == \
+      "$(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')" ]] || \
+    die "installed binary destination failed verification"
+fi
+systemctl daemon-reload
+tmpfiles_creation_attempted=true
+if ! systemd-tmpfiles --create "${TMPFILES_DEST}"; then
+  capture_fresh_runtime_directory \
+    "${SOCKET_DIR}" "${socket_dir_existed}" socket_dir_identity
+  capture_fresh_runtime_directory \
+    "${UPDATER_RUNTIME_DIR}" "${updater_runtime_dir_existed}" updater_runtime_dir_identity
+  die "systemd-tmpfiles failed after applying the Local Executor policy"
+fi
+capture_fresh_runtime_directory \
+  "${SOCKET_DIR}" "${socket_dir_existed}" socket_dir_identity
+capture_fresh_runtime_directory \
+  "${UPDATER_RUNTIME_DIR}" "${updater_runtime_dir_existed}" updater_runtime_dir_identity
+[[ -d ${SOCKET_DIR} && ! -L ${SOCKET_DIR} ]] || die "tmpfiles did not create the socket directory"
+[[ $(stat -c '%U:%G:%a' -- "${SOCKET_DIR}") == "root:${AGENT_GROUP}:750" ]] || \
+  die "socket directory owner or mode is invalid"
+[[ -d ${UPDATER_RUNTIME_DIR} && ! -L ${UPDATER_RUNTIME_DIR} &&
+  $(stat -c '%U:%G:%a' -- "${UPDATER_RUNTIME_DIR}") == "root:root:700" ]] || \
+  die "updater runtime directory owner or mode is invalid"
+verify_unit_inactive "${HOST_AGENT_SERVICE_NAME}"
+verify_unit_disabled "${HOST_AGENT_SERVICE_NAME}"
+socket_activation_attempted=true
+systemctl enable --now autostream-local-executor.socket
+verify_unit_inactive "${HOST_AGENT_SERVICE_NAME}"
+verify_unit_disabled "${HOST_AGENT_SERVICE_NAME}"
+service_activation_attempted=true
+if ! systemctl start "${SERVICE_NAME}"; then
+  capture_fresh_runtime_directory "${STATE_DIR}" "${state_dir_existed}" state_dir_identity
+  die "Local Executor service failed to start"
+fi
+capture_fresh_runtime_directory "${STATE_DIR}" "${state_dir_existed}" state_dir_identity
+verify_unit_inactive "${HOST_AGENT_SERVICE_NAME}"
+verify_unit_disabled "${HOST_AGENT_SERVICE_NAME}"
+[[ $(unit_active_state "${SOCKET_NAME}") == "active" ]] || \
+  die "Local Executor socket did not become active"
+[[ $(unit_active_state "${SERVICE_NAME}") == "active" ]] || \
+  die "Local Executor service did not become active"
+[[ -d ${STATE_DIR} && ! -L ${STATE_DIR} ]] || die "systemd did not create the executor state directory"
+[[ $(stat -c '%U:%G:%a' -- "${STATE_DIR}") == "root:root:700" ]] || \
+  die "executor state directory owner or mode is invalid"
+if [[ ${binary_managed_link} == true ]]; then
+  validate_managed_runtime_binary
+else
+  [[ $(sha256sum -- "${BINARY_DEST}" | awk 'NR == 1 { print $1 }') == \
+    "$(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')" ]] || \
+    die "installed binary destination changed during activation"
+fi
+
+installation_complete=true
+printf '%s\n' "Verified Host Agent bundle archive SHA-256: ${ARTIFACT_SHA256}"
+printf '%s\n' "AutoStream local executor installed with protocol v1 probe compatibility and protocol v2 bounded mutation."
+printf '%s\n' "${policy_validation}"

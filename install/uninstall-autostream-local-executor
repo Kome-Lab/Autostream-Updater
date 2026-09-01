@@ -1,0 +1,426 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly AGENT_GROUP="autostream-host-agent"
+readonly CONFIG_DIR="/etc/autostream-local-executor"
+readonly POLICY_DEST="${CONFIG_DIR}/policy.json"
+readonly BINARY_DEST="/usr/local/libexec/autostream-local-executor"
+readonly SERVICE_DEST="/etc/systemd/system/autostream-local-executor.service"
+readonly SOCKET_DEST="/etc/systemd/system/autostream-local-executor.socket"
+readonly TMPFILES_DEST="/etc/tmpfiles.d/autostream-local-executor.conf"
+readonly SOCKET_DIR="/run/autostream-local-executor"
+readonly STATE_DIR="/var/lib/autostream-local-executor"
+readonly HOST_RUNTIME_CURRENT="/opt/autostream/host-agent/current"
+readonly HOST_RUNTIME_SLOTS="/opt/autostream/host-agent/slots"
+readonly HOST_AGENT_SERVICE_NAME="autostream-host-agent.service"
+readonly SELF_UPDATE_RECOVERY_TIMER_A="autostream-host-self-update-recovery@a.timer"
+readonly SELF_UPDATE_RECOVERY_TIMER_B="autostream-host-self-update-recovery@b.timer"
+readonly SELF_UPDATE_RECOVERY_SERVICE_A="autostream-host-self-update-recovery@a.service"
+readonly SELF_UPDATE_RECOVERY_SERVICE_B="autostream-host-self-update-recovery@b.service"
+readonly PRIVILEGED_LOCK_DIR="/run/autostream-updater"
+readonly SHARED_HOST_SETUP_LOCK="${PRIVILEGED_LOCK_DIR}/.autostream-runtime-host-setup.lock"
+readonly HOST_LIFECYCLE_LOCK="${PRIVILEGED_LOCK_DIR}/.autostream-host-lifecycle.lock"
+
+die() {
+  printf 'uninstall-autostream-local-executor: %s\n' "$*" >&2
+  exit 1
+}
+
+purge=false
+case "${1:-}" in
+  "")
+    ;;
+  --purge)
+    purge=true
+    ;;
+  -h|--help)
+    printf '%s\n' "Usage: uninstall-autostream-local-executor [--purge]"
+    exit 0
+    ;;
+  *)
+    printf 'uninstall-autostream-local-executor: unknown argument: %s\n' "$1" >&2
+    exit 1
+    ;;
+esac
+[[ $# -le 1 ]] || {
+  printf '%s\n' 'uninstall-autostream-local-executor: too many arguments' >&2
+  exit 1
+}
+[[ ${EUID} -eq 0 ]] || {
+  printf '%s\n' 'uninstall-autostream-local-executor: must run as root' >&2
+  exit 1
+}
+for command in dirname find flock install mktemp mountpoint mv readlink rm rmdir stat sync systemctl systemd-tmpfiles; do
+  command -v "${command}" >/dev/null 2>&1 || {
+    printf 'uninstall-autostream-local-executor: required command %s is unavailable\n' "${command}" >&2
+    exit 1
+  }
+done
+
+validate_lock_parent_chain() {
+  local path=$1
+  local current
+  local parent
+  local mode
+  current=$(dirname -- "${path}")
+  while true; do
+    [[ -d ${current} && ! -L ${current} ]] || \
+      die "privileged lock parents must be non-symlink directories"
+    [[ $(stat -c '%U:%G' -- "${current}") == "root:root" ]] || \
+      die "privileged lock parents must be owned by root:root"
+    mode=$(stat -c '%a' -- "${current}")
+    (( (8#${mode} & 0022) == 0 )) || \
+      die "privileged lock parents must not be writable by group or other"
+    parent=$(dirname -- "${current}")
+    [[ ${parent} == "${current}" ]] && break
+    current=${parent}
+  done
+}
+
+ensure_privileged_lock_path() {
+  local path=$1
+  if [[ -e ${path} || -L ${path} ]]; then
+    [[ -f ${path} &&
+      ! -L ${path} &&
+      $(readlink -f -- "${path}") == "${path}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${path}") == "root:root:600:1" ]] || \
+      die "privileged lock path is unsafe: ${path}"
+  fi
+}
+
+validate_privileged_lock_fd() {
+  local path=$1
+  local fd=$2
+  local expected_directory_identity=$3
+  local expected_file_identity=$4
+  local fd_path="/proc/self/fd/${fd}"
+  [[ $(stat -c '%d:%i' -- "${PRIVILEGED_LOCK_DIR}") == "${expected_directory_identity}" &&
+    -f ${path} &&
+    ! -L ${path} &&
+    -f ${fd_path} &&
+    $(stat -c '%U:%G:%a:%h' -- "${path}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- "${fd_path}") == "root:root:600:1" &&
+    ${expected_file_identity} == "$(stat -c '%d:%i' -- "${path}")" &&
+    ${expected_file_identity} == "$(stat -Lc '%d:%i' -- "${fd_path}")" ]]
+}
+
+acquire_host_runtime_locks() {
+  local directory_identity
+  local setup_identity
+  local lifecycle_identity
+  local setup_created=false
+  local lifecycle_created=false
+
+  validate_lock_parent_chain "${PRIVILEGED_LOCK_DIR}"
+  if [[ -e ${PRIVILEGED_LOCK_DIR} || -L ${PRIVILEGED_LOCK_DIR} ]]; then
+    [[ -d ${PRIVILEGED_LOCK_DIR} &&
+      ! -L ${PRIVILEGED_LOCK_DIR} &&
+      $(readlink -f -- "${PRIVILEGED_LOCK_DIR}") == "${PRIVILEGED_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${PRIVILEGED_LOCK_DIR}") == "root:root:700" ]] || \
+      die "privileged lock directory is unsafe"
+  else
+    install -d -o root -g root -m 0700 "${PRIVILEGED_LOCK_DIR}" || \
+      die "could not create the privileged lock directory"
+    [[ -d ${PRIVILEGED_LOCK_DIR} &&
+      ! -L ${PRIVILEGED_LOCK_DIR} &&
+      $(readlink -f -- "${PRIVILEGED_LOCK_DIR}") == "${PRIVILEGED_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${PRIVILEGED_LOCK_DIR}") == "root:root:700" ]] || \
+      die "could not create a safe privileged lock directory"
+    sync -f /run
+  fi
+  validate_lock_parent_chain "${SHARED_HOST_SETUP_LOCK}"
+  directory_identity="$(stat -c '%d:%i' -- "${PRIVILEGED_LOCK_DIR}")" || \
+    die "could not record the privileged lock directory identity"
+
+  [[ -e ${SHARED_HOST_SETUP_LOCK} || -L ${SHARED_HOST_SETUP_LOCK} ]] || setup_created=true
+  ensure_privileged_lock_path "${SHARED_HOST_SETUP_LOCK}"
+  exec 8<>"${SHARED_HOST_SETUP_LOCK}" || die "could not open the shared host-setup lock"
+  setup_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)" || \
+    die "could not record the shared host-setup lock identity"
+  validate_privileged_lock_fd \
+    "${SHARED_HOST_SETUP_LOCK}" 8 "${directory_identity}" "${setup_identity}" || \
+    die "shared host-setup lock identity changed while being opened"
+  if [[ ${setup_created} == true ]]; then
+    sync -f "${PRIVILEGED_LOCK_DIR}"
+  fi
+  flock -n 8 || die "another AutoStream installer is provisioning shared host state"
+  validate_privileged_lock_fd \
+    "${SHARED_HOST_SETUP_LOCK}" 8 "${directory_identity}" "${setup_identity}" || \
+    die "shared host-setup lock identity changed after acquisition"
+
+  [[ -e ${HOST_LIFECYCLE_LOCK} || -L ${HOST_LIFECYCLE_LOCK} ]] || lifecycle_created=true
+  ensure_privileged_lock_path "${HOST_LIFECYCLE_LOCK}"
+  exec 9<>"${HOST_LIFECYCLE_LOCK}" || die "could not open the Host lifecycle lock"
+  lifecycle_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)" || \
+    die "could not record the Host lifecycle lock identity"
+  validate_privileged_lock_fd \
+    "${HOST_LIFECYCLE_LOCK}" 9 "${directory_identity}" "${lifecycle_identity}" || \
+    die "Host lifecycle lock identity changed while being opened"
+  if [[ ${lifecycle_created} == true ]]; then
+    sync -f "${PRIVILEGED_LOCK_DIR}"
+  fi
+  flock -n 9 || die "another privileged Host lifecycle operation is active"
+  validate_privileged_lock_fd \
+    "${HOST_LIFECYCLE_LOCK}" 9 "${directory_identity}" "${lifecycle_identity}" || \
+    die "Host lifecycle lock identity changed after acquisition"
+}
+
+acquire_host_runtime_locks
+
+verify_managed_file() {
+  local path=$1
+  local expected=$2
+  local label=$3
+  [[ ! -e ${path} && ! -L ${path} ]] && return 1
+  [[ -f ${path} && ! -L ${path} ]] || {
+    printf 'uninstall-autostream-local-executor: %s is not a managed regular file\n' "${label}" >&2
+    exit 1
+  }
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "${expected}" ]] || {
+    printf 'uninstall-autostream-local-executor: %s owner or mode drifted; refusing removal\n' "${label}" >&2
+    exit 1
+  }
+  return 0
+}
+
+verify_managed_binary() {
+  local resolved
+  [[ ! -e ${BINARY_DEST} && ! -L ${BINARY_DEST} ]] && return 1
+  if [[ -L ${BINARY_DEST} ]]; then
+    [[ $(readlink -- "${BINARY_DEST}") == "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" ]] || {
+      printf '%s\n' 'uninstall-autostream-local-executor: binary link escaped the managed A/B runtime' >&2
+      exit 1
+    }
+    resolved=$(readlink -f -- "${BINARY_DEST}")
+    [[ ${resolved} == "${HOST_RUNTIME_SLOTS}/a/bin/autostream-local-executor" ||
+      ${resolved} == "${HOST_RUNTIME_SLOTS}/b/bin/autostream-local-executor" ]] || {
+      printf '%s\n' 'uninstall-autostream-local-executor: binary resolved outside the managed A/B slots' >&2
+      exit 1
+    }
+    [[ -f ${resolved} && ! -L ${resolved} &&
+      $(stat -c '%U:%G:%a' -- "${resolved}") == "root:root:755" ]] || {
+      printf '%s\n' 'uninstall-autostream-local-executor: managed A/B binary owner or mode drifted' >&2
+      exit 1
+    }
+    return 0
+  fi
+  verify_managed_file "${BINARY_DEST}" "root:root:755" "binary"
+}
+
+purge_policy=false
+purge_state=false
+if [[ ${purge} == true ]] && verify_managed_file "${POLICY_DEST}" "root:root:600" "policy"; then
+  purge_policy=true
+fi
+verify_managed_binary || true
+verify_managed_file "${SERVICE_DEST}" "root:root:644" "service unit" || true
+verify_managed_file "${SOCKET_DEST}" "root:root:644" "socket unit" || true
+verify_managed_file "${TMPFILES_DEST}" "root:root:644" "tmpfiles policy" || true
+
+runtime_dir_present=false
+if [[ -e ${SOCKET_DIR} || -L ${SOCKET_DIR} ]]; then
+  [[ -d ${SOCKET_DIR} && ! -L ${SOCKET_DIR} ]] || {
+    printf '%s\n' 'uninstall-autostream-local-executor: socket path is not a managed directory' >&2
+    exit 1
+  }
+  [[ $(stat -c '%U:%G:%a' -- "${SOCKET_DIR}") == "root:${AGENT_GROUP}:750" ]] || {
+    printf '%s\n' 'uninstall-autostream-local-executor: socket directory owner or mode drifted; refusing removal' >&2
+    exit 1
+  }
+  unexpected_runtime_entry=$(find "${SOCKET_DIR}" -mindepth 1 -maxdepth 1 ! -name executor.sock -print -quit)
+  [[ -z ${unexpected_runtime_entry} ]] || {
+    printf '%s\n' 'uninstall-autostream-local-executor: socket directory contains an unmanaged entry' >&2
+    exit 1
+  }
+  if [[ -e ${SOCKET_DIR}/executor.sock || -L ${SOCKET_DIR}/executor.sock ]]; then
+    [[ -S ${SOCKET_DIR}/executor.sock && ! -L ${SOCKET_DIR}/executor.sock ]] || {
+      printf '%s\n' 'uninstall-autostream-local-executor: executor socket path is unsafe' >&2
+      exit 1
+    }
+    [[ $(stat -c '%U:%G:%a' -- "${SOCKET_DIR}/executor.sock") == "root:${AGENT_GROUP}:660" ]] || {
+      printf '%s\n' 'uninstall-autostream-local-executor: executor socket owner or mode drifted' >&2
+      exit 1
+    }
+  fi
+  runtime_dir_present=true
+fi
+
+if [[ -e ${STATE_DIR} || -L ${STATE_DIR} ]]; then
+  [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} ]] || {
+    printf '%s\n' 'uninstall-autostream-local-executor: state path is not a managed directory' >&2
+    exit 1
+  }
+  [[ $(stat -c '%U:%G:%a' -- "${STATE_DIR}") == "root:root:700" ]] || {
+    printf '%s\n' 'uninstall-autostream-local-executor: state directory owner or mode drifted' >&2
+    exit 1
+  }
+  nested_mount=$(find "${STATE_DIR}" -xdev -type d -exec mountpoint -q -- {} \; -print -quit)
+  [[ -z ${nested_mount} ]] || {
+    printf '%s\n' 'uninstall-autostream-local-executor: state directory contains a mount point; refusing removal' >&2
+    exit 1
+  }
+  [[ ${purge} == true ]] && purge_state=true
+fi
+
+was_socket_enabled=false
+was_socket_active=false
+was_service_active=false
+binary_backup=
+service_backup=
+socket_backup=
+tmpfiles_backup=
+policy_backup=
+state_backup=
+
+quarantine_file() {
+  local source=$1
+  local directory=$2
+  local template=$3
+  if [[ ! -e ${source} ]]; then
+    return 0
+  fi
+  local backup
+  backup=$(mktemp "${directory}/${template}.XXXXXX")
+  rm -f -- "${backup}"
+  mv -T -- "${source}" "${backup}"
+  printf '%s' "${backup}"
+}
+
+restore_quarantined_file() {
+  local backup=$1
+  local destination=$2
+  if [[ -n ${backup} && -e ${backup} ]]; then
+    mv -fT -- "${backup}" "${destination}" >/dev/null 2>&1 || true
+  fi
+}
+
+freeze_host_runtime_producers() {
+  local state
+  local unit
+  systemctl disable --now "${HOST_AGENT_SERVICE_NAME}" >/dev/null 2>&1 || true
+  for unit in "${SELF_UPDATE_RECOVERY_TIMER_A}" "${SELF_UPDATE_RECOVERY_TIMER_B}"; do
+    systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+  done
+  for unit in "${SELF_UPDATE_RECOVERY_SERVICE_A}" "${SELF_UPDATE_RECOVERY_SERVICE_B}"; do
+    systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+    systemctl stop "${unit}" >/dev/null 2>&1 || true
+  done
+  for unit in \
+    "${HOST_AGENT_SERVICE_NAME}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_A}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_B}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_A}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_B}"; do
+    state=$(systemctl is-active "${unit}" 2>/dev/null || true)
+    case "${state}" in
+      inactive|failed|unknown)
+        ;;
+      *)
+        printf 'uninstall-autostream-local-executor: producer unit %s active state is %s; refusing purge\n' \
+          "${unit}" "${state:-unavailable}" >&2
+        exit 1
+        ;;
+    esac
+  done
+  for unit in \
+    "${HOST_AGENT_SERVICE_NAME}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_A}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_B}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_A}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_B}"; do
+    state=$(systemctl is-enabled "${unit}" 2>/dev/null || true)
+    case "${state}" in
+      disabled|masked|static|indirect|not-found)
+        ;;
+      *)
+        printf 'uninstall-autostream-local-executor: producer unit %s enabled state is %s; refusing purge\n' \
+          "${unit}" "${state:-unavailable}" >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
+systemctl is-enabled --quiet autostream-local-executor.socket && was_socket_enabled=true || true
+systemctl is-active --quiet autostream-local-executor.socket && was_socket_active=true || true
+systemctl is-active --quiet autostream-local-executor.service && was_service_active=true || true
+restore_service_state=true
+restore_on_failure() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ ${restore_service_state} == true ]]; then
+    restore_quarantined_file "${policy_backup}" "${POLICY_DEST}"
+    restore_quarantined_file "${binary_backup}" "${BINARY_DEST}"
+    restore_quarantined_file "${service_backup}" "${SERVICE_DEST}"
+    restore_quarantined_file "${socket_backup}" "${SOCKET_DEST}"
+    restore_quarantined_file "${tmpfiles_backup}" "${TMPFILES_DEST}"
+    if [[ -n ${state_backup} && -d ${state_backup} && ! -e ${STATE_DIR} ]]; then
+      mv -T -- "${state_backup}" "${STATE_DIR}" >/dev/null 2>&1 || true
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemd-tmpfiles --create "${TMPFILES_DEST}" >/dev/null 2>&1 || true
+    if [[ ${was_socket_enabled} == true ]]; then
+      systemctl enable autostream-local-executor.socket >/dev/null 2>&1 || true
+    fi
+    if [[ ${was_socket_active} == true ]]; then
+      systemctl start autostream-local-executor.socket >/dev/null 2>&1 || true
+    fi
+    if [[ ${was_service_active} == true ]]; then
+      systemctl start autostream-local-executor.service >/dev/null 2>&1 || true
+    fi
+  fi
+  exit "${status}"
+}
+trap restore_on_failure EXIT INT TERM
+
+if [[ ${purge} == true ]]; then
+  # The documented purge order removes the executor before the Host Agent.
+  # Freeze every process that can recreate executor state before moving the
+  # durable ledger. A failed purge deliberately leaves these producers frozen.
+  freeze_host_runtime_producers
+fi
+systemctl stop autostream-local-executor.service >/dev/null 2>&1 || true
+systemctl disable --now autostream-local-executor.socket >/dev/null 2>&1 || true
+
+if [[ ${runtime_dir_present} == true ]]; then
+  [[ ! -e ${SOCKET_DIR}/executor.sock && ! -L ${SOCKET_DIR}/executor.sock ]] || {
+    printf '%s\n' 'uninstall-autostream-local-executor: systemd did not remove the executor socket' >&2
+    exit 1
+  }
+  rmdir -- /run/autostream-local-executor
+fi
+
+if [[ ${purge_state} == true ]]; then
+  state_backup=$(mktemp -d /var/lib/.autostream-local-executor.uninstall.XXXXXX)
+  rmdir -- "${state_backup}"
+  mv -T -- "${STATE_DIR}" "${state_backup}"
+  # Purging a durable ledger is irreversible. A partial delete must leave the
+  # executor stopped, never restart against a damaged ledger.
+  restore_service_state=false
+  find "${state_backup}" -xdev -mindepth 1 -delete
+  rmdir -- "${state_backup}"
+fi
+
+binary_backup=$(quarantine_file "${BINARY_DEST}" /usr/local/libexec .autostream-local-executor.uninstall)
+service_backup=$(quarantine_file "${SERVICE_DEST}" /etc/systemd/system .autostream-local-executor.service.uninstall)
+socket_backup=$(quarantine_file "${SOCKET_DEST}" /etc/systemd/system .autostream-local-executor.socket.uninstall)
+tmpfiles_backup=$(quarantine_file "${TMPFILES_DEST}" /etc/tmpfiles.d .autostream-local-executor.conf.uninstall)
+if [[ ${purge_policy} == true ]]; then
+  policy_backup=$(quarantine_file "${POLICY_DEST}" "${CONFIG_DIR}" .policy.json.uninstall)
+fi
+systemctl daemon-reload
+systemctl reset-failed autostream-local-executor.service autostream-local-executor.socket >/dev/null 2>&1 || true
+
+restore_service_state=false
+rm -f -- "${binary_backup}" "${service_backup}" "${socket_backup}" "${tmpfiles_backup}" "${policy_backup}"
+trap - EXIT INT TERM
+
+if [[ ${purge} == true ]]; then
+  printf '%s\n' "Local executor binary, units, runtime directory, policy, and state removed."
+else
+  printf '%s\n' "Local executor binary, units, and runtime directory removed; policy was preserved at ${POLICY_DEST} and state was preserved at ${STATE_DIR}."
+fi

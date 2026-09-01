@@ -1,0 +1,3781 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly AGENT_USER="autostream-host-agent"
+readonly AGENT_GROUP="autostream-host-agent"
+readonly AGENT_USER_ROLLBACK_LOGIN="autostream-ha-install-rollback"
+readonly CONFIG_DIR="/etc/autostream-host-agent"
+readonly CONFIG_DEST="${CONFIG_DIR}/identity.json"
+readonly LEGACY_CONFIG_DEST="/etc/autostream/host-agent.json"
+readonly BINARY_DEST="/usr/local/bin/autostream-host-agent"
+readonly UNIT_DEST="/etc/systemd/system/autostream-host-agent.service"
+readonly STATE_DIR="/var/lib/autostream-host-agent"
+readonly UNIT_NAME="autostream-host-agent.service"
+readonly LOCAL_EXECUTOR_CONFIG_DIR="/etc/autostream-local-executor"
+readonly LOCAL_EXECUTOR_POLICY_DEST="${LOCAL_EXECUTOR_CONFIG_DIR}/policy.json"
+readonly LOCAL_EXECUTOR_DATA_DIR="/opt/autostream/local-executor"
+readonly LOCAL_EXECUTOR_PORT_CONFIG_DIR="${LOCAL_EXECUTOR_DATA_DIR}/ports"
+readonly LOCAL_EXECUTOR_BINARY_DEST="/usr/local/libexec/autostream-local-executor"
+readonly LOCAL_EXECUTOR_SERVICE_DEST="/etc/systemd/system/autostream-local-executor.service"
+readonly LOCAL_EXECUTOR_SOCKET_DEST="/etc/systemd/system/autostream-local-executor.socket"
+readonly LOCAL_EXECUTOR_TMPFILES_DEST="/etc/tmpfiles.d/autostream-local-executor.conf"
+readonly SELF_UPDATE_RECOVERY_SERVICE_DEST="/etc/systemd/system/autostream-host-self-update-recovery@.service"
+readonly SELF_UPDATE_RECOVERY_TIMER_DEST="/etc/systemd/system/autostream-host-self-update-recovery@.timer"
+readonly LOCAL_EXECUTOR_SERVICE_NAME="autostream-local-executor.service"
+readonly LOCAL_EXECUTOR_SOCKET_NAME="autostream-local-executor.socket"
+readonly SELF_UPDATE_RECOVERY_TIMER_A="autostream-host-self-update-recovery@a.timer"
+readonly SELF_UPDATE_RECOVERY_TIMER_B="autostream-host-self-update-recovery@b.timer"
+readonly SELF_UPDATE_RECOVERY_SERVICE_A="autostream-host-self-update-recovery@a.service"
+readonly SELF_UPDATE_RECOVERY_SERVICE_B="autostream-host-self-update-recovery@b.service"
+readonly SYSTEMCTL_PATH="/usr/bin/systemctl"
+readonly SYSTEMD_RUN_PATH="/usr/bin/systemd-run"
+readonly RUNUSER_PATH="/usr/sbin/runuser"
+readonly ENV_PATH="/usr/bin/env"
+readonly TEST_PATH="/usr/bin/test"
+readonly ACTIVE_JOB_RECOVERY_GUARD_BASE="autostream-host-agent-upgrade-recovery-guard"
+readonly ACTIVE_JOB_RECOVERY_GUARD_SERVICE="${ACTIVE_JOB_RECOVERY_GUARD_BASE}.service"
+readonly ACTIVE_JOB_RECOVERY_GUARD_TIMER="${ACTIVE_JOB_RECOVERY_GUARD_BASE}.timer"
+readonly ACTIVE_JOB_RECOVERY_GUARD_SERVICE_PATH="/run/systemd/transient/${ACTIVE_JOB_RECOVERY_GUARD_SERVICE}"
+readonly ACTIVE_JOB_RECOVERY_GUARD_TIMER_PATH="/run/systemd/transient/${ACTIVE_JOB_RECOVERY_GUARD_TIMER}"
+readonly ACTIVE_JOB_RECOVERY_CLEAR_MARKER="/var/lib/autostream-host-agent/journal.clear-active.pending.json"
+readonly ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR="${UNIT_DEST}.d"
+readonly ACTIVE_JOB_RECOVERY_CLEAR_FENCE="${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}/90-autostream-upgrade-recovery-guard.conf"
+readonly ACTIVE_JOB_RECOVERY_GUARD_CANDIDATE_PREFIX="/run/autostream-host-agent-upgrade-guard."
+# The one-shot recovery is capped at two minutes and the paired activation and
+# rollback windows total at most seven more. Keep ample room for pre-fence
+# validation and fsync work while still recovering an abruptly killed wrapper.
+readonly ACTIVE_JOB_RECOVERY_GUARD_DELAY="25m"
+readonly HOST_RUNTIME_ROOT="/opt/autostream/host-agent"
+readonly HOST_RUNTIME_SLOTS="${HOST_RUNTIME_ROOT}/slots"
+readonly HOST_RUNTIME_INITIAL_SLOT="${HOST_RUNTIME_SLOTS}/a"
+readonly HOST_RUNTIME_CURRENT="${HOST_RUNTIME_ROOT}/current"
+readonly HOST_RUNTIME_AGENT="${HOST_RUNTIME_INITIAL_SLOT}/bin/autostream-host-agent"
+readonly HOST_RUNTIME_EXECUTOR="${HOST_RUNTIME_INITIAL_SLOT}/bin/autostream-local-executor"
+readonly SHARED_HOST_SETUP_LOCK_DIR="/run/autostream-updater"
+readonly SHARED_HOST_SETUP_LOCK="${SHARED_HOST_SETUP_LOCK_DIR}/.autostream-runtime-host-setup.lock"
+readonly HOST_LIFECYCLE_LOCK="${SHARED_HOST_SETUP_LOCK_DIR}/.autostream-host-lifecycle.lock"
+readonly ARTIFACT_MANIFEST_NAME="artifact-manifest.json"
+readonly MAX_ARCHIVE_SIZE=268435456
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  install-autostream-host-agent --prepare
+  install-autostream-host-agent --config PATH
+  install-autostream-host-agent --upgrade
+  install-autostream-host-agent --upgrade --recover-active-job
+
+--prepare installs the service account, Host Agent, and the same-release local
+executor binary and units. It also prepares the root:root 0700 policy and port
+configuration directories, but does not create either identity/policy, enable
+the runtime units, or start either runtime service. It enables only the
+root-owned A/B recovery timers. Complete the generated Control Panel configure
+command before explicitly enabling the Host Agent and executor socket.
+
+--config preserves the legacy one-step installation. PATH must be a regular
+JSON file containing exactly panel_url, node_id, runtime_token, and
+service_name. The token is copied from that file and is never accepted through
+an argument or environment variable.
+
+--upgrade verifies the adjacent Host Agent archive, then atomically upgrades
+an existing healthy managed A/B Host Agent and Local Executor runtime together.
+It preserves the installed identity and Local Executor policy.
+
+--recover-active-job is accepted only with --upgrade. It uses the verified
+candidate Host Agent once as the service account to reconcile the exact active
+Host update journal before continuing the paired managed runtime upgrade.
+EOF
+}
+
+die() {
+  printf 'install-autostream-host-agent: %s\n' "$*" >&2
+  exit 1
+}
+
+pending_cleanup_signal=""
+
+defer_cleanup_signals() {
+  trap 'pending_cleanup_signal=INT' INT
+  trap 'pending_cleanup_signal=TERM' TERM
+}
+
+resume_cleanup_signals() {
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  local deferred_signal=${pending_cleanup_signal}
+  pending_cleanup_signal=""
+  case "${deferred_signal}" in
+    "") return 0 ;;
+    INT) return 130 ;;
+    TERM) return 143 ;;
+    *) return 1 ;;
+  esac
+}
+
+arm_cleanup_handler() {
+  local handler=$1
+  trap "${handler}" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+[[ ${EUID} -eq 0 ]] || die "must run as root"
+
+install_mode=""
+config_source=""
+recover_active_job=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prepare)
+      [[ -z ${install_mode} ]] || die "--prepare, --config, and --upgrade are mutually exclusive"
+      install_mode="prepare"
+      shift
+      ;;
+    --config)
+      [[ $# -ge 2 && -n $2 ]] || die "--config requires a path"
+      [[ -z ${install_mode} ]] || die "--prepare, --config, and --upgrade are mutually exclusive"
+      install_mode="configured"
+      config_source=$2
+      shift 2
+      ;;
+    --upgrade)
+      [[ -z ${install_mode} ]] || die "--prepare, --config, and --upgrade are mutually exclusive"
+      install_mode="upgrade"
+      shift
+      ;;
+    --recover-active-job)
+      [[ ${recover_active_job} == false ]] || die "--recover-active-job may be specified only once"
+      recover_active_job=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+[[ -n ${install_mode} ]] || {
+  usage
+  die "--prepare, --config PATH, or --upgrade is required"
+}
+[[ ${recover_active_job} == false || ${install_mode} == "upgrade" ]] || \
+  die "--recover-active-job requires --upgrade"
+for command in awk basename chmod chown dd dirname find flock getent groupadd groupdel id install jq ln mkdir mktemp mv readlink rm rmdir runuser sha256sum sort stat sync systemctl tar test tr uname uniq useradd userdel usermod; do
+  command -v "${command}" >/dev/null 2>&1 || die "required command is unavailable: ${command}"
+done
+if [[ ${recover_active_job} == true ]]; then
+  for command in sleep systemd-run; do
+    command -v "${command}" >/dev/null 2>&1 || \
+      die "required command is unavailable: ${command}"
+  done
+fi
+if [[ ${install_mode} == "configured" ]]; then
+  [[ ${config_source} = /* ]] || die "--config must be an absolute path"
+fi
+
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly RELEASE_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+ARTIFACT_ID="$(basename -- "${RELEASE_ROOT}")" || die "could not resolve the Host Agent release directory name"
+readonly ARTIFACT_ID
+if [[ ! ${ARTIFACT_ID} =~ ^autostream-host-agent_(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?)_linux_(amd64|arm64)$ ]]; then
+  die "the extracted Host Agent directory name is invalid: ${ARTIFACT_ID}"
+fi
+readonly VERSION="${BASH_REMATCH[1]}"
+readonly ARCH="${BASH_REMATCH[4]}"
+case "$(uname -m)" in
+  x86_64) readonly HOST_ARCH="amd64" ;;
+  aarch64|arm64) readonly HOST_ARCH="arm64" ;;
+  *) die "unsupported host architecture: $(uname -m)" ;;
+esac
+[[ ${ARCH} == "${HOST_ARCH}" ]] || \
+  die "artifact architecture ${ARCH} does not match host ${HOST_ARCH}"
+
+ARTIFACT_PARENT="$(dirname -- "${RELEASE_ROOT}")" || die "could not resolve the release parent directory"
+readonly ARTIFACT_PARENT
+readonly ARCHIVE_NAME="${ARTIFACT_ID}.tar.gz"
+readonly ARCHIVE_SOURCE="${ARTIFACT_PARENT}/${ARCHIVE_NAME}"
+readonly RUNNING_INSTALLER_SOURCE="${SCRIPT_DIR}/install-autostream-host-agent"
+readonly RUNNING_BINARY_SOURCE="${RELEASE_ROOT}/bin/autostream-host-agent"
+readonly RUNNING_UNIT_SOURCE="${RELEASE_ROOT}/systemd/autostream-host-agent.service"
+readonly RUNNING_LOCAL_EXECUTOR_POLICY_TEMPLATE="${RELEASE_ROOT}/autostream-local-executor-policy.json.example"
+readonly RUNNING_LOCAL_EXECUTOR_BINARY_SOURCE="${RELEASE_ROOT}/bin/autostream-local-executor"
+readonly RUNNING_LOCAL_EXECUTOR_SERVICE_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.service"
+readonly RUNNING_LOCAL_EXECUTOR_SOCKET_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.socket"
+readonly RUNNING_LOCAL_EXECUTOR_TMPFILES_SOURCE="${RELEASE_ROOT}/systemd/autostream-local-executor.tmpfiles"
+readonly RUNNING_SELF_UPDATE_RECOVERY_SERVICE_SOURCE="${RELEASE_ROOT}/systemd/autostream-host-self-update-recovery@.service"
+readonly RUNNING_SELF_UPDATE_RECOVERY_TIMER_SOURCE="${RELEASE_ROOT}/systemd/autostream-host-self-update-recovery@.timer"
+
+validate_root_parent_chain() {
+  local path=$1
+  local label=$2
+  local current
+  local parent
+  local mode
+  current=$(dirname -- "${path}")
+  while true; do
+    [[ -d ${current} && ! -L ${current} ]] || die "${label} parents must be non-symlink directories"
+    [[ $(stat -c '%U:%G' -- "${current}") == "root:root" ]] || \
+      die "${label} parents must be owned by root:root"
+    mode=$(stat -c '%a' -- "${current}")
+    (( (8#${mode} & 0022) == 0 )) || \
+      die "${label} parents must not be writable by group or other"
+    parent=$(dirname -- "${current}")
+    [[ ${parent} == "${current}" ]] && break
+    current=${parent}
+  done
+}
+
+acquire_shared_host_setup_lock() {
+  local directory_identity
+  local fd_identity
+  local lock_created=false
+
+  # The published lock path is permanent coordination state. Never unlink it:
+  # doing so while another process holds the old inode would split the lock.
+  validate_root_parent_chain "${SHARED_HOST_SETUP_LOCK_DIR}" "shared host-setup lock"
+  if [[ -e ${SHARED_HOST_SETUP_LOCK_DIR} || -L ${SHARED_HOST_SETUP_LOCK_DIR} ]]; then
+    [[ -d ${SHARED_HOST_SETUP_LOCK_DIR} &&
+      ! -L ${SHARED_HOST_SETUP_LOCK_DIR} &&
+      $(readlink -f -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${SHARED_HOST_SETUP_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "root:root:700" ]] || \
+      die "shared host-setup lock directory is unsafe"
+  else
+    install -d -o root -g root -m 0700 "${SHARED_HOST_SETUP_LOCK_DIR}" || \
+      die "could not create the shared host-setup lock directory"
+    [[ -d ${SHARED_HOST_SETUP_LOCK_DIR} &&
+      ! -L ${SHARED_HOST_SETUP_LOCK_DIR} &&
+      $(readlink -f -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${SHARED_HOST_SETUP_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "root:root:700" ]] || \
+      die "could not create a safe shared host-setup lock directory"
+    sync -f /run
+  fi
+  validate_root_parent_chain "${SHARED_HOST_SETUP_LOCK}" "shared host-setup lock"
+  directory_identity="$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}")" || \
+    die "could not record the shared host-setup lock directory identity"
+
+  if [[ -e ${SHARED_HOST_SETUP_LOCK} || -L ${SHARED_HOST_SETUP_LOCK} ]]; then
+    [[ -f ${SHARED_HOST_SETUP_LOCK} &&
+      ! -L ${SHARED_HOST_SETUP_LOCK} &&
+      $(readlink -f -- "${SHARED_HOST_SETUP_LOCK}") == "${SHARED_HOST_SETUP_LOCK}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" ]] || \
+      die "shared host-setup lock path is unsafe"
+  else
+    lock_created=true
+  fi
+  exec 8<>"${SHARED_HOST_SETUP_LOCK}" || die "could not open the shared host-setup lock"
+  fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)" || \
+    die "could not record the shared host-setup lock identity"
+  [[ $(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${directory_identity}" &&
+    -f ${SHARED_HOST_SETUP_LOCK} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK} &&
+    -f /proc/self/fd/8 &&
+    $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/8) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK}")" ]] || \
+    die "shared host-setup lock identity changed while being opened"
+  if [[ ${lock_created} == true ]]; then
+    sync -f "${SHARED_HOST_SETUP_LOCK_DIR}"
+  fi
+  flock -n 8 || die "another AutoStream installer is provisioning shared host state"
+  [[ $(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${directory_identity}" &&
+    -f ${SHARED_HOST_SETUP_LOCK} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK} &&
+    -f /proc/self/fd/8 &&
+    $(stat -c '%U:%G:%a:%h' -- "${SHARED_HOST_SETUP_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/8) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK}")" ]] || \
+    die "shared host-setup lock identity changed after acquisition"
+}
+
+acquire_host_lifecycle_lock() {
+  local directory_identity
+  local fd_identity
+  local lock_created=false
+
+  validate_root_parent_chain "${HOST_LIFECYCLE_LOCK}" "Host lifecycle lock"
+  [[ -d ${SHARED_HOST_SETUP_LOCK_DIR} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK_DIR} &&
+    $(readlink -f -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${SHARED_HOST_SETUP_LOCK_DIR}" &&
+    $(stat -c '%U:%G:%a' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "root:root:700" ]] || \
+    die "Host lifecycle lock directory is unsafe"
+  directory_identity="$(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}")" || \
+    die "could not record the Host lifecycle lock directory identity"
+
+  if [[ -e ${HOST_LIFECYCLE_LOCK} || -L ${HOST_LIFECYCLE_LOCK} ]]; then
+    [[ -f ${HOST_LIFECYCLE_LOCK} &&
+      ! -L ${HOST_LIFECYCLE_LOCK} &&
+      $(readlink -f -- "${HOST_LIFECYCLE_LOCK}") == "${HOST_LIFECYCLE_LOCK}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" ]] || \
+      die "Host lifecycle lock path is unsafe"
+  else
+    lock_created=true
+  fi
+  exec 9<>"${HOST_LIFECYCLE_LOCK}" || die "could not open the Host lifecycle lock"
+  fd_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)" || \
+    die "could not record the Host lifecycle lock identity"
+  [[ $(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${directory_identity}" &&
+    -f ${HOST_LIFECYCLE_LOCK} &&
+    ! -L ${HOST_LIFECYCLE_LOCK} &&
+    -f /proc/self/fd/9 &&
+    $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/9) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${HOST_LIFECYCLE_LOCK}")" ]] || \
+    die "Host lifecycle lock identity changed while being opened"
+  if [[ ${lock_created} == true ]]; then
+    sync -f "${SHARED_HOST_SETUP_LOCK_DIR}"
+  fi
+  flock -n 9 || die "another privileged Host lifecycle operation is active"
+  [[ $(stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == "${directory_identity}" &&
+    -f ${HOST_LIFECYCLE_LOCK} &&
+    ! -L ${HOST_LIFECYCLE_LOCK} &&
+    -f /proc/self/fd/9 &&
+    $(stat -c '%U:%G:%a:%h' -- "${HOST_LIFECYCLE_LOCK}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/9) == "root:root:600:1" &&
+    ${fd_identity} == "$(stat -c '%d:%i' -- "${HOST_LIFECYCLE_LOCK}")" ]] || \
+    die "Host lifecycle lock identity changed after acquisition"
+}
+
+validate_root_owned_release_source() {
+  local source=$1
+  local mode
+  [[ -f ${source} && ! -L ${source} ]] || die "release asset ${source} is missing or unsafe"
+  [[ $(stat -c '%U:%G' -- "${source}") == "root:root" ]] || \
+    die "release asset ${source} must be owned by root:root"
+  mode=$(stat -c '%a' -- "${source}")
+  (( (8#${mode} & 0022) == 0 )) || \
+    die "release asset ${source} must not be writable by group or other"
+  validate_root_parent_chain "${source}" "release source"
+}
+
+validate_root_owned_config_source() {
+  local source=$1
+  [[ -f ${source} && ! -L ${source} ]] || \
+    die "config source must be a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${source}") == "root:root:600" ]] || \
+    die "config source must be root:root 0600"
+  [[ $(stat -c %s -- "${source}") -gt 0 && $(stat -c %s -- "${source}") -le 1048576 ]] || \
+    die "config source must be between 1 byte and 1 MiB"
+  validate_root_parent_chain "${source}" "config source"
+}
+
+for source in \
+  "${RUNNING_INSTALLER_SOURCE}" \
+  "${RUNNING_BINARY_SOURCE}" \
+  "${RUNNING_UNIT_SOURCE}" \
+  "${RUNNING_LOCAL_EXECUTOR_POLICY_TEMPLATE}" \
+  "${RUNNING_LOCAL_EXECUTOR_BINARY_SOURCE}" \
+  "${RUNNING_LOCAL_EXECUTOR_SERVICE_SOURCE}" \
+  "${RUNNING_LOCAL_EXECUTOR_SOCKET_SOURCE}" \
+  "${RUNNING_LOCAL_EXECUTOR_TMPFILES_SOURCE}" \
+  "${RUNNING_SELF_UPDATE_RECOVERY_SERVICE_SOURCE}" \
+  "${RUNNING_SELF_UPDATE_RECOVERY_TIMER_SOURCE}"; do
+  [[ -f ${source} && ! -L ${source} ]] || \
+    die "same-release local executor preparation asset is missing or unsafe: ${source}"
+  validate_root_owned_release_source "${source}"
+done
+validate_root_owned_release_source "${ARCHIVE_SOURCE}"
+if [[ ${install_mode} == "configured" ]]; then
+  validate_root_owned_config_source "${config_source}"
+fi
+
+ARTIFACT_SOURCE_SIZE="$(stat -c %s -- "${ARCHIVE_SOURCE}")" || \
+  die "could not determine the source archive size"
+[[ ${ARTIFACT_SOURCE_SIZE} =~ ^[1-9][0-9]*$ ]] || die "source archive size is invalid"
+[[ ${ARTIFACT_SOURCE_SIZE} -le ${MAX_ARCHIVE_SIZE} ]] || \
+  die "source archive exceeds the ${MAX_ARCHIVE_SIZE}-byte limit"
+readonly ARTIFACT_SOURCE_SIZE
+
+BUNDLE_STAGE=""
+active_job_recovery_guard_armed=false
+active_job_recovery_stop_attempted=false
+active_job_recovery_setup_lock_held=false
+active_job_recovery_lifecycle_lock_held=false
+active_job_recovery_lock_dir_identity=""
+active_job_recovery_upgrade_committed=false
+active_job_recovery_original_current_target=""
+active_job_recovery_original_agent_identity=""
+active_job_recovery_original_agent_stat=""
+active_job_recovery_original_agent_sha256=""
+active_job_recovery_original_executor_identity=""
+active_job_recovery_original_executor_stat=""
+active_job_recovery_original_executor_sha256=""
+active_job_recovery_candidate_dir=""
+active_job_recovery_candidate_dir_identity=""
+active_job_recovery_candidate_path=""
+active_job_recovery_candidate_identity=""
+active_job_recovery_candidate_sha256=""
+active_job_recovery_clear_fence_installed=false
+active_job_recovery_clear_fence_identity=""
+active_job_recovery_clear_fence_sha256=""
+active_job_recovery_guard_candidate_dir=""
+active_job_recovery_guard_candidate_dir_identity=""
+active_job_recovery_guard_candidate_path=""
+active_job_recovery_guard_candidate_identity=""
+active_job_recovery_guard_candidate_sha256=""
+cleanup_bundle_stage() {
+  local status=$?
+  trap '' INT TERM
+  trap - EXIT
+  if declare -F cleanup_active_job_recovery >/dev/null 2>&1; then
+    if ! cleanup_active_job_recovery; then
+      status=1
+    fi
+  fi
+  if [[ -n ${BUNDLE_STAGE:-} &&
+    ${BUNDLE_STAGE} == /var/tmp/autostream-host-agent-install.* &&
+    -d ${BUNDLE_STAGE} &&
+    ! -L ${BUNDLE_STAGE} ]]; then
+    rm -rf -- "${BUNDLE_STAGE}"
+  fi
+  exit "${status}"
+}
+arm_cleanup_handler cleanup_bundle_stage
+
+defer_cleanup_signals
+BUNDLE_STAGE="$(mktemp -d /var/tmp/autostream-host-agent-install.XXXXXXXX)" || \
+  die "could not create the private bundle staging directory"
+resume_cleanup_signals || die "installation was interrupted while creating the private bundle stage"
+[[ -n ${BUNDLE_STAGE} &&
+  ${BUNDLE_STAGE} == /var/tmp/autostream-host-agent-install.* &&
+  -d ${BUNDLE_STAGE} &&
+  ! -L ${BUNDLE_STAGE} ]] || die "private bundle staging directory is invalid"
+[[ $(readlink -f -- "${BUNDLE_STAGE}") == "${BUNDLE_STAGE}" &&
+  $(stat -c '%U:%G:%a' -- "${BUNDLE_STAGE}") == "root:root:700" ]] || \
+  die "private bundle staging directory ownership, mode, or canonical path is invalid"
+readonly BUNDLE_STAGE
+readonly UNPACK_DIR="${BUNDLE_STAGE}/unpack"
+
+install -d -o root -g root -m 0700 "${UNPACK_DIR}"
+
+copy_stable_bundle_archive() {
+  local source_identity
+  local source_sha256
+  source_identity="$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${ARCHIVE_SOURCE}")"
+  source_sha256="$(sha256sum -- "${ARCHIVE_SOURCE}" | awk 'NR == 1 { print $1 }')"
+  install -o root -g root -m 0600 "${ARCHIVE_SOURCE}" "${BUNDLE_STAGE}/${ARCHIVE_NAME}"
+  validate_root_owned_release_source "${ARCHIVE_SOURCE}"
+  [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${ARCHIVE_SOURCE}") == "${source_identity}" ]] || \
+    die "bundle archive identity changed while it was copied"
+  [[ $(sha256sum -- "${ARCHIVE_SOURCE}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "bundle archive content changed while it was copied"
+  [[ $(sha256sum -- "${BUNDLE_STAGE}/${ARCHIVE_NAME}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "staged bundle archive differs from its source"
+}
+
+copy_stable_bundle_archive
+ARTIFACT_SHA256="$(
+  sha256sum -- "${BUNDLE_STAGE}/${ARCHIVE_NAME}" | awk 'NR == 1 { print $1 }'
+)" || die "could not calculate the bundle archive digest"
+[[ ${ARTIFACT_SHA256} =~ ^[0-9a-f]{64}$ ]] || die "bundle archive digest is invalid"
+readonly ARTIFACT_SHA256
+ARTIFACT_SIZE="$(stat -c %s -- "${BUNDLE_STAGE}/${ARCHIVE_NAME}")" || \
+  die "could not determine the staged archive size"
+[[ ${ARTIFACT_SIZE} =~ ^[1-9][0-9]*$ ]] || die "staged archive size is invalid"
+[[ ${ARTIFACT_SIZE} -le ${MAX_ARCHIVE_SIZE} ]] || \
+  die "staged archive exceeds the ${MAX_ARCHIVE_SIZE}-byte limit"
+[[ ${ARTIFACT_SIZE} == "${ARTIFACT_SOURCE_SIZE}" ]] || \
+  die "staged bundle archive size differs from its source"
+readonly ARTIFACT_SIZE
+
+tar -tzf "${BUNDLE_STAGE}/${ARCHIVE_NAME}" > "${BUNDLE_STAGE}/archive.list"
+[[ -s ${BUNDLE_STAGE}/archive.list ]] || die "bundle archive is empty"
+while IFS= read -r entry; do
+  [[ ${entry} == "${ARTIFACT_ID}" || ${entry} == "${ARTIFACT_ID}/" ||
+    ${entry} == "${ARTIFACT_ID}/"* ]] || \
+    die "bundle archive contains a path outside ${ARTIFACT_ID}: ${entry}"
+  [[ ${entry} != /* &&
+    ${entry} != *\\* &&
+    ${entry} != ../* &&
+    ${entry} != *"/../"* &&
+    ${entry} != *"/.." &&
+    ${entry} != *"/./"* &&
+    ${entry} != *"/." &&
+    ${entry} != *"//"* ]] || \
+    die "bundle archive contains an unsafe path: ${entry}"
+done < "${BUNDLE_STAGE}/archive.list"
+duplicate_paths="$(
+  awk '{ sub(/\/$/, ""); print }' "${BUNDLE_STAGE}/archive.list" |
+    LC_ALL=C sort |
+    uniq -d
+)"
+[[ -z ${duplicate_paths} ]] || die "bundle archive contains duplicate paths"
+while IFS= read -r entry; do
+  case "${entry:0:1}" in
+    -|d) ;;
+    *) die "bundle archive contains a non-regular entry" ;;
+  esac
+done < <(tar -tvzf "${BUNDLE_STAGE}/${ARCHIVE_NAME}")
+
+tar --no-same-owner --no-same-permissions \
+  -xzf "${BUNDLE_STAGE}/${ARCHIVE_NAME}" \
+  -C "${UNPACK_DIR}"
+readonly EXTRACTED_ROOT="${UNPACK_DIR}/${ARTIFACT_ID}"
+[[ -d ${EXTRACTED_ROOT} && ! -L ${EXTRACTED_ROOT} ]] || \
+  die "bundle archive root is missing or unsafe"
+[[ -z $(find "${UNPACK_DIR}" -mindepth 1 -maxdepth 1 ! -name "${ARTIFACT_ID}" -print -quit) ]] || \
+  die "bundle archive contains more than one top-level path"
+[[ -z $(find "${EXTRACTED_ROOT}" -type l -print -quit) ]] || \
+  die "bundle archive must not contain symlinks"
+[[ -f ${EXTRACTED_ROOT}/checksums.txt && ! -L ${EXTRACTED_ROOT}/checksums.txt ]] || \
+  die "bundle checksums.txt is missing or unsafe"
+[[ -f ${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME} &&
+  ! -L ${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME} ]] || \
+  die "bundle ${ARTIFACT_MANIFEST_NAME} is missing or unsafe"
+
+verify_release_checksum_inventory() {
+  local root=$1
+  local checksum_entry
+  local checked_path
+  local release_file
+  local relative_path
+  local -A listed=()
+  while IFS= read -r checksum_entry; do
+    [[ ${checksum_entry} =~ ^[0-9a-f]{64}\ \ (.+)$ ]] || \
+      die "inner checksum entry has an invalid format"
+    checked_path="${BASH_REMATCH[1]}"
+    [[ ${checked_path} == ./* ]] || die "inner checksum entry must use a ./ relative path"
+    checked_path="${checked_path#./}"
+    [[ -n ${checked_path} &&
+      ${checked_path} != /* &&
+      ${checked_path} != ./* &&
+      ${checked_path} != *\\* &&
+      ${checked_path} != ../* &&
+      ${checked_path} != *"/../"* &&
+      ${checked_path} != *"/.." &&
+      ${checked_path} != *"/./"* &&
+      ${checked_path} != *"/." &&
+      ${checked_path} != *"//"* &&
+      ${checked_path} != "checksums.txt" ]] || die "inner checksum entry has an unsafe path"
+    [[ -z ${listed["${checked_path}"]+present} ]] || \
+      die "inner checksum entry is duplicated: ${checked_path}"
+    listed["${checked_path}"]=1
+    [[ -f ${root}/${checked_path} && ! -L ${root}/${checked_path} ]] || \
+      die "inner checksum entry does not name a regular file: ${checked_path}"
+  done < "${root}/checksums.txt"
+  [[ ${#listed[@]} -gt 0 ]] || die "bundle checksums.txt contains no files"
+  while IFS= read -r -d '' release_file; do
+    relative_path="${release_file#"${root}/"}"
+    [[ ${relative_path} == "checksums.txt" ]] && continue
+    [[ -n ${listed["${relative_path}"]+present} ]] || \
+      die "release file is not listed in checksums.txt: ${relative_path}"
+  done < <(find "${root}" -type f -print0)
+  [[ -z $(find "${root}" -mindepth 1 ! -type d ! -type f -print -quit) ]] || \
+    die "bundle tree contains a symlink or non-regular file"
+}
+
+verify_release_checksum_inventory "${EXTRACTED_ROOT}"
+(cd -- "${EXTRACTED_ROOT}" && sha256sum --check --strict checksums.txt)
+
+jq -e \
+  --arg version "${VERSION}" \
+  --arg arch "${ARCH}" \
+  --arg archive_name "${ARCHIVE_NAME}" \
+  --arg artifact_id "${ARTIFACT_ID}" \
+  '((keys | sort) ==
+      ["archive", "build_date", "commit", "compatibility", "component",
+       "platform", "schema_version", "source_version"]) and
+   (.schema_version == 1) and
+   (.component == "host-agent") and
+   (.source_version == $version) and
+   (.commit | type == "string" and test("^[0-9a-f]{40}$")) and
+   (.build_date | type == "string" and
+    test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+   (.platform |
+     ((keys | sort) == ["arch", "os"]) and
+     (.os == "linux") and
+     (.arch == $arch)) and
+   (.archive |
+     ((keys | sort) == ["name", "root"]) and
+     (.name == $archive_name) and
+     (.root == $artifact_id)) and
+   (.compatibility |
+     ((keys | sort) ==
+       ["database_schema", "minimum_agent_version", "minimum_panel_version",
+        "rollback_compatible"]) and
+     (.minimum_agent_version == null) and
+     (.minimum_panel_version == $version) and
+     (.rollback_compatible == true) and
+     (.database_schema == "none"))' \
+  "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}" >/dev/null || \
+  die "${ARTIFACT_MANIFEST_NAME} does not authorize this exact Host Agent bundle"
+MANIFEST_COMMIT="$(jq -er '.commit' "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}")" || \
+  die "could not read the bundle commit"
+readonly MANIFEST_COMMIT
+MANIFEST_BUILD_DATE="$(jq -er '.build_date' "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}")" || \
+  die "could not read the bundle build date"
+readonly MANIFEST_BUILD_DATE
+
+readonly BINARY_SOURCE="${EXTRACTED_ROOT}/bin/autostream-host-agent"
+readonly UNIT_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-host-agent.service"
+readonly LOCAL_EXECUTOR_POLICY_TEMPLATE="${EXTRACTED_ROOT}/autostream-local-executor-policy.json.example"
+readonly LOCAL_EXECUTOR_BINARY_SOURCE="${EXTRACTED_ROOT}/bin/autostream-local-executor"
+readonly LOCAL_EXECUTOR_SERVICE_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-local-executor.service"
+readonly LOCAL_EXECUTOR_SOCKET_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-local-executor.socket"
+readonly LOCAL_EXECUTOR_TMPFILES_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-local-executor.tmpfiles"
+readonly SELF_UPDATE_RECOVERY_SERVICE_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-host-self-update-recovery@.service"
+readonly SELF_UPDATE_RECOVERY_TIMER_SOURCE="${EXTRACTED_ROOT}/systemd/autostream-host-self-update-recovery@.timer"
+readonly VERIFIED_INSTALLER_SOURCE="${EXTRACTED_ROOT}/install/install-autostream-host-agent"
+
+for required in \
+  "${BINARY_SOURCE}" \
+  "${UNIT_SOURCE}" \
+  "${LOCAL_EXECUTOR_POLICY_TEMPLATE}" \
+  "${LOCAL_EXECUTOR_BINARY_SOURCE}" \
+  "${LOCAL_EXECUTOR_SERVICE_SOURCE}" \
+  "${LOCAL_EXECUTOR_SOCKET_SOURCE}" \
+  "${LOCAL_EXECUTOR_TMPFILES_SOURCE}" \
+  "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}" \
+  "${SELF_UPDATE_RECOVERY_TIMER_SOURCE}" \
+  "${VERIFIED_INSTALLER_SOURCE}" \
+  "${EXTRACTED_ROOT}/install/install-autostream-local-executor"; do
+  [[ -f ${required} && ! -L ${required} ]] || \
+    die "required verified Host Agent bundle file is missing or unsafe: ${required}"
+done
+[[ -x ${BINARY_SOURCE} && -x ${LOCAL_EXECUTOR_BINARY_SOURCE} ]] || \
+  die "Host Agent bundle binaries are not executable"
+[[ $(sha256sum -- "${RUNNING_INSTALLER_SOURCE}" | awk 'NR == 1 { print $1 }') == \
+  "$(sha256sum -- "${VERIFIED_INSTALLER_SOURCE}" | awk 'NR == 1 { print $1 }')" ]] || \
+  die "running Host Agent installer does not match the verified bundle"
+
+verify_binary_identity() {
+  local binary_path=$1
+  local binary_name=$2
+  local binary_version_output
+  local expected_identity
+  binary_version_output="$("${binary_path}" --version)" || \
+    die "${binary_name} binary identity command failed"
+  expected_identity="$(
+    printf '%s %s\ncommit: %s\nbuild_date: %s' \
+      "${binary_name}" "${VERSION}" "${MANIFEST_COMMIT}" "${MANIFEST_BUILD_DATE}"
+    if [[ ${binary_name} == "autostream-local-executor" ]]; then
+      printf '\nmutation_protocol: 2\nrecovery_protocol: 2'
+    fi
+  )"
+  [[ ${binary_version_output} == "${expected_identity}" ]] || \
+    die "${binary_name} binary identity does not match ${ARTIFACT_MANIFEST_NAME}"
+}
+
+verify_binary_identity "${BINARY_SOURCE}" "autostream-host-agent"
+verify_binary_identity "${LOCAL_EXECUTOR_BINARY_SOURCE}" "autostream-local-executor"
+
+VERIFIED_AGENT_SOURCE_STAT="$(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+  "${BINARY_SOURCE}")" || die "could not pin the verified Host Agent binary"
+VERIFIED_AGENT_SOURCE_SHA256="$(sha256sum -- "${BINARY_SOURCE}" | \
+  awk 'NR == 1 { print $1 }')" || \
+  die "could not digest the verified Host Agent binary"
+[[ ${VERIFIED_AGENT_SOURCE_SHA256} =~ ^[0-9a-f]{64}$ &&
+  $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- "${BINARY_SOURCE}") == \
+    "${VERIFIED_AGENT_SOURCE_STAT}" ]] || \
+  die "verified Host Agent binary changed while it was pinned"
+readonly VERIFIED_AGENT_SOURCE_STAT VERIFIED_AGENT_SOURCE_SHA256
+VERIFIED_EXECUTOR_SOURCE_STAT="$(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+  "${LOCAL_EXECUTOR_BINARY_SOURCE}")" || \
+  die "could not pin the verified Local Executor binary"
+VERIFIED_EXECUTOR_SOURCE_SHA256="$(sha256sum -- \
+  "${LOCAL_EXECUTOR_BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')" || \
+  die "could not digest the verified Local Executor binary"
+[[ ${VERIFIED_EXECUTOR_SOURCE_SHA256} =~ ^[0-9a-f]{64}$ &&
+  $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+    "${LOCAL_EXECUTOR_BINARY_SOURCE}") == "${VERIFIED_EXECUTOR_SOURCE_STAT}" ]] || \
+  die "verified Local Executor binary changed while it was pinned"
+readonly VERIFIED_EXECUTOR_SOURCE_STAT VERIFIED_EXECUTOR_SOURCE_SHA256
+
+validate_active_job_recovery_executable() {
+  local path=$1
+  local label=$2
+  active_job_recovery_executable_is_safe "${path}" || \
+    die "${label} executable is missing or unsafe"
+}
+
+active_job_recovery_executable_is_safe() {
+  local path=$1
+  [[ -f ${path} && ! -L ${path} && -x ${path} &&
+    $(readlink -f -- "${path}") == "${path}" ]] || return 1
+  [[ $(stat -c '%U:%G:%a:%h' -- "${path}") == "root:root:755:1" ]] || \
+    return 1
+  active_job_recovery_root_parent_chain_is_safe "${path}"
+}
+
+active_job_recovery_verified_candidate_sources_are_intact() {
+  [[ -f ${BINARY_SOURCE} && ! -L ${BINARY_SOURCE} &&
+    $(readlink -f -- "${BINARY_SOURCE}") == "${BINARY_SOURCE}" &&
+    $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- "${BINARY_SOURCE}") == \
+      "${VERIFIED_AGENT_SOURCE_STAT}" &&
+    $(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }') == \
+      "${VERIFIED_AGENT_SOURCE_SHA256}" &&
+    -f ${LOCAL_EXECUTOR_BINARY_SOURCE} &&
+    ! -L ${LOCAL_EXECUTOR_BINARY_SOURCE} &&
+    $(readlink -f -- "${LOCAL_EXECUTOR_BINARY_SOURCE}") == \
+      "${LOCAL_EXECUTOR_BINARY_SOURCE}" &&
+    $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+      "${LOCAL_EXECUTOR_BINARY_SOURCE}") == "${VERIFIED_EXECUTOR_SOURCE_STAT}" &&
+    $(sha256sum -- "${LOCAL_EXECUTOR_BINARY_SOURCE}" | \
+      awk 'NR == 1 { print $1 }') == "${VERIFIED_EXECUTOR_SOURCE_SHA256}" ]]
+}
+
+active_job_recovery_service_is_enabled_active() {
+  local enabled_state
+  local active_state
+  local main_pid
+  enabled_state="$(${SYSTEMCTL_PATH} is-enabled "${UNIT_NAME}" 2>/dev/null)" || return 1
+  active_state="$(${SYSTEMCTL_PATH} is-active "${UNIT_NAME}" 2>/dev/null)" || return 1
+  main_pid="$(${SYSTEMCTL_PATH} show "${UNIT_NAME}" --property=MainPID --value 2>/dev/null)" || return 1
+  [[ ${enabled_state} == "enabled" &&
+    ${active_state} == "active" &&
+    ${main_pid} =~ ^[1-9][0-9]*$ ]]
+}
+
+active_job_recovery_service_is_managed() {
+  local expected_executable
+  local first_executable
+  local first_pid
+  local second_executable
+  local second_pid
+  local unit_group
+  local unit_user
+  active_job_recovery_service_is_enabled_active || return 1
+  unit_user="$(${SYSTEMCTL_PATH} show \
+    "${UNIT_NAME}" --property=User --value 2>/dev/null)" || return 1
+  unit_group="$(${SYSTEMCTL_PATH} show \
+    "${UNIT_NAME}" --property=Group --value 2>/dev/null)" || return 1
+  [[ ${unit_user} == "${AGENT_USER}" &&
+    ${unit_group} == "${AGENT_GROUP}" ]] || return 1
+  first_pid="$(${SYSTEMCTL_PATH} show \
+    "${UNIT_NAME}" --property=MainPID --value 2>/dev/null)" || return 1
+  [[ ${first_pid} =~ ^[1-9][0-9]*$ &&
+    -d /proc/${first_pid} &&
+    ! -L /proc/${first_pid} ]] || return 1
+  expected_executable="$(readlink -f -- \
+    "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent")" || return 1
+  case "${expected_executable}" in
+    "${HOST_RUNTIME_SLOTS}"/a/bin/autostream-host-agent|"${HOST_RUNTIME_SLOTS}"/b/bin/autostream-host-agent) ;;
+    *) return 1 ;;
+  esac
+  [[ -f ${expected_executable} && ! -L ${expected_executable} &&
+    -x ${expected_executable} &&
+    $(readlink -f -- "${BINARY_DEST}") == "${expected_executable}" ]] || return 1
+  first_executable="$(readlink -f -- "/proc/${first_pid}/exe")" || return 1
+  [[ ${first_executable} == "${expected_executable}" ]] || return 1
+  second_pid="$(${SYSTEMCTL_PATH} show \
+    "${UNIT_NAME}" --property=MainPID --value 2>/dev/null)" || return 1
+  [[ ${second_pid} == "${first_pid}" ]] || return 1
+  second_executable="$(readlink -f -- "/proc/${second_pid}/exe")" || return 1
+  [[ ${second_executable} == "${expected_executable}" ]]
+}
+
+read_active_job_recovery_binary_identity() {
+  local binary_path=$1
+  local binary_name=$2
+  local expected_pair=$3
+  local build_date
+  local commit
+  local version
+  local -a lines=()
+  mapfile -t lines < <("${binary_path}" --version) || return 1
+  case "${binary_name}" in
+    autostream-host-agent)
+      [[ ${#lines[@]} -eq 3 ]] || return 1
+      [[ ${lines[0]} =~ ^autostream-host-agent\ (v[0-9]+[.][0-9]+[.][0-9]+)$ ]] || \
+        return 1
+      version=${BASH_REMATCH[1]}
+      ;;
+    autostream-local-executor)
+      [[ ${#lines[@]} -eq 5 ]] || return 1
+      [[ ${lines[0]} =~ ^autostream-local-executor\ (v[0-9]+[.][0-9]+[.][0-9]+)$ ]] || \
+        return 1
+      version=${BASH_REMATCH[1]}
+      [[ ${lines[3]} == "mutation_protocol: 2" &&
+        ${lines[4]} == "recovery_protocol: 2" ]] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  [[ ${lines[1]} =~ ^commit:\ ([0-9a-f]{40})$ ]] || return 1
+  commit=${BASH_REMATCH[1]}
+  [[ ${lines[2]} =~ ^build_date:\ ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$ ]] || \
+    return 1
+  build_date=${BASH_REMATCH[1]}
+  case "${expected_pair}" in
+    rescue-source)
+      case "${version}" in
+        v1.9.9|v1.9.10) ;;
+        *) return 1 ;;
+      esac
+      ;;
+    verified-candidate)
+      [[ ${version} == "${VERSION}" &&
+        ${commit} == "${MANIFEST_COMMIT}" &&
+        ${build_date} == "${MANIFEST_BUILD_DATE}" ]] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  printf '%s\t%s\t%s\n' "${version}" "${commit}" "${build_date}"
+}
+
+active_job_recovery_live_pair_is_managed() {
+  local expected_pair=${1:-rescue-source}
+  local current_agent
+  local current_executor
+  local current_slot_root
+  local current_target
+  local directory
+  local executor_first_executable
+  local executor_first_pid
+  local executor_group
+  local executor_second_executable
+  local executor_second_pid
+  local executor_user
+  local first_agent_identity
+  local first_agent_sha256
+  local first_agent_stat
+  local first_executor_identity
+  local first_executor_sha256
+  local first_executor_stat
+  local second_agent_identity
+  local second_executor_identity
+
+  case "${expected_pair}" in
+    rescue-source) ;;
+    verified-candidate)
+      active_job_recovery_verified_candidate_sources_are_intact || return 1
+      ;;
+    *) return 1 ;;
+  esac
+
+  [[ -L ${HOST_RUNTIME_CURRENT} &&
+    $(stat -c '%U:%G:%h' -- "${HOST_RUNTIME_CURRENT}") == "root:root:1" ]] || \
+    return 1
+  current_target="$(readlink -- "${HOST_RUNTIME_CURRENT}")" || return 1
+  case "${current_target}" in
+    slots/a|slots/b) ;;
+    *) return 1 ;;
+  esac
+  current_slot_root="${HOST_RUNTIME_SLOTS}/${current_target#slots/}"
+  current_agent="$(readlink -f -- \
+    "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent")" || return 1
+  current_executor="$(readlink -f -- \
+    "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor")" || return 1
+  [[ ${current_agent} == \
+      "${current_slot_root}/bin/autostream-host-agent" &&
+    ${current_executor} == \
+      "${current_slot_root}/bin/autostream-local-executor" ]] || \
+    return 1
+  for directory in \
+    "${HOST_RUNTIME_ROOT}" \
+    "${HOST_RUNTIME_SLOTS}" \
+    "${current_slot_root}" \
+    "${current_slot_root}/bin"; do
+    [[ -d ${directory} && ! -L ${directory} &&
+      $(readlink -f -- "${directory}") == "${directory}" &&
+      $(stat -c '%U:%G:%a' -- "${directory}") == "root:root:755" ]] || \
+      return 1
+  done
+  active_job_recovery_executable_is_safe "${current_agent}" || return 1
+  active_job_recovery_executable_is_safe "${current_executor}" || return 1
+  ${RUNUSER_PATH} --user "${AGENT_USER}" -- \
+    "${ENV_PATH}" -i \
+    HOME=/nonexistent \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    LC_ALL=C \
+    "${TEST_PATH}" -r "${current_agent}" || return 1
+  ${RUNUSER_PATH} --user "${AGENT_USER}" -- \
+    "${ENV_PATH}" -i \
+    HOME=/nonexistent \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    LC_ALL=C \
+    "${TEST_PATH}" -x "${current_agent}" || return 1
+  ${RUNUSER_PATH} --user "${AGENT_USER}" -- \
+    "${ENV_PATH}" -i \
+    HOME=/nonexistent \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    LC_ALL=C \
+    "${TEST_PATH}" -r "${current_executor}" || return 1
+  ${RUNUSER_PATH} --user "${AGENT_USER}" -- \
+    "${ENV_PATH}" -i \
+    HOME=/nonexistent \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    LC_ALL=C \
+    "${TEST_PATH}" -x "${current_executor}" || return 1
+  [[ -L ${BINARY_DEST} &&
+    $(stat -c '%U:%G:%h' -- "${BINARY_DEST}") == "root:root:1" &&
+    $(readlink -- "${BINARY_DEST}") == \
+      "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" &&
+    $(readlink -f -- "${BINARY_DEST}") == "${current_agent}" ]] || return 1
+  [[ -L ${LOCAL_EXECUTOR_BINARY_DEST} &&
+    $(stat -c '%U:%G:%h' -- "${LOCAL_EXECUTOR_BINARY_DEST}") == "root:root:1" &&
+    $(readlink -- "${LOCAL_EXECUTOR_BINARY_DEST}") == \
+      "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" &&
+    $(readlink -f -- "${LOCAL_EXECUTOR_BINARY_DEST}") == "${current_executor}" ]] || \
+    return 1
+
+  first_agent_stat="$(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+    "${current_agent}")" || return 1
+  first_executor_stat="$(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+    "${current_executor}")" || return 1
+  if [[ ${expected_pair} == verified-candidate ]]; then
+    first_agent_sha256="$(sha256sum -- "${current_agent}" | \
+      awk 'NR == 1 { print $1 }')" || return 1
+    first_executor_sha256="$(sha256sum -- "${current_executor}" | \
+      awk 'NR == 1 { print $1 }')" || return 1
+    [[ ${first_agent_sha256} == "${VERIFIED_AGENT_SOURCE_SHA256}" &&
+      ${first_executor_sha256} == "${VERIFIED_EXECUTOR_SOURCE_SHA256}" ]] || \
+      return 1
+  fi
+  first_agent_identity="$(read_active_job_recovery_binary_identity \
+    "${current_agent}" autostream-host-agent "${expected_pair}")" || return 1
+  first_executor_identity="$(read_active_job_recovery_binary_identity \
+    "${current_executor}" autostream-local-executor "${expected_pair}")" || return 1
+  [[ ${first_agent_identity} == "${first_executor_identity}" ]] || return 1
+
+  [[ $(${SYSTEMCTL_PATH} is-active \
+      "${LOCAL_EXECUTOR_SERVICE_NAME}" 2>/dev/null) == "active" &&
+    $(${SYSTEMCTL_PATH} is-enabled \
+      "${LOCAL_EXECUTOR_SOCKET_NAME}" 2>/dev/null) == "enabled" &&
+    $(${SYSTEMCTL_PATH} is-active \
+      "${LOCAL_EXECUTOR_SOCKET_NAME}" 2>/dev/null) == "active" ]] || return 1
+  executor_user="$(${SYSTEMCTL_PATH} show "${LOCAL_EXECUTOR_SERVICE_NAME}" \
+    --property=User --value 2>/dev/null)" || return 1
+  executor_group="$(${SYSTEMCTL_PATH} show "${LOCAL_EXECUTOR_SERVICE_NAME}" \
+    --property=Group --value 2>/dev/null)" || return 1
+  [[ ${executor_user} == "root" && ${executor_group} == "root" ]] || return 1
+  executor_first_pid="$(${SYSTEMCTL_PATH} show \
+    "${LOCAL_EXECUTOR_SERVICE_NAME}" --property=MainPID --value 2>/dev/null)" || \
+    return 1
+  [[ ${executor_first_pid} =~ ^[1-9][0-9]*$ &&
+    -d /proc/${executor_first_pid} &&
+    ! -L /proc/${executor_first_pid} ]] || return 1
+  executor_first_executable="$(readlink -f -- \
+    "/proc/${executor_first_pid}/exe")" || return 1
+  [[ ${executor_first_executable} == "${current_executor}" ]] || return 1
+
+  active_job_recovery_executable_is_safe "${current_agent}" || return 1
+  active_job_recovery_executable_is_safe "${current_executor}" || return 1
+  [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- "${current_agent}") == \
+      "${first_agent_stat}" &&
+    $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- "${current_executor}") == \
+      "${first_executor_stat}" ]] || return 1
+  second_agent_identity="$(read_active_job_recovery_binary_identity \
+    "${current_agent}" autostream-host-agent "${expected_pair}")" || return 1
+  second_executor_identity="$(read_active_job_recovery_binary_identity \
+    "${current_executor}" autostream-local-executor "${expected_pair}")" || return 1
+  [[ ${second_agent_identity} == "${first_agent_identity}" &&
+    ${second_executor_identity} == "${first_executor_identity}" &&
+    ${second_agent_identity} == "${second_executor_identity}" ]] || return 1
+  if [[ ${expected_pair} == verified-candidate ]]; then
+    active_job_recovery_verified_candidate_sources_are_intact || return 1
+    [[ $(sha256sum -- "${current_agent}" | awk 'NR == 1 { print $1 }') == \
+        "${first_agent_sha256}" &&
+      $(sha256sum -- "${current_executor}" | awk 'NR == 1 { print $1 }') == \
+        "${first_executor_sha256}" ]] || return 1
+  fi
+  executor_second_pid="$(${SYSTEMCTL_PATH} show \
+    "${LOCAL_EXECUTOR_SERVICE_NAME}" --property=MainPID --value 2>/dev/null)" || \
+    return 1
+  [[ ${executor_second_pid} == "${executor_first_pid}" ]] || return 1
+  executor_second_executable="$(readlink -f -- \
+    "/proc/${executor_second_pid}/exe")" || return 1
+  [[ ${executor_second_executable} == "${current_executor}" ]] || return 1
+
+  if [[ -z ${active_job_recovery_original_current_target} ]]; then
+    active_job_recovery_original_current_target=${current_target}
+    active_job_recovery_original_agent_identity=${second_agent_identity}
+    active_job_recovery_original_agent_stat=${first_agent_stat}
+    active_job_recovery_original_agent_sha256="$(sha256sum -- \
+      "${current_agent}" | awk 'NR == 1 { print $1 }')" || return 1
+    active_job_recovery_original_executor_identity=${second_executor_identity}
+    active_job_recovery_original_executor_stat=${first_executor_stat}
+    active_job_recovery_original_executor_sha256="$(sha256sum -- \
+      "${current_executor}" | awk 'NR == 1 { print $1 }')" || return 1
+  fi
+}
+
+active_job_recovery_original_pair_is_intact() {
+  local current_agent
+  local current_executor
+  local current_target
+  local agent_identity
+  local executor_identity
+  [[ -n ${active_job_recovery_original_current_target} &&
+    -n ${active_job_recovery_original_agent_identity} &&
+    -n ${active_job_recovery_original_agent_stat} &&
+    ${active_job_recovery_original_agent_sha256} =~ ^[0-9a-f]{64}$ &&
+    -n ${active_job_recovery_original_executor_identity} &&
+    -n ${active_job_recovery_original_executor_stat} &&
+    ${active_job_recovery_original_executor_sha256} =~ ^[0-9a-f]{64}$ ]] || return 1
+  active_job_recovery_live_pair_is_managed || return 1
+  current_target="$(readlink -- "${HOST_RUNTIME_CURRENT}")" || return 1
+  [[ ${current_target} == "${active_job_recovery_original_current_target}" ]] || return 1
+  current_agent="$(readlink -f -- \
+    "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent")" || return 1
+  current_executor="$(readlink -f -- \
+    "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor")" || return 1
+  [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- "${current_agent}") == \
+      "${active_job_recovery_original_agent_stat}" &&
+    $(sha256sum -- "${current_agent}" | awk 'NR == 1 { print $1 }') == \
+      "${active_job_recovery_original_agent_sha256}" &&
+    $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- "${current_executor}") == \
+      "${active_job_recovery_original_executor_stat}" &&
+    $(sha256sum -- "${current_executor}" | awk 'NR == 1 { print $1 }') == \
+      "${active_job_recovery_original_executor_sha256}" ]] || return 1
+  agent_identity="$(read_active_job_recovery_binary_identity \
+    "${current_agent}" autostream-host-agent rescue-source)" || return 1
+  executor_identity="$(read_active_job_recovery_binary_identity \
+    "${current_executor}" autostream-local-executor rescue-source)" || return 1
+  [[ ${agent_identity} == "${active_job_recovery_original_agent_identity}" &&
+    ${executor_identity} == "${active_job_recovery_original_executor_identity}" &&
+    ${agent_identity} == "${executor_identity}" ]]
+}
+
+active_job_recovery_service_is_inactive() {
+  local active_state
+  local main_pid
+  active_state="$(${SYSTEMCTL_PATH} show "${UNIT_NAME}" --property=ActiveState --value 2>/dev/null)" || return 1
+  main_pid="$(${SYSTEMCTL_PATH} show "${UNIT_NAME}" --property=MainPID --value 2>/dev/null)" || return 1
+  [[ ${active_state} == "inactive" && ${main_pid} == "0" ]]
+}
+
+active_job_recovery_guard_candidate_is_intact() {
+  [[ -n ${active_job_recovery_guard_candidate_dir} &&
+    ${active_job_recovery_guard_candidate_dir} == \
+      "${ACTIVE_JOB_RECOVERY_GUARD_CANDIDATE_PREFIX}"* &&
+    -d ${active_job_recovery_guard_candidate_dir} &&
+    ! -L ${active_job_recovery_guard_candidate_dir} &&
+    $(readlink -f -- "${active_job_recovery_guard_candidate_dir}") == \
+      "${active_job_recovery_guard_candidate_dir}" &&
+    $(stat -c '%U:%G:%a' -- "${active_job_recovery_guard_candidate_dir}") == \
+      "root:root:700" &&
+    $(stat -c '%d:%i' -- "${active_job_recovery_guard_candidate_dir}") == \
+      "${active_job_recovery_guard_candidate_dir_identity}" &&
+    ${active_job_recovery_guard_candidate_path} == \
+      "${active_job_recovery_guard_candidate_dir}/autostream-local-executor" &&
+    -f ${active_job_recovery_guard_candidate_path} &&
+    ! -L ${active_job_recovery_guard_candidate_path} &&
+    $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+      "${active_job_recovery_guard_candidate_path}") == \
+      "${active_job_recovery_guard_candidate_identity}" &&
+    $(stat -c '%U:%G:%a:%h' -- \
+      "${active_job_recovery_guard_candidate_path}") == "root:root:700:1" &&
+    $(sha256sum -- "${active_job_recovery_guard_candidate_path}" |
+      awk 'NR == 1 { print $1 }') == \
+      "${active_job_recovery_guard_candidate_sha256}" ]]
+}
+
+prepare_active_job_recovery_guard_candidate() {
+  local source_identity
+  local source_sha256
+  validate_root_parent_chain "/run/autostream-host-agent-upgrade-guard.placeholder" \
+    "Host Agent delayed recovery guard"
+  source_identity="$(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+    "${LOCAL_EXECUTOR_BINARY_SOURCE}")" || \
+    die "could not record the delayed recovery Executor source identity"
+  source_sha256="$(sha256sum -- "${LOCAL_EXECUTOR_BINARY_SOURCE}" |
+    awk 'NR == 1 { print $1 }')" || \
+    die "could not hash the delayed recovery Executor source"
+  [[ ${source_sha256} == "${VERIFIED_EXECUTOR_SOURCE_SHA256}" ]] || \
+    die "delayed recovery Executor source differs from the verified bundle"
+
+  defer_cleanup_signals
+  active_job_recovery_guard_candidate_dir="$(
+    mktemp -d "${ACTIVE_JOB_RECOVERY_GUARD_CANDIDATE_PREFIX}XXXXXXXX"
+  )" || die "could not create the delayed recovery guard directory"
+  resume_cleanup_signals || \
+    die "installation was interrupted while creating the delayed recovery guard"
+  active_job_recovery_guard_candidate_path="${active_job_recovery_guard_candidate_dir}/autostream-local-executor"
+  install -o root -g root -m 0700 \
+    "${LOCAL_EXECUTOR_BINARY_SOURCE}" \
+    "${active_job_recovery_guard_candidate_path}"
+  sync -f "${active_job_recovery_guard_candidate_path}"
+  sync -f "${active_job_recovery_guard_candidate_dir}"
+  [[ -f ${LOCAL_EXECUTOR_BINARY_SOURCE} &&
+    ! -L ${LOCAL_EXECUTOR_BINARY_SOURCE} &&
+    $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+      "${LOCAL_EXECUTOR_BINARY_SOURCE}") == "${source_identity}" &&
+    $(sha256sum -- "${LOCAL_EXECUTOR_BINARY_SOURCE}" |
+      awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "verified delayed recovery Executor source changed while copying"
+  active_job_recovery_guard_candidate_dir_identity="$(stat -c '%d:%i' -- \
+    "${active_job_recovery_guard_candidate_dir}")" || \
+    die "could not record the delayed recovery guard directory identity"
+  active_job_recovery_guard_candidate_identity="$(
+    stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+      "${active_job_recovery_guard_candidate_path}"
+  )" || die "could not record the delayed recovery guard identity"
+  active_job_recovery_guard_candidate_sha256=${source_sha256}
+  active_job_recovery_guard_candidate_is_intact || \
+    die "delayed recovery guard candidate is unsafe"
+}
+
+active_job_recovery_clear_fence_is_intact() {
+  local expected_content
+  expected_content="$(printf '%s\n' \
+    '[Unit]' \
+    "ConditionPathExists=!${ACTIVE_JOB_RECOVERY_CLEAR_MARKER}" \
+    "ConditionFileIsExecutable=${active_job_recovery_guard_candidate_path}")"
+  [[ ${active_job_recovery_clear_fence_installed} == true &&
+    -f ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE} &&
+    ! -L ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE} &&
+    $(readlink -f -- "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}") == \
+      "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}" &&
+    $(stat -c '%U:%G:%a:%h' -- "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}") == \
+      "root:root:644:1" &&
+    $(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+      "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}") == \
+      "${active_job_recovery_clear_fence_identity}" &&
+    $(sha256sum -- "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}" |
+      awk 'NR == 1 { print $1 }') == \
+      "${active_job_recovery_clear_fence_sha256}" &&
+    $(<"${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}") == "${expected_content}" ]]
+}
+
+active_job_recovery_clear_fence_is_loaded() {
+  local drop_in
+  local drop_ins
+  drop_ins="$(${SYSTEMCTL_PATH} show "${UNIT_NAME}" \
+    --property=DropInPaths --value 2>/dev/null)" || return 1
+  for drop_in in ${drop_ins}; do
+    [[ ${drop_in} == "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}" ]] && return 0
+  done
+  return 1
+}
+
+install_active_job_recovery_clear_fence() {
+  local temporary_fence
+  [[ ! -e ${ACTIVE_JOB_RECOVERY_CLEAR_MARKER} &&
+    ! -L ${ACTIVE_JOB_RECOVERY_CLEAR_MARKER} ]] || \
+    die "Host Agent journal clear fence already blocks legacy Agent restart"
+  active_job_recovery_guard_candidate_is_intact || \
+    die "delayed recovery guard candidate changed before fence installation"
+  validate_root_parent_chain "${UNIT_DEST}" "Host Agent recovery drop-in"
+  if [[ -e ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR} ||
+    -L ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR} ]]; then
+    [[ -d ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR} &&
+      ! -L ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR} &&
+      $(readlink -f -- "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}") == \
+        "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}") == \
+        "root:root:755" ]] || \
+      die "Host Agent recovery drop-in directory is unsafe"
+  else
+    install -d -o root -g root -m 0755 \
+      "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}"
+    sync -f "$(dirname -- "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}")"
+  fi
+  [[ ! -e ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE} &&
+    ! -L ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE} ]] || \
+    die "Host Agent delayed recovery fence already exists"
+  temporary_fence="$(mktemp \
+    "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}/.90-autostream-upgrade-recovery-guard.XXXXXXXX")" || \
+    die "could not create the Host Agent delayed recovery fence"
+  printf '%s\n' \
+    '[Unit]' \
+    "ConditionPathExists=!${ACTIVE_JOB_RECOVERY_CLEAR_MARKER}" \
+    "ConditionFileIsExecutable=${active_job_recovery_guard_candidate_path}" \
+    >"${temporary_fence}"
+  chown root:root "${temporary_fence}"
+  chmod 0644 "${temporary_fence}"
+  sync -f "${temporary_fence}"
+  mv -- "${temporary_fence}" "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}"
+  active_job_recovery_clear_fence_installed=true
+  active_job_recovery_clear_fence_identity="$(
+    stat -c '%d:%i:%s:%Y:%f:%u:%g:%a:%h' -- \
+      "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}"
+  )" || die "could not record the Host Agent delayed recovery fence identity"
+  active_job_recovery_clear_fence_sha256="$(sha256sum -- \
+    "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}" | awk 'NR == 1 { print $1 }')" || \
+    die "could not hash the Host Agent delayed recovery fence"
+  sync -f "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}"
+  active_job_recovery_clear_fence_is_intact || \
+    die "Host Agent delayed recovery fence is unsafe"
+  ${SYSTEMCTL_PATH} daemon-reload
+  [[ $(${SYSTEMCTL_PATH} show "${UNIT_NAME}" \
+    --property=NeedDaemonReload --value 2>/dev/null) == "no" ]] || \
+    die "systemd did not load the Host Agent delayed recovery fence"
+  active_job_recovery_clear_fence_is_loaded || \
+    die "systemd did not report the Host Agent delayed recovery fence"
+  [[ ! -e ${ACTIVE_JOB_RECOVERY_CLEAR_MARKER} &&
+    ! -L ${ACTIVE_JOB_RECOVERY_CLEAR_MARKER} ]] || \
+    die "Host Agent journal clear fence appeared before service stop"
+}
+
+active_job_recovery_guard_unit_load_state() {
+  local unit=$1
+  ${SYSTEMCTL_PATH} show "${unit}" --property=LoadState --value 2>/dev/null
+}
+
+active_job_recovery_guard_unit_is_absent() {
+  local unit=$1
+  local path=$2
+  local load_state
+  load_state="$(active_job_recovery_guard_unit_load_state "${unit}")" || return 1
+  [[ ${load_state} == "not-found" && ! -e ${path} && ! -L ${path} ]]
+}
+
+validate_active_job_recovery_guard_fragment() {
+  local unit=$1
+  local path=$2
+  local fragment_path
+  local mode
+  [[ -f ${path} && ! -L ${path} &&
+    $(readlink -f -- "${path}") == "${path}" &&
+    $(stat -c '%U:%G:%h' -- "${path}") == "root:root:1" ]] || \
+    return 1
+  mode=$(stat -c '%a' -- "${path}") || return 1
+  (( (8#${mode} & 0022) == 0 )) || return 1
+  fragment_path="$(${SYSTEMCTL_PATH} show "${unit}" --property=FragmentPath --value 2>/dev/null)" || \
+    return 1
+  [[ ${fragment_path} == "${path}" ]]
+}
+
+arm_active_job_recovery_guard() {
+  local expected_slot
+  local timer_state
+  [[ ${active_job_recovery_original_current_target} == "slots/a" ||
+    ${active_job_recovery_original_current_target} == "slots/b" ]] || \
+    die "pre-stop Host runtime slot is unavailable for the recovery guard"
+  expected_slot=${active_job_recovery_original_current_target#slots/}
+  active_job_recovery_guard_candidate_is_intact || \
+    die "delayed recovery guard candidate changed before timer activation"
+  active_job_recovery_clear_fence_is_intact || \
+    die "Host Agent delayed recovery fence changed before timer activation"
+  active_job_recovery_clear_fence_is_loaded || \
+    die "Host Agent delayed recovery fence is not loaded"
+  [[ ! -e ${ACTIVE_JOB_RECOVERY_CLEAR_MARKER} &&
+    ! -L ${ACTIVE_JOB_RECOVERY_CLEAR_MARKER} ]] || \
+    die "Host Agent journal clear fence blocks recovery guard activation"
+  active_job_recovery_guard_unit_is_absent \
+    "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE}" \
+    "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE_PATH}" || \
+    die "Host Agent recovery guard service already exists or is unsafe"
+  active_job_recovery_guard_unit_is_absent \
+    "${ACTIVE_JOB_RECOVERY_GUARD_TIMER}" \
+    "${ACTIVE_JOB_RECOVERY_GUARD_TIMER_PATH}" || \
+    die "Host Agent recovery guard timer already exists or is unsafe"
+
+  if ! ${SYSTEMD_RUN_PATH} \
+    --quiet \
+    --collect \
+    --unit="${ACTIVE_JOB_RECOVERY_GUARD_BASE}" \
+    --on-active="${ACTIVE_JOB_RECOVERY_GUARD_DELAY}" \
+    --timer-property=AccuracySec=1s \
+    "${active_job_recovery_guard_candidate_path}" \
+      guard-restart-host-agent \
+      --expected-slot "${expected_slot}" \
+      --agent-sha256 "${active_job_recovery_original_agent_sha256}" \
+      --executor-sha256 "${active_job_recovery_original_executor_sha256}"; then
+    if ! active_job_recovery_guard_unit_is_absent \
+      "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE}" \
+      "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE_PATH}" || \
+      ! active_job_recovery_guard_unit_is_absent \
+        "${ACTIVE_JOB_RECOVERY_GUARD_TIMER}" \
+        "${ACTIVE_JOB_RECOVERY_GUARD_TIMER_PATH}"; then
+      active_job_recovery_guard_armed=true
+    fi
+    die "could not arm the Host Agent recovery guard"
+  fi
+  active_job_recovery_guard_armed=true
+  validate_active_job_recovery_guard_fragment \
+    "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE}" \
+    "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE_PATH}" || \
+    die "Host Agent recovery guard service identity is unsafe"
+  validate_active_job_recovery_guard_fragment \
+    "${ACTIVE_JOB_RECOVERY_GUARD_TIMER}" \
+    "${ACTIVE_JOB_RECOVERY_GUARD_TIMER_PATH}" || \
+    die "Host Agent recovery guard timer identity is unsafe"
+  timer_state="$(${SYSTEMCTL_PATH} is-active "${ACTIVE_JOB_RECOVERY_GUARD_TIMER}" 2>/dev/null)" || \
+    die "Host Agent recovery guard timer did not become active"
+  [[ ${timer_state} == "active" ]] || \
+    die "Host Agent recovery guard timer did not become active"
+}
+
+disarm_active_job_recovery_guard() {
+  local attempt
+  local load_state
+  local active_state
+  [[ ${active_job_recovery_guard_armed} == true ]] || return 0
+  active_job_recovery_service_is_managed || {
+    printf '%s\n' \
+      'install-autostream-host-agent: refusing to disarm the recovery guard before the Host Agent is active' >&2
+    return 1
+  }
+  load_state="$(active_job_recovery_guard_unit_load_state \
+    "${ACTIVE_JOB_RECOVERY_GUARD_TIMER}")" || return 1
+  if [[ ${load_state} != "not-found" ]]; then
+    ${SYSTEMCTL_PATH} stop "${ACTIVE_JOB_RECOVERY_GUARD_TIMER}" >/dev/null || return 1
+  fi
+  load_state="$(active_job_recovery_guard_unit_load_state \
+    "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE}")" || return 1
+  if [[ ${load_state} != "not-found" ]]; then
+    ${SYSTEMCTL_PATH} stop "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE}" >/dev/null || return 1
+  fi
+  active_state="$(${SYSTEMCTL_PATH} show \
+    "${ACTIVE_JOB_RECOVERY_GUARD_TIMER}" --property=ActiveState --value 2>/dev/null)" || \
+    return 1
+  [[ ${active_state} == "inactive" ]] || return 1
+  for attempt in {1..40}; do
+    if active_job_recovery_guard_unit_is_absent \
+      "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE}" \
+      "${ACTIVE_JOB_RECOVERY_GUARD_SERVICE_PATH}" && \
+      active_job_recovery_guard_unit_is_absent \
+        "${ACTIVE_JOB_RECOVERY_GUARD_TIMER}" \
+        "${ACTIVE_JOB_RECOVERY_GUARD_TIMER_PATH}"; then
+      active_job_recovery_guard_armed=false
+      return 0
+    fi
+    sleep 0.05
+  done
+  printf '%s\n' \
+    'install-autostream-host-agent: systemd did not collect the recovery guard units' >&2
+  return 1
+}
+
+remove_active_job_recovery_clear_fence() {
+  [[ ${active_job_recovery_clear_fence_installed} == true ]] || return 0
+  active_job_recovery_service_is_managed || return 1
+  [[ ! -e ${ACTIVE_JOB_RECOVERY_CLEAR_MARKER} &&
+    ! -L ${ACTIVE_JOB_RECOVERY_CLEAR_MARKER} ]] || return 1
+  active_job_recovery_guard_candidate_is_intact || return 1
+  active_job_recovery_clear_fence_is_intact || return 1
+  active_job_recovery_clear_fence_is_loaded || return 1
+  rm -f -- "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE}" || return 1
+  sync -f "${ACTIVE_JOB_RECOVERY_CLEAR_FENCE_DIR}" || return 1
+  ${SYSTEMCTL_PATH} daemon-reload || return 1
+  [[ $(${SYSTEMCTL_PATH} show "${UNIT_NAME}" \
+    --property=NeedDaemonReload --value 2>/dev/null) == "no" ]] || return 1
+  if active_job_recovery_clear_fence_is_loaded; then
+    return 1
+  fi
+  [[ ! -e ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE} &&
+    ! -L ${ACTIVE_JOB_RECOVERY_CLEAR_FENCE} ]] || return 1
+  active_job_recovery_clear_fence_installed=false
+  active_job_recovery_clear_fence_identity=""
+  active_job_recovery_clear_fence_sha256=""
+}
+
+cleanup_active_job_recovery_guard_candidate() {
+  [[ -n ${active_job_recovery_guard_candidate_dir} ]] || return 0
+  if [[ ${active_job_recovery_guard_armed} == true ||
+    ${active_job_recovery_clear_fence_installed} == true ]]; then
+    return 0
+  fi
+  active_job_recovery_guard_candidate_is_intact || {
+    printf '%s\n' \
+      'install-autostream-host-agent: refusing to remove a changed delayed recovery guard path' >&2
+    return 1
+  }
+  rm -f -- "${active_job_recovery_guard_candidate_path}" || return 1
+  rmdir -- "${active_job_recovery_guard_candidate_dir}" || return 1
+  active_job_recovery_guard_candidate_path=""
+  active_job_recovery_guard_candidate_identity=""
+  active_job_recovery_guard_candidate_sha256=""
+  active_job_recovery_guard_candidate_dir=""
+  active_job_recovery_guard_candidate_dir_identity=""
+}
+
+cleanup_active_job_recovery_candidate() {
+  [[ -n ${active_job_recovery_candidate_dir} ]] || return 0
+  [[ ${active_job_recovery_candidate_dir} == \
+      /run/autostream-host-agent-recovery.* &&
+    -d ${active_job_recovery_candidate_dir} &&
+    ! -L ${active_job_recovery_candidate_dir} &&
+    $(stat -c '%d:%i' -- "${active_job_recovery_candidate_dir}") == \
+      "${active_job_recovery_candidate_dir_identity}" &&
+    ${active_job_recovery_candidate_path} == \
+      "${active_job_recovery_candidate_dir}/autostream-host-agent" &&
+    -f ${active_job_recovery_candidate_path} &&
+    ! -L ${active_job_recovery_candidate_path} &&
+    $(stat -c '%d:%i:%s:%u:%g:%a:%h' -- \
+      "${active_job_recovery_candidate_path}") == \
+      "${active_job_recovery_candidate_identity}" &&
+    $(sha256sum -- "${active_job_recovery_candidate_path}" | awk 'NR == 1 { print $1 }') == \
+      "${active_job_recovery_candidate_sha256}" &&
+    $(stat -c '%U:%G:%a' -- "${active_job_recovery_candidate_dir}") == \
+      "root:${AGENT_GROUP}:750" ]] || {
+    printf '%s\n' \
+      'install-autostream-host-agent: refusing to remove a changed Host Agent recovery candidate path' >&2
+    return 1
+  }
+  rm -f -- "${active_job_recovery_candidate_path}" || return 1
+  rmdir -- "${active_job_recovery_candidate_dir}" || return 1
+  active_job_recovery_candidate_path=""
+  active_job_recovery_candidate_identity=""
+  active_job_recovery_candidate_sha256=""
+  active_job_recovery_candidate_dir=""
+  active_job_recovery_candidate_dir_identity=""
+}
+
+cleanup_active_job_recovery() {
+  local cleanup_failed=false
+  if [[ ${active_job_recovery_stop_attempted} == true ||
+    ${active_job_recovery_clear_fence_installed} == true ||
+    ${active_job_recovery_guard_armed} == true ]]; then
+    if ! reacquire_active_job_recovery_cleanup_locks; then
+      printf '%s\n' \
+        'install-autostream-host-agent: could not reacquire the canonical Host setup and lifecycle locks; the durable recovery fence and systemd guard were retained' >&2
+      cleanup_failed=true
+    elif [[ ${active_job_recovery_stop_attempted} == true &&
+      ${active_job_recovery_upgrade_committed} == false ]] &&
+      ! active_job_recovery_original_pair_is_intact; then
+      printf '%s\n' \
+        'install-autostream-host-agent: the pre-stop Host runtime pair was not restored; the durable recovery fence and systemd guard were retained' >&2
+      cleanup_failed=true
+    elif [[ ${active_job_recovery_stop_attempted} == true &&
+      ${active_job_recovery_upgrade_committed} == true ]] &&
+      ! active_job_recovery_live_pair_is_managed verified-candidate; then
+      printf '%s\n' \
+        'install-autostream-host-agent: the committed Host runtime pair is not safely managed; the durable recovery fence and systemd guard were retained' >&2
+      cleanup_failed=true
+    else
+      if ! active_job_recovery_service_is_managed; then
+        if ! ${SYSTEMCTL_PATH} start "${UNIT_NAME}" >/dev/null 2>&1 ||
+          ! active_job_recovery_service_is_managed; then
+          printf '%s\n' \
+            'install-autostream-host-agent: Host Agent recovery failed and the exact runtime could not be restarted; the durable recovery fence and systemd guard were retained' >&2
+          cleanup_failed=true
+        fi
+      fi
+      if [[ ${cleanup_failed} == false &&
+        ${active_job_recovery_upgrade_committed} == false ]] &&
+        ! active_job_recovery_original_pair_is_intact; then
+        printf '%s\n' \
+          'install-autostream-host-agent: the restarted Host Agent no longer matches the pre-stop runtime pair; the durable recovery fence and systemd guard were retained' >&2
+        cleanup_failed=true
+      fi
+      if [[ ${cleanup_failed} == false &&
+        ${active_job_recovery_upgrade_committed} == true ]] &&
+        ! active_job_recovery_live_pair_is_managed verified-candidate; then
+        printf '%s\n' \
+          'install-autostream-host-agent: the active Host Agent no longer matches the committed runtime pair; the durable recovery fence and systemd guard were retained' >&2
+        cleanup_failed=true
+      fi
+    fi
+    if [[ ${active_job_recovery_clear_fence_installed} == true &&
+      ${cleanup_failed} == false ]] &&
+      ! remove_active_job_recovery_clear_fence; then
+      printf '%s\n' \
+        'install-autostream-host-agent: Host Agent is active but the durable recovery fence could not be removed' >&2
+      cleanup_failed=true
+    fi
+    if [[ ${active_job_recovery_guard_armed} == true &&
+      ${cleanup_failed} == false ]] &&
+      ! disarm_active_job_recovery_guard; then
+      printf '%s\n' \
+        'install-autostream-host-agent: Host Agent is active but the recovery guard could not be disarmed' >&2
+      cleanup_failed=true
+    fi
+    if [[ ${cleanup_failed} == false &&
+      ${active_job_recovery_clear_fence_installed} == false &&
+      ${active_job_recovery_guard_armed} == false ]]; then
+      active_job_recovery_stop_attempted=false
+    fi
+  fi
+  if ! cleanup_active_job_recovery_candidate; then
+    cleanup_failed=true
+  fi
+  if ! cleanup_active_job_recovery_guard_candidate; then
+    cleanup_failed=true
+  fi
+  if ! release_active_job_recovery_locks; then
+    cleanup_failed=true
+  fi
+  [[ ${cleanup_failed} == false ]]
+}
+
+acquire_active_job_recovery_locks() {
+  acquire_shared_host_setup_lock
+  active_job_recovery_setup_lock_held=true
+  active_job_recovery_lock_dir_identity="$(
+    stat -c '%d:%i' -- "${SHARED_HOST_SETUP_LOCK_DIR}"
+  )" || die "could not record the active-job recovery lock directory identity"
+  acquire_host_lifecycle_lock
+  active_job_recovery_lifecycle_lock_held=true
+}
+
+active_job_recovery_root_parent_chain_is_safe() {
+  local path=$1
+  local current
+  local mode
+  local owner
+  local parent
+  current="$(dirname -- "${path}")" || return 1
+  while true; do
+    [[ -d ${current} && ! -L ${current} ]] || return 1
+    owner="$(stat -c '%U:%G' -- "${current}")" || return 1
+    [[ ${owner} == "root:root" ]] || return 1
+    mode="$(stat -c '%a' -- "${current}")" || return 1
+    [[ ${mode} =~ ^[0-7]{3,4}$ ]] || return 1
+    (( (8#${mode} & 0022) == 0 )) || return 1
+    parent="$(dirname -- "${current}")" || return 1
+    [[ ${parent} == "${current}" ]] && break
+    current=${parent}
+  done
+}
+
+active_job_recovery_lock_directory_is_stable() {
+  local directory_identity
+  [[ -n ${active_job_recovery_lock_dir_identity} ]] || return 1
+  active_job_recovery_root_parent_chain_is_safe \
+    "${HOST_LIFECYCLE_LOCK}" || return 1
+  [[ -d ${SHARED_HOST_SETUP_LOCK_DIR} &&
+    ! -L ${SHARED_HOST_SETUP_LOCK_DIR} ]] || return 1
+  [[ $(readlink -f -- "${SHARED_HOST_SETUP_LOCK_DIR}") == \
+    "${SHARED_HOST_SETUP_LOCK_DIR}" ]] || return 1
+  [[ $(stat -c '%U:%G:%a' -- "${SHARED_HOST_SETUP_LOCK_DIR}") == \
+    "root:root:700" ]] || return 1
+  directory_identity="$(stat -c '%d:%i' -- \
+    "${SHARED_HOST_SETUP_LOCK_DIR}")" || return 1
+  [[ ${directory_identity} == "${active_job_recovery_lock_dir_identity}" ]]
+}
+
+active_job_recovery_lock_path_is_safe() {
+  local path=$1
+  [[ -f ${path} && ! -L ${path} ]] || return 1
+  [[ $(readlink -f -- "${path}") == "${path}" ]] || return 1
+  [[ $(stat -c '%U:%G:%a:%h' -- "${path}") == \
+    "root:root:600:1" ]]
+}
+
+active_job_recovery_lock_fd_matches_path() {
+  local descriptor=$1
+  local path=$2
+  local fd_path="/proc/self/fd/${descriptor}"
+  local fd_identity
+  local path_identity
+  [[ -f ${fd_path} ]] || return 1
+  [[ $(stat -Lc '%U:%G:%a:%h' -- "${fd_path}") == \
+    "root:root:600:1" ]] || return 1
+  fd_identity="$(stat -Lc '%d:%i' -- "${fd_path}")" || return 1
+  path_identity="$(stat -c '%d:%i' -- "${path}")" || return 1
+  [[ ${fd_identity} == "${path_identity}" ]]
+}
+
+try_reacquire_active_job_recovery_setup_lock() {
+  if [[ ${active_job_recovery_setup_lock_held} == true ]]; then
+    return 0
+  fi
+  [[ ${active_job_recovery_lifecycle_lock_held} == false ]] || return 1
+  active_job_recovery_lock_directory_is_stable || return 1
+  active_job_recovery_lock_path_is_safe "${SHARED_HOST_SETUP_LOCK}" || return 1
+  # Read-only open avoids creating or truncating permanent coordination state
+  # during best-effort cleanup. flock(2) does not require a writable descriptor.
+  exec 8<"${SHARED_HOST_SETUP_LOCK}" || return 1
+  if ! active_job_recovery_lock_directory_is_stable ||
+    ! active_job_recovery_lock_path_is_safe "${SHARED_HOST_SETUP_LOCK}" ||
+    ! active_job_recovery_lock_fd_matches_path 8 "${SHARED_HOST_SETUP_LOCK}"; then
+    exec 8>&-
+    return 1
+  fi
+  if ! flock -n 8; then
+    exec 8>&-
+    return 1
+  fi
+  if ! active_job_recovery_lock_directory_is_stable ||
+    ! active_job_recovery_lock_path_is_safe "${SHARED_HOST_SETUP_LOCK}" ||
+    ! active_job_recovery_lock_fd_matches_path 8 "${SHARED_HOST_SETUP_LOCK}"; then
+    flock -u 8 >/dev/null 2>&1 || true
+    exec 8>&-
+    return 1
+  fi
+  active_job_recovery_setup_lock_held=true
+}
+
+try_reacquire_active_job_recovery_lifecycle_lock() {
+  if [[ ${active_job_recovery_lifecycle_lock_held} == true ]]; then
+    [[ ${active_job_recovery_setup_lock_held} == true ]] || return 1
+    return 0
+  fi
+  [[ ${active_job_recovery_setup_lock_held} == true ]] || return 1
+  active_job_recovery_lock_directory_is_stable || return 1
+  active_job_recovery_lock_path_is_safe "${HOST_LIFECYCLE_LOCK}" || return 1
+  exec 9<"${HOST_LIFECYCLE_LOCK}" || return 1
+  if ! active_job_recovery_lock_directory_is_stable ||
+    ! active_job_recovery_lock_path_is_safe "${HOST_LIFECYCLE_LOCK}" ||
+    ! active_job_recovery_lock_fd_matches_path 9 "${HOST_LIFECYCLE_LOCK}"; then
+    exec 9>&-
+    return 1
+  fi
+  if ! flock -n 9; then
+    exec 9>&-
+    return 1
+  fi
+  if ! active_job_recovery_lock_directory_is_stable ||
+    ! active_job_recovery_lock_path_is_safe "${HOST_LIFECYCLE_LOCK}" ||
+    ! active_job_recovery_lock_fd_matches_path 9 "${HOST_LIFECYCLE_LOCK}"; then
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+    return 1
+  fi
+  active_job_recovery_lifecycle_lock_held=true
+}
+
+reacquire_active_job_recovery_cleanup_locks() {
+  try_reacquire_active_job_recovery_setup_lock || return 1
+  try_reacquire_active_job_recovery_lifecycle_lock
+}
+
+release_active_job_recovery_lifecycle_lock() {
+  local release_failed=false
+  [[ ${active_job_recovery_lifecycle_lock_held} == true ]] || return 0
+  flock -u 9 || release_failed=true
+  exec 9>&-
+  # Closing the descriptor releases its lock even if the explicit unlock
+  # command reported an error. Never retry against a recycled descriptor.
+  active_job_recovery_lifecycle_lock_held=false
+  if [[ ${release_failed} == true ]]; then
+    printf '%s\n' \
+      'install-autostream-host-agent: could not release the active-job lifecycle lock' >&2
+    return 1
+  fi
+}
+
+reacquire_active_job_recovery_lifecycle_lock() {
+  [[ ${active_job_recovery_setup_lock_held} == true &&
+    ${active_job_recovery_lifecycle_lock_held} == false ]] || \
+    die "active-job recovery lock state is invalid"
+  try_reacquire_active_job_recovery_lifecycle_lock || \
+    die "another privileged Host lifecycle operation is active after exact active job recovery"
+}
+
+release_active_job_recovery_setup_lock() {
+  local release_failed=false
+  [[ ${active_job_recovery_setup_lock_held} == true ]] || return 0
+  flock -u 8 || release_failed=true
+  exec 8>&-
+  active_job_recovery_setup_lock_held=false
+  if [[ ${release_failed} == true ]]; then
+    printf '%s\n' \
+      'install-autostream-host-agent: could not release the active-job setup lock' >&2
+    return 1
+  fi
+}
+
+release_active_job_recovery_locks() {
+  local release_failed=false
+  release_active_job_recovery_lifecycle_lock || release_failed=true
+  release_active_job_recovery_setup_lock || release_failed=true
+  [[ ${release_failed} == false ]]
+}
+
+prepare_active_job_recovery_candidate() {
+  local agent_gid
+  local agent_uid
+  local source_identity
+  local source_sha256
+  agent_uid="$(id -u "${AGENT_USER}")" || \
+    die "Host Agent service account is unavailable"
+  agent_gid="$(getent group "${AGENT_GROUP}" | awk -F: 'NR == 1 { print $3 }')" || \
+    die "Host Agent service group is unavailable"
+  [[ ${agent_uid} =~ ^[1-9][0-9]*$ &&
+    ${agent_gid} =~ ^[1-9][0-9]*$ ]] || \
+    die "Host Agent service account identity is unsafe"
+  validate_root_parent_chain "/run/autostream-host-agent-recovery.placeholder" \
+    "Host Agent recovery candidate"
+  [[ -d ${CONFIG_DIR} && ! -L ${CONFIG_DIR} &&
+    $(readlink -f -- "${CONFIG_DIR}") == "${CONFIG_DIR}" &&
+    $(stat -c '%U:%G:%a' -- "${CONFIG_DIR}") == \
+      "root:${AGENT_GROUP}:750" ]] || \
+    die "canonical Host Agent identity directory is unsafe"
+  [[ -f ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+    $(readlink -f -- "${CONFIG_DEST}") == "${CONFIG_DEST}" &&
+    $(stat -c '%U:%G:%a:%h' -- "${CONFIG_DEST}") == \
+      "root:${AGENT_GROUP}:640:1" ]] || \
+    die "canonical Host Agent identity is unsafe"
+  ${RUNUSER_PATH} --user "${AGENT_USER}" -- test -r "${CONFIG_DEST}" || \
+    die "Host Agent service account cannot read the canonical identity"
+
+  defer_cleanup_signals
+  active_job_recovery_candidate_dir="$(
+    mktemp -d /run/autostream-host-agent-recovery.XXXXXXXX
+  )" || die "could not create the Host Agent recovery candidate directory"
+  resume_cleanup_signals || \
+    die "installation was interrupted while creating the recovery candidate directory"
+  [[ -n ${active_job_recovery_candidate_dir} &&
+    ${active_job_recovery_candidate_dir} == \
+      /run/autostream-host-agent-recovery.* &&
+    -d ${active_job_recovery_candidate_dir} &&
+    ! -L ${active_job_recovery_candidate_dir} &&
+    $(readlink -f -- "${active_job_recovery_candidate_dir}") == \
+      "${active_job_recovery_candidate_dir}" &&
+    $(stat -c '%U:%G:%a' -- "${active_job_recovery_candidate_dir}") == \
+      "root:root:700" ]] || \
+    die "Host Agent recovery candidate directory is unsafe"
+  chown "root:${AGENT_GROUP}" "${active_job_recovery_candidate_dir}"
+  chmod 0750 "${active_job_recovery_candidate_dir}"
+  [[ $(stat -c '%U:%G:%a' -- "${active_job_recovery_candidate_dir}") == \
+    "root:${AGENT_GROUP}:750" ]] || \
+    die "Host Agent recovery candidate directory metadata is unsafe"
+  active_job_recovery_candidate_dir_identity="$(
+    stat -c '%d:%i' -- "${active_job_recovery_candidate_dir}"
+  )" || die "could not record the recovery candidate directory identity"
+  active_job_recovery_candidate_path="${active_job_recovery_candidate_dir}/autostream-host-agent"
+  source_identity="$(stat -c '%d:%i:%s:%Y:%f' -- "${BINARY_SOURCE}")"
+  source_sha256="$(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')"
+  install -o root -g "${AGENT_GROUP}" -m 0750 \
+    "${BINARY_SOURCE}" "${active_job_recovery_candidate_path}"
+  [[ -f ${BINARY_SOURCE} && ! -L ${BINARY_SOURCE} &&
+    $(stat -c '%d:%i:%s:%Y:%f' -- "${BINARY_SOURCE}") == \
+      "${source_identity}" &&
+    $(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }') == \
+      "${source_sha256}" &&
+    -f ${active_job_recovery_candidate_path} &&
+    ! -L ${active_job_recovery_candidate_path} &&
+    $(sha256sum -- "${active_job_recovery_candidate_path}" | awk 'NR == 1 { print $1 }') == \
+      "${source_sha256}" &&
+    $(stat -c '%U:%G:%a:%h' -- "${active_job_recovery_candidate_path}") == \
+      "root:${AGENT_GROUP}:750:1" ]] || \
+    die "Host Agent recovery candidate copy is unsafe"
+  active_job_recovery_candidate_identity="$(
+    stat -c '%d:%i:%s:%u:%g:%a:%h' -- "${active_job_recovery_candidate_path}"
+  )" || die "could not record the recovery candidate identity"
+  active_job_recovery_candidate_sha256="${source_sha256}"
+}
+
+manual_upgrade_candidate_pid=""
+manual_upgrade_wait_signal=""
+manual_upgrade_pending_signal=""
+
+manual_upgrade_candidate_is_child_job() {
+  local job_pid
+  while IFS= read -r job_pid; do
+    [[ ${job_pid} == "${manual_upgrade_candidate_pid}" ]] && return 0
+  done < <(jobs -p)
+  return 1
+}
+
+record_manual_upgrade_signal() {
+  local signal=$1
+  manual_upgrade_wait_signal=${signal}
+  manual_upgrade_pending_signal=${signal}
+}
+
+forward_manual_upgrade_signal() {
+  local signal=$1
+  manual_upgrade_wait_signal=${signal}
+  if [[ -n ${manual_upgrade_candidate_pid} ]] &&
+    manual_upgrade_candidate_is_child_job; then
+    manual_upgrade_pending_signal=""
+    kill -s "${signal}" -- "${manual_upgrade_candidate_pid}" 2>/dev/null || true
+  else
+    manual_upgrade_pending_signal=${signal}
+  fi
+}
+
+run_guarded_upgrade_candidate() {
+  local ignore_signals_after=$1
+  shift
+  local candidate_status=1
+  local interrupted_status=0
+  local pending_signal=""
+
+  manual_upgrade_candidate_pid=""
+  manual_upgrade_wait_signal=""
+  manual_upgrade_pending_signal=""
+  # Before $! is available, record signals without guessing a PID. Switch to
+  # guarded forwarding only after Bash has registered the candidate child job.
+  trap 'record_manual_upgrade_signal INT' INT
+  trap 'record_manual_upgrade_signal TERM' TERM
+
+  "$@" &
+  manual_upgrade_candidate_pid=$!
+  trap 'forward_manual_upgrade_signal INT' INT
+  trap 'forward_manual_upgrade_signal TERM' TERM
+  if [[ -n ${manual_upgrade_pending_signal} ]]; then
+    pending_signal=${manual_upgrade_pending_signal}
+    forward_manual_upgrade_signal "${pending_signal}"
+  fi
+
+  while true; do
+    manual_upgrade_wait_signal=""
+    if wait "${manual_upgrade_candidate_pid}"; then
+      candidate_status=0
+    else
+      candidate_status=$?
+    fi
+    case "${manual_upgrade_wait_signal}" in
+      INT) interrupted_status=130 ;;
+      TERM) interrupted_status=143 ;;
+      "") interrupted_status=0 ;;
+      *) interrupted_status=1 ;;
+    esac
+    if [[ ${interrupted_status} -ne 0 &&
+      ${candidate_status} -eq ${interrupted_status} ]]; then
+      continue
+    fi
+    break
+  done
+
+  manual_upgrade_candidate_pid=""
+  manual_upgrade_pending_signal=""
+  manual_upgrade_wait_signal=""
+  if [[ ${ignore_signals_after} == true ]]; then
+    # The manual upgrade candidate's durable final status is authoritative.
+    # Once it has been reaped, later wrapper-only signals must not turn a
+    # committed success into 130/143 while the wrapper reports the result.
+    trap '' INT TERM
+  else
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+  fi
+  return "${candidate_status}"
+}
+
+run_active_job_recovery_candidate() {
+  run_guarded_upgrade_candidate false \
+    "${RUNUSER_PATH}" --user "${AGENT_USER}" -- \
+    "${ENV_PATH}" -i \
+    HOME=/nonexistent \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    LC_ALL=C \
+    "${active_job_recovery_candidate_path}" \
+    recover-update --config "${CONFIG_DEST}"
+}
+
+run_manual_upgrade_candidate() {
+  local -a candidate_command=(
+    "${LOCAL_EXECUTOR_BINARY_SOURCE}" manual-upgrade-host-runtime
+    --artifact-root "${EXTRACTED_ROOT}"
+    --archive-sha256 "${ARTIFACT_SHA256}"
+    --archive-size "${ARTIFACT_SIZE}"
+  )
+  if [[ ${recover_active_job} == true ]]; then
+    candidate_command+=(--agent-stopped-for-recovery)
+  fi
+  run_guarded_upgrade_candidate true "${candidate_command[@]}"
+}
+
+inspect_active_job_recovery_state() {
+  local state
+  state="$(${LOCAL_EXECUTOR_BINARY_SOURCE} inspect-host-update-recovery)" || \
+    die "candidate Local Executor could not inspect Host update recovery"
+  [[ ${state} == "active" || ${state} == "inactive" ]] || \
+    die "candidate Local Executor returned an invalid Host update recovery state"
+  printf '%s\n' "${state}"
+}
+
+if [[ ${install_mode} == "upgrade" ]]; then
+  # The private bundle is extracted under umask 077 with
+  # --no-same-permissions, so archive files declared as 0644 arrive as 0600.
+  # The candidate Executor deliberately requires both migration templates to
+  # be root:root 0644 with one link before it can inspect or migrate the
+  # installed units. Normalize only these verified, non-executable templates
+  # inside the root-only staging directory; keep every other staged file under
+  # the restrictive extraction mask.
+  chmod 0644 -- \
+    "${LOCAL_EXECUTOR_SERVICE_SOURCE}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}" || \
+    die "could not normalize the verified systemd unit candidates"
+  for verified_unit_candidate in \
+    "${LOCAL_EXECUTOR_SERVICE_SOURCE}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}"; do
+    [[ -f ${verified_unit_candidate} &&
+      ! -L ${verified_unit_candidate} &&
+      $(stat -c '%U:%G:%a:%h' -- "${verified_unit_candidate}") == \
+        root:root:644:1 ]] || \
+      die "verified systemd unit candidate metadata is unsafe: ${verified_unit_candidate}"
+  done
+
+  if [[ ${recover_active_job} == true ]]; then
+    validate_active_job_recovery_executable \
+      "${SYSTEMCTL_PATH}" "systemctl"
+    validate_active_job_recovery_executable \
+      "${SYSTEMD_RUN_PATH}" "systemd-run"
+    validate_active_job_recovery_executable \
+      "${RUNUSER_PATH}" "runuser"
+    validate_active_job_recovery_executable \
+      "${ENV_PATH}" "env"
+    validate_active_job_recovery_executable \
+      "${TEST_PATH}" "test"
+    [[ $(inspect_active_job_recovery_state) == "active" ]] || \
+      die "--recover-active-job requires an exact active Host update journal"
+    acquire_active_job_recovery_locks
+    [[ $(inspect_active_job_recovery_state) == "active" ]] || \
+      die "exact active Host update journal settled before recovery could start"
+    active_job_recovery_service_is_managed || \
+      die "--recover-active-job requires an enabled, active Host Agent with a live MainPID"
+    active_job_recovery_live_pair_is_managed || \
+      die "--recover-active-job requires an exact permitted live Host Agent and Local Executor A/B pair"
+    active_job_recovery_original_pair_is_intact || \
+      die "--recover-active-job could not pin the exact pre-stop Host runtime pair"
+    prepare_active_job_recovery_guard_candidate
+    install_active_job_recovery_clear_fence
+    arm_active_job_recovery_guard
+    active_job_recovery_stop_attempted=true
+    ${SYSTEMCTL_PATH} stop "${UNIT_NAME}" || \
+      die "could not stop the Host Agent for active job recovery"
+    active_job_recovery_service_is_inactive || \
+      die "Host Agent did not become safely inactive for active job recovery"
+    prepare_active_job_recovery_candidate
+    # Local Executor Reconcile takes this same lock for every root mutation.
+    # Keep the setup lock to exclude configure/install/manual-upgrade, but
+    # release lifecycle so the bounded candidate can reconcile the exact job.
+    release_active_job_recovery_lifecycle_lock || \
+      die "could not release the lifecycle lock for exact active job recovery"
+    active_job_recovery_status=0
+    run_active_job_recovery_candidate || active_job_recovery_status=$?
+    if [[ ${active_job_recovery_status} -ne 0 ]]; then
+      printf '%s\n' \
+        'install-autostream-host-agent: exact active Host update recovery failed' >&2
+      exit "${active_job_recovery_status}"
+    fi
+    reacquire_active_job_recovery_lifecycle_lock
+    [[ $(inspect_active_job_recovery_state) == "inactive" ]] || \
+      die "candidate Host Agent did not settle the exact active Host update journal"
+    release_active_job_recovery_locks || \
+      die "could not release active-job recovery locks before the managed runtime upgrade"
+  fi
+
+  manual_upgrade_status=0
+  run_manual_upgrade_candidate || manual_upgrade_status=$?
+  if [[ ${manual_upgrade_status} -ne 0 ]]; then
+    printf '%s\n' \
+      'install-autostream-host-agent: managed Host runtime upgrade failed' >&2
+    exit "${manual_upgrade_status}"
+  fi
+  if [[ ${recover_active_job} == true ]]; then
+    active_job_recovery_upgrade_committed=true
+    cleanup_active_job_recovery || \
+      die "managed Host runtime upgrade completed but recovery cleanup failed"
+  fi
+  printf '%s\n' "Verified Host Agent bundle archive SHA-256: ${ARTIFACT_SHA256}"
+  printf '%s\n' "Managed Host Agent and Local Executor runtime upgrade complete."
+  exit 0
+fi
+
+acquire_shared_host_setup_lock
+acquire_host_lifecycle_lock
+
+copy_verified_release_file() {
+  local source=$1
+  local destination=$2
+  local owner=$3
+  local group=$4
+  local mode=$5
+  local label=$6
+  local source_identity
+  local source_sha256
+  [[ -f ${source} && ! -L ${source} ]] || die "${label} release source is missing or unsafe"
+  source_identity=$(stat -c '%d:%i:%s:%Y:%f' -- "${source}")
+  source_sha256=$(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }')
+  install -o "${owner}" -g "${group}" -m "${mode}" "${source}" "${destination}"
+  [[ -f ${source} && ! -L ${source} ]] || die "${label} release source changed while it was copied"
+  [[ $(stat -c '%d:%i:%s:%Y:%f' -- "${source}") == "${source_identity}" ]] || \
+    die "${label} release source identity changed while it was copied"
+  [[ $(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "${label} release source content changed while it was copied"
+  [[ $(sha256sum -- "${destination}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "staged ${label} does not match the verified release source"
+}
+
+copy_verified_config_file() {
+  local source=$1
+  local destination=$2
+  local source_identity
+  local source_sha256
+  validate_root_owned_config_source "${source}"
+  source_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${source}")
+  source_sha256=$(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }')
+  install -o root -g "${AGENT_GROUP}" -m 0640 "${source}" "${destination}"
+  validate_root_owned_config_source "${source}"
+  [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${source}") == "${source_identity}" ]] || \
+    die "config source identity changed while it was copied"
+  [[ $(sha256sum -- "${source}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "config source content changed while it was copied"
+  [[ $(sha256sum -- "${destination}" | awk 'NR == 1 { print $1 }') == "${source_sha256}" ]] || \
+    die "staged identity does not match the verified config source"
+}
+
+agent_group_created=false
+agent_group_identity=""
+agent_group_creation_attempted=false
+preexisting_agent_group_identity=""
+agent_user_created=false
+agent_user_identity=""
+agent_user_creation_attempted=false
+agent_user_uid=""
+agent_user_gid=""
+agent_user_rollback_login_ready=false
+etc_autostream_dir_created=false
+etc_autostream_dir_identity=""
+usr_local_bin_dir_created=false
+usr_local_bin_dir_identity=""
+systemd_system_dir_created=false
+systemd_system_dir_identity=""
+usr_local_libexec_dir_created=false
+usr_local_libexec_dir_identity=""
+etc_tmpfiles_dir_created=false
+etc_tmpfiles_dir_identity=""
+opt_autostream_dir_created=false
+opt_autostream_dir_identity=""
+identity_config_dir_created=false
+identity_config_dir_identity=""
+state_dir_created=false
+state_dir_existed=false
+state_dir_identity=""
+state_root_snapshot=""
+state_snapshot=""
+state_snapshot_ready=false
+host_runtime_root_created=false
+host_runtime_root_identity=""
+host_runtime_slots_created=false
+host_runtime_slots_identity=""
+host_runtime_initial_slot_created=false
+host_runtime_initial_slot_identity=""
+host_runtime_bin_created=false
+host_runtime_bin_identity=""
+host_runtime_agent_created=false
+host_runtime_agent_identity=""
+host_runtime_executor_created=false
+host_runtime_executor_identity=""
+host_runtime_current_created=false
+host_runtime_current_identity=""
+host_binary_link_identity=""
+local_executor_binary_link_identity=""
+managed_runtime_snapshot_ready=false
+managed_binary_dest_snapshot=""
+managed_runtime_current_snapshot=""
+managed_runtime_agent_snapshot=""
+managed_local_executor_dest_snapshot=""
+managed_runtime_executor_snapshot=""
+config_stage=""
+binary_stage=""
+unit_stage=""
+local_executor_binary_stage=""
+local_executor_service_stage=""
+local_executor_socket_stage=""
+local_executor_tmpfiles_stage=""
+self_update_recovery_service_stage=""
+self_update_recovery_timer_stage=""
+
+create_temp_file() {
+  local variable=$1
+  local template=$2
+  local temp_path=""
+  defer_cleanup_signals
+  temp_path=$(mktemp "${template}") || die "could not create temporary file from ${template}"
+  printf -v "${variable}" '%s' "${temp_path}"
+  resume_cleanup_signals || die "installation was interrupted while journaling a temporary file"
+}
+
+move_with_journal() {
+  local source=$1
+  local destination=$2
+  local journal_variable=$3
+  defer_cleanup_signals
+  printf -v "${journal_variable}" '%s' true
+  mv -fT -- "${source}" "${destination}"
+  resume_cleanup_signals || die "installation was interrupted while journaling ${destination}"
+}
+
+move_with_identity_journal() {
+  local source=$1
+  local destination=$2
+  local journal_variable=$3
+  local identity_variable=$4
+  defer_cleanup_signals
+  printf -v "${journal_variable}" '%s' true
+  mv -fT -- "${source}" "${destination}"
+  printf -v "${identity_variable}" '%s' "$(stat -c '%d:%i' -- "${destination}")"
+  resume_cleanup_signals || die "installation was interrupted while journaling ${destination}"
+}
+
+create_symlink_with_journal() {
+  local target=$1
+  local destination=$2
+  local journal_variable=$3
+  local identity_variable=$4
+  defer_cleanup_signals
+  printf -v "${journal_variable}" '%s' true
+  ln -s -- "${target}" "${destination}"
+  printf -v "${identity_variable}" '%s' "$(stat -c '%d:%i' -- "${destination}")"
+  resume_cleanup_signals || die "installation was interrupted while journaling ${destination}"
+}
+
+rollback_created_directory() {
+  local path=$1
+  local expected_identity=$2
+  local label=$3
+  if [[ -z ${expected_identity} ||
+    ! -d ${path} ||
+    -L ${path} ||
+    $(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) != "${expected_identity}" ]]; then
+    printf '%s\n' "install-autostream-host-agent: rollback refused changed ${label}; inspect ${path}" >&2
+    return 1
+  fi
+  if ! rmdir -- "${path}"; then
+    printf '%s\n' "install-autostream-host-agent: rollback could not remove new ${label}; inspect ${path}" >&2
+    return 1
+  fi
+}
+
+prepare_agent_user_rollback_login() {
+  if id "${AGENT_USER}" >/dev/null 2>&1; then
+    return 0
+  fi
+  [[ -z $(getent passwd "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) &&
+    -z $(getent group "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) ]] || \
+    return 1
+  agent_account_member_fields_are_clear || return 1
+  agent_user_rollback_login_ready=true
+}
+
+agent_account_member_fields_are_clear() {
+  [[ -f /etc/group && ! -L /etc/group &&
+    -f /etc/gshadow && ! -L /etc/gshadow ]] || return 1
+  awk -F: \
+    -v agent_login="${AGENT_USER}" \
+    -v rollback_login="${AGENT_USER_ROLLBACK_LOGIN}" \
+    '{
+      count = split($4, members, ",")
+      for (member_index = 1; member_index <= count; member_index++) {
+        if (members[member_index] == agent_login || members[member_index] == rollback_login) {
+          exit 1
+        }
+      }
+    }' /etc/group || return 1
+  awk -F: \
+    -v agent_login="${AGENT_USER}" \
+    -v rollback_login="${AGENT_USER_ROLLBACK_LOGIN}" \
+    '{
+      admin_count = split($3, admins, ",")
+      for (admin_index = 1; admin_index <= admin_count; admin_index++) {
+        if (admins[admin_index] == agent_login || admins[admin_index] == rollback_login) {
+          exit 1
+        }
+      }
+      member_count = split($4, members, ",")
+      for (member_index = 1; member_index <= member_count; member_index++) {
+        if (members[member_index] == agent_login || members[member_index] == rollback_login) {
+          exit 1
+        }
+      }
+    }' /etc/gshadow
+}
+
+agent_account_databases_match_digests() {
+  local expected_group_digest=$1
+  local expected_gshadow_digest=$2
+  local group_digest
+  local gshadow_digest
+
+  group_digest="$(sha256sum -- /etc/group | awk 'NR == 1 { print $1 }')" || return 1
+  gshadow_digest="$(sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }')" || return 1
+  [[ ${group_digest} =~ ^[[:xdigit:]]{64}$ &&
+    ${gshadow_digest} =~ ^[[:xdigit:]]{64}$ &&
+    ${group_digest} == "${expected_group_digest}" &&
+    ${gshadow_digest} == "${expected_gshadow_digest}" ]]
+}
+
+restore_created_agent_user_login() {
+  local expected_group_record=$1
+  local renamed_user_record=$2
+  local expected_group_digest=$3
+  local expected_gshadow_digest=$4
+
+  [[ -z $(getent passwd "${AGENT_USER}" 2>/dev/null || true) &&
+    $(getent passwd "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) == \
+      "${renamed_user_record}" &&
+    -z $(getent group "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) ]] || \
+    return 1
+  usermod --login "${AGENT_USER}" "${AGENT_USER_ROLLBACK_LOGIN}" || return 1
+  [[ $(getent passwd "${AGENT_USER}" 2>/dev/null || true) == \
+      "${agent_user_identity}" &&
+    -z $(getent passwd "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) &&
+    -z $(getent group "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) ]] || \
+    return 1
+  agent_account_databases_match_digests \
+    "${expected_group_digest}" "${expected_gshadow_digest}" || return 1
+  [[ $(getent group "${AGENT_GROUP}" 2>/dev/null || true) == "${expected_group_record}" ]]
+}
+
+remove_created_agent_user_preserving_group() {
+  local delete_status=0
+  local expected_group_gid
+  local expected_group_record
+  local group_database_digest_before
+  local gshadow_database_digest_before
+  local rename_status=0
+  local renamed_user_record
+  local record_gid
+  local record_home
+  local record_login
+  local record_shell
+  local record_uid
+  local user_record_suffix
+
+  IFS=: read -r record_login _ record_uid record_gid _ record_home record_shell <<<"${agent_user_identity}"
+  [[ ${agent_user_created} == true &&
+    ${agent_user_rollback_login_ready} == true &&
+    ${record_login} == "${AGENT_USER}" &&
+    ${record_uid} =~ ^[1-9][0-9]*$ &&
+    ${record_uid} == "${agent_user_uid}" &&
+    ${record_gid} =~ ^[1-9][0-9]*$ &&
+    ${record_gid} == "${agent_user_gid}" &&
+    ${record_home} == "${STATE_DIR}" &&
+    ${record_shell} == "/usr/sbin/nologin" &&
+    $(getent passwd "${AGENT_USER}" 2>/dev/null || true) == "${agent_user_identity}" &&
+    $(id -u "${AGENT_USER}" 2>/dev/null || true) == "${agent_user_uid}" &&
+    $(id -g "${AGENT_USER}" 2>/dev/null || true) == "${agent_user_gid}" ]] || \
+    return 1
+
+  if [[ ${agent_group_created} == true ]]; then
+    expected_group_record="${agent_group_identity}"
+  else
+    expected_group_record="${preexisting_agent_group_identity}"
+  fi
+  [[ -n ${expected_group_record} &&
+    $(getent group "${AGENT_GROUP}" 2>/dev/null || true) == "${expected_group_record}" ]] || \
+    return 1
+  expected_group_gid="$(printf '%s\n' "${expected_group_record}" | awk -F: -v group_name="${AGENT_GROUP}" 'NR == 1 && $1 == group_name { print $3 }')"
+  [[ ${expected_group_gid} =~ ^[1-9][0-9]*$ &&
+    ${agent_user_gid} == "${expected_group_gid}" &&
+    -z $(getent passwd "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) &&
+    -z $(getent group "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) ]] || \
+    return 1
+
+  group_database_digest_before="$(sha256sum -- /etc/group | awk 'NR == 1 { print $1 }')" || return 1
+  gshadow_database_digest_before="$(sha256sum -- /etc/gshadow | awk 'NR == 1 { print $1 }')" || return 1
+  [[ ${group_database_digest_before} =~ ^[[:xdigit:]]{64}$ &&
+    ${gshadow_database_digest_before} =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  agent_account_member_fields_are_clear || return 1
+  agent_account_databases_match_digests \
+    "${group_database_digest_before}" "${gshadow_database_digest_before}" || return 1
+
+  # Ubuntu may automatically delete an empty user-private group whose name
+  # matches the login. Rename only this invocation's user before userdel so the
+  # protected Host Agent group cannot match the deleted login.
+  user_record_suffix="${agent_user_identity#"${AGENT_USER}"}"
+  renamed_user_record="${AGENT_USER_ROLLBACK_LOGIN}${user_record_suffix}"
+  if usermod --login "${AGENT_USER_ROLLBACK_LOGIN}" "${AGENT_USER}"; then
+    :
+  else
+    rename_status=$?
+  fi
+  if [[ ${rename_status} -ne 0 ||
+    -n $(getent passwd "${AGENT_USER}" 2>/dev/null || true) ||
+    $(getent passwd "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) != \
+      "${renamed_user_record}" ||
+    $(getent group "${AGENT_GROUP}" 2>/dev/null || true) != "${expected_group_record}" ||
+    -n $(getent group "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) ]]; then
+    restore_created_agent_user_login \
+      "${expected_group_record}" "${renamed_user_record}" \
+      "${group_database_digest_before}" "${gshadow_database_digest_before}" || true
+    return 1
+  fi
+  if ! agent_account_databases_match_digests \
+    "${group_database_digest_before}" "${gshadow_database_digest_before}"; then
+    restore_created_agent_user_login \
+      "${expected_group_record}" "${renamed_user_record}" \
+      "${group_database_digest_before}" "${gshadow_database_digest_before}" || true
+    return 1
+  fi
+
+  if userdel "${AGENT_USER_ROLLBACK_LOGIN}"; then
+    delete_status=0
+  else
+    delete_status=$?
+  fi
+  if [[ ${delete_status} -ne 0 ]]; then
+    restore_created_agent_user_login \
+      "${expected_group_record}" "${renamed_user_record}" \
+      "${group_database_digest_before}" "${gshadow_database_digest_before}" || true
+    return 1
+  fi
+  [[ -z $(getent passwd "${AGENT_USER}" 2>/dev/null || true) &&
+    -z $(getent passwd "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) &&
+    $(getent group "${AGENT_GROUP}" 2>/dev/null || true) == "${expected_group_record}" &&
+    -z $(getent group "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) ]] || \
+    return 1
+  agent_account_databases_match_digests \
+    "${group_database_digest_before}" "${gshadow_database_digest_before}" || return 1
+  agent_user_created=false
+  agent_user_uid=""
+  agent_user_gid=""
+  agent_user_identity=""
+}
+
+rollback_created_account() {
+  local failed=false
+  local current_identity=""
+  if [[ ${agent_user_creation_attempted} == true &&
+    ${agent_user_created} == false ]] &&
+    current_identity=$(getent passwd "${AGENT_USER}" 2>/dev/null); then
+    printf '%s\n' "install-autostream-host-agent: rollback cannot prove ownership of the newly appeared ${AGENT_USER} account" >&2
+    failed=true
+  fi
+  if [[ ${agent_user_created} == true ]] &&
+    ! remove_created_agent_user_preserving_group; then
+    printf '%s\n' "install-autostream-host-agent: rollback could not safely remove ${AGENT_USER} account" >&2
+    failed=true
+  fi
+  if [[ ${agent_group_creation_attempted} == true &&
+    ${agent_group_created} == false ]] &&
+    current_identity=$(getent group "${AGENT_GROUP}" 2>/dev/null); then
+    printf '%s\n' "install-autostream-host-agent: rollback cannot prove ownership of the newly appeared ${AGENT_GROUP} group" >&2
+    failed=true
+  fi
+  if [[ ${agent_group_created} == true && ${agent_user_created} == true ]]; then
+    failed=true
+  elif [[ ${agent_group_created} == true ]]; then
+    current_identity=$(getent group "${AGENT_GROUP}" 2>/dev/null || true)
+    if [[ -z ${agent_group_identity} || ${current_identity} != "${agent_group_identity}" ]]; then
+      printf '%s\n' "install-autostream-host-agent: rollback refused changed ${AGENT_GROUP} group" >&2
+      failed=true
+    elif ! groupdel "${AGENT_GROUP}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not remove ${AGENT_GROUP} group" >&2
+      failed=true
+    elif getent group "${AGENT_GROUP}" >/dev/null 2>&1; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not prove removal of ${AGENT_GROUP} group" >&2
+      failed=true
+    else
+      agent_group_created=false
+      agent_group_identity=""
+    fi
+  fi
+  [[ ${failed} == false ]]
+}
+
+validate_state_tree() {
+  local root=$1
+  local root_device
+  local entry
+  root_device=$(stat -c '%d' -- "${root}") || die "could not read the Host Agent state filesystem"
+  while IFS= read -r -d '' entry; do
+    if [[ -L ${entry} || ( ! -d ${entry} && ! -f ${entry} ) ]]; then
+      printf '%s\n' "install-autostream-host-agent: Host Agent state contains a symlink or special file: ${entry}" >&2
+      return 1
+    fi
+    if [[ $(stat -c '%d' -- "${entry}") != "${root_device}" ]]; then
+      printf '%s\n' "install-autostream-host-agent: Host Agent state contains a nested mount: ${entry}" >&2
+      return 1
+    fi
+  done < <(find "${root}" -xdev -mindepth 1 -print0)
+}
+
+snapshot_host_agent_state() {
+  [[ ${install_mode} == "configured" && ${state_dir_existed} == true ]] || return
+  [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} &&
+    $(stat -c '%d:%i' -- "${STATE_DIR}") == "${state_dir_identity}" ]] || \
+    die "Host Agent state directory changed before snapshot"
+  validate_state_tree "${STATE_DIR}" || die "existing Host Agent state is unsafe to snapshot"
+  state_snapshot="${BUNDLE_STAGE}/host-agent-state.before.tar"
+  tar --numeric-owner --one-file-system -cpf "${state_snapshot}" -C "${STATE_DIR}" . || \
+    die "could not snapshot existing Host Agent state"
+  [[ -f ${state_snapshot} && ! -L ${state_snapshot} ]] || \
+    die "Host Agent state snapshot is missing or unsafe"
+  state_snapshot_ready=true
+}
+
+restore_host_agent_state() {
+  local root_device
+  local entry
+  local snapshot_device
+  local snapshot_inode
+  local snapshot_uid
+  local snapshot_gid
+  local snapshot_mode
+  if [[ ${state_dir_existed} == true && ${state_snapshot_ready} == true ]]; then
+    IFS=: read -r snapshot_device snapshot_inode snapshot_uid snapshot_gid snapshot_mode \
+      <<<"${state_root_snapshot}"
+    [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} &&
+      $(stat -c '%d:%i' -- "${STATE_DIR}") == "${snapshot_device}:${snapshot_inode}" ]] || {
+      printf '%s\n' 'install-autostream-host-agent: rollback refused a replaced Host Agent state root' >&2
+      return 1
+    }
+    validate_state_tree "${STATE_DIR}" || return 1
+    find "${STATE_DIR}" -xdev -mindepth 1 -delete || return 1
+    tar --numeric-owner --same-owner --same-permissions -xpf "${state_snapshot}" \
+      -C "${STATE_DIR}" || return 1
+    chown "${snapshot_uid}:${snapshot_gid}" -- "${STATE_DIR}" || return 1
+    chmod "${snapshot_mode}" -- "${STATE_DIR}" || return 1
+    [[ $(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}") == "${state_root_snapshot}" ]] || \
+      return 1
+    return
+  fi
+  if [[ ${state_dir_created} == true ]]; then
+    [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} &&
+      $(stat -c '%d:%i' -- "${STATE_DIR}" 2>/dev/null || true) == "${state_dir_identity}" ]] || {
+      printf '%s\n' 'install-autostream-host-agent: rollback refused a replaced fresh Host Agent state root' >&2
+      return 1
+    }
+    root_device=$(stat -c '%d' -- "${STATE_DIR}") || return 1
+    while IFS= read -r -d '' entry; do
+      [[ ! -L ${entry} && ( -d ${entry} || -f ${entry} ) &&
+        $(stat -c '%d' -- "${entry}") == "${root_device}" ]] || {
+        printf '%s\n' "install-autostream-host-agent: rollback refused unsafe fresh state entry ${entry}" >&2
+        return 1
+      }
+    done < <(find "${STATE_DIR}" -xdev -mindepth 1 -print0)
+    find "${STATE_DIR}" -xdev -mindepth 1 -delete || return 1
+    rollback_created_directory "${STATE_DIR}" "${state_dir_identity}" "Host Agent state directory" ||
+      return 1
+    state_dir_created=false
+  fi
+}
+
+rollback_bootstrap_prerequisites() {
+  local failed=false
+  local rollback_accounts=${1:-true}
+  if [[ ${state_dir_created} == true ]] &&
+    ! rollback_created_directory \
+      "${STATE_DIR}" "${state_dir_identity}" "Host Agent state directory"; then
+    failed=true
+  fi
+  if [[ ${identity_config_dir_created} == true ]] &&
+    ! rollback_created_directory \
+      "${CONFIG_DIR}" "${identity_config_dir_identity}" "Host Agent identity directory"; then
+    failed=true
+  fi
+  if [[ ${opt_autostream_dir_created} == true ]] &&
+    ! rollback_created_directory \
+      /opt/autostream "${opt_autostream_dir_identity}" "/opt/autostream directory"; then
+    failed=true
+  fi
+  if [[ ${etc_tmpfiles_dir_created} == true ]] &&
+    ! rollback_created_directory \
+      /etc/tmpfiles.d "${etc_tmpfiles_dir_identity}" "/etc/tmpfiles.d directory"; then
+    failed=true
+  fi
+  if [[ ${usr_local_libexec_dir_created} == true ]] &&
+    ! rollback_created_directory \
+      /usr/local/libexec "${usr_local_libexec_dir_identity}" "/usr/local/libexec directory"; then
+    failed=true
+  fi
+  if [[ ${systemd_system_dir_created} == true ]] &&
+    ! rollback_created_directory \
+      /etc/systemd/system "${systemd_system_dir_identity}" "/etc/systemd/system directory"; then
+    failed=true
+  fi
+  if [[ ${usr_local_bin_dir_created} == true ]] &&
+    ! rollback_created_directory \
+      /usr/local/bin "${usr_local_bin_dir_identity}" "/usr/local/bin directory"; then
+    failed=true
+  fi
+  if [[ ${etc_autostream_dir_created} == true ]] &&
+    ! rollback_created_directory \
+      /etc/autostream "${etc_autostream_dir_identity}" "/etc/autostream directory"; then
+    failed=true
+  fi
+  if [[ ${rollback_accounts} == true ]] &&
+    ! rollback_created_account; then
+    failed=true
+  fi
+  [[ ${failed} == false ]]
+}
+
+unit_active_state() {
+  local unit=$1
+  local state=""
+  local status=0
+  if state=$(systemctl is-active "${unit}" 2>/dev/null); then
+    status=0
+  else
+    status=$?
+  fi
+  case "${status}:${state}" in
+    0:active) printf '%s\n' active ;;
+    3:inactive|4:inactive|4:unknown) printf '%s\n' inactive ;;
+    *) die "could not establish a stable active state for ${unit}" ;;
+  esac
+}
+
+unit_enabled_state() {
+  local unit=$1
+  local state=""
+  local status=0
+  if state=$(systemctl is-enabled "${unit}" 2>/dev/null); then
+    status=0
+  else
+    status=$?
+  fi
+  case "${status}:${state}" in
+    0:enabled) printf '%s\n' enabled ;;
+    1:disabled|1:not-found|4:not-found) printf '%s\n' disabled ;;
+    *) die "could not establish a stable enablement state for ${unit}" ;;
+  esac
+}
+
+verify_unit_inactive() {
+  local unit=$1
+  [[ $(unit_active_state "${unit}") == "inactive" ]] || \
+    die "${unit} did not reach the inactive state"
+}
+
+verify_unit_active() {
+  local unit=$1
+  [[ $(unit_active_state "${unit}") == "active" ]] || \
+    die "${unit} did not reach the active state"
+}
+
+verify_unit_disabled() {
+  local unit=$1
+  [[ $(unit_enabled_state "${unit}") == "disabled" ]] || \
+    die "${unit} did not reach the disabled state"
+}
+
+cleanup_bootstrap() {
+  local status=$?
+  local rollback_failed=false
+  trap '' INT TERM
+  trap - EXIT
+  [[ -z ${config_stage:-} ]] || rm -f -- "${config_stage}"
+  [[ -z ${binary_stage:-} ]] || rm -f -- "${binary_stage}"
+  [[ -z ${unit_stage:-} ]] || rm -f -- "${unit_stage}"
+  [[ -z ${local_executor_binary_stage:-} ]] || rm -f -- "${local_executor_binary_stage}"
+  [[ -z ${local_executor_service_stage:-} ]] || rm -f -- "${local_executor_service_stage}"
+  [[ -z ${local_executor_socket_stage:-} ]] || rm -f -- "${local_executor_socket_stage}"
+  [[ -z ${local_executor_tmpfiles_stage:-} ]] || rm -f -- "${local_executor_tmpfiles_stage}"
+  [[ -z ${self_update_recovery_service_stage:-} ]] || rm -f -- "${self_update_recovery_service_stage}"
+  [[ -z ${self_update_recovery_timer_stage:-} ]] || rm -f -- "${self_update_recovery_timer_stage}"
+  rollback_bootstrap_prerequisites || rollback_failed=true
+  if [[ -n ${BUNDLE_STAGE:-} &&
+    ${BUNDLE_STAGE} == /var/tmp/autostream-host-agent-install.* &&
+    -d ${BUNDLE_STAGE} &&
+    ! -L ${BUNDLE_STAGE} ]]; then
+    rm -rf -- "${BUNDLE_STAGE}"
+  fi
+  if [[ ${rollback_failed} == true ]]; then
+    exit 1
+  fi
+  exit "${status}"
+}
+arm_cleanup_handler cleanup_bootstrap
+
+if [[ ${install_mode} == "prepare" ]]; then
+  [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+    ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+    die "--prepare refuses an existing identity; use --config PATH for a configured installation"
+  [[ ! -e ${LOCAL_EXECUTOR_POLICY_DEST} && ! -L ${LOCAL_EXECUTOR_POLICY_DEST} ]] || \
+    die "--prepare refuses an existing local executor policy; use the local executor installer for upgrades"
+  [[ $(unit_active_state "${UNIT_NAME}") == "inactive" ]] || \
+    die "--prepare requires the Host Agent service to be inactive"
+  [[ $(unit_enabled_state "${UNIT_NAME}") == "disabled" ]] || \
+    die "--prepare requires the Host Agent service to be disabled"
+  for runtime_unit in \
+    "${LOCAL_EXECUTOR_SERVICE_NAME}" \
+    "${LOCAL_EXECUTOR_SOCKET_NAME}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_A}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_B}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_A}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_B}"; do
+    [[ $(unit_active_state "${runtime_unit}") == "inactive" ]] || \
+      die "--prepare requires the local executor and self-update recovery timers to be inactive"
+  done
+  for runtime_unit in \
+    "${LOCAL_EXECUTOR_SERVICE_NAME}" \
+    "${LOCAL_EXECUTOR_SOCKET_NAME}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_A}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_B}"; do
+    [[ $(unit_enabled_state "${runtime_unit}") == "disabled" ]] || \
+      die "--prepare requires the local executor and self-update recovery timers to be disabled"
+  done
+  [[ ! -e ${HOST_RUNTIME_ROOT} && ! -L ${HOST_RUNTIME_ROOT} ]] || \
+    die "--prepare refuses an existing Host Agent A/B runtime root"
+fi
+
+prepare_agent_user_rollback_login || \
+  die "could not reserve a safe Host Agent account rollback login"
+if ! getent group "${AGENT_GROUP}" >/dev/null; then
+  agent_group_creation_attempted=true
+  defer_cleanup_signals
+  groupadd --system "${AGENT_GROUP}"
+  agent_group_created=true
+  agent_group_identity=$(getent group "${AGENT_GROUP}") || \
+    die "could not record the newly created Host Agent group"
+  resume_cleanup_signals || die "installation was interrupted while journaling the Host Agent group"
+else
+  preexisting_agent_group_identity="$(getent group "${AGENT_GROUP}" 2>/dev/null || true)"
+  [[ -n ${preexisting_agent_group_identity} ]] || \
+    die "could not record the pre-existing Host Agent group"
+fi
+IFS=: read -r _ _ agent_gid _ < <(getent group "${AGENT_GROUP}")
+[[ ${agent_gid} =~ ^[0-9]+$ && ${agent_gid} -ne 0 ]] || \
+  die "agent group must use a non-root numeric gid"
+if [[ ${agent_group_created} == true ]]; then
+  [[ $(getent group "${AGENT_GROUP}" 2>/dev/null || true) == "${agent_group_identity}" ]] || \
+    die "newly created Host Agent group changed before user provisioning"
+else
+  [[ $(getent group "${AGENT_GROUP}" 2>/dev/null || true) == "${preexisting_agent_group_identity}" ]] || \
+    die "pre-existing Host Agent group changed before user provisioning"
+fi
+if ! id "${AGENT_USER}" >/dev/null 2>&1; then
+  [[ ${agent_user_rollback_login_ready} == true &&
+    -z $(getent passwd "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) &&
+    -z $(getent group "${AGENT_USER_ROLLBACK_LOGIN}" 2>/dev/null || true) ]] || \
+    die "Host Agent account rollback login reservation changed before user provisioning"
+  agent_account_member_fields_are_clear || \
+    die "Host Agent account membership changed before user provisioning"
+  agent_user_creation_attempted=true
+  defer_cleanup_signals
+  useradd \
+    --system \
+    --gid "${AGENT_GROUP}" \
+    --home-dir "${STATE_DIR}" \
+    --shell /usr/sbin/nologin \
+    "${AGENT_USER}"
+  agent_user_created=true
+  agent_user_identity=$(getent passwd "${AGENT_USER}") || \
+    die "could not record the newly created Host Agent account"
+  agent_user_uid="$(id -u "${AGENT_USER}" 2>/dev/null || true)"
+  agent_user_gid="$(id -g "${AGENT_USER}" 2>/dev/null || true)"
+  [[ ${agent_user_uid} =~ ^[1-9][0-9]*$ &&
+    ${agent_user_gid} == "${agent_gid}" ]] || \
+    die "could not record the newly created Host Agent account identity"
+  resume_cleanup_signals || die "installation was interrupted while journaling the Host Agent account"
+fi
+[[ $(id -u "${AGENT_USER}") -ne 0 ]] || die "agent user must not be root"
+[[ $(id -gn "${AGENT_USER}") == "${AGENT_GROUP}" ]] || die "agent user must use the dedicated primary group"
+mapfile -t supplementary_groups < <(id -Gn "${AGENT_USER}" | tr ' ' '\n' | LC_ALL=C sort -u)
+[[ ${#supplementary_groups[@]} -eq 1 && ${supplementary_groups[0]} == "${AGENT_GROUP}" ]] || \
+  die "agent user must not belong to supplementary groups"
+IFS=: read -r _ _ agent_gid agent_group_members < <(getent group "${AGENT_GROUP}")
+[[ ${agent_gid} =~ ^[0-9]+$ && ${agent_gid} -ne 0 ]] || \
+  die "agent group has an invalid or root gid"
+if [[ -n ${agent_group_members} ]]; then
+  IFS=, read -r -a explicit_group_members <<<"${agent_group_members}"
+  for member in "${explicit_group_members[@]}"; do
+    [[ ${member} == "${AGENT_USER}" ]] || die "agent group must not grant identity access to another user"
+  done
+fi
+while IFS=: read -r account_name _ _ account_gid _ _ _; do
+  if [[ ${account_gid} == "${agent_gid}" && ${account_name} != "${AGENT_USER}" ]]; then
+    die "agent group must not be the primary group of another user"
+  fi
+done < <(getent passwd)
+IFS=: read -r _ _ _ _ _ agent_home agent_shell < <(getent passwd "${AGENT_USER}")
+[[ ${agent_home} == "${STATE_DIR}" ]] || die "agent user must use ${STATE_DIR} as its home"
+[[ ${agent_shell} == "/usr/sbin/nologin" ]] || die "agent user must use /usr/sbin/nologin"
+
+create_managed_directory() {
+  local path=$1
+  local owner=$2
+  local group=$3
+  local mode=$4
+  local created_variable=$5
+  local identity_variable=$6
+  local identity
+  [[ ! -e ${path} && ! -L ${path} ]] || die "${path} appeared after preflight"
+  defer_cleanup_signals
+  mkdir -- "${path}" || die "could not create ${path}"
+  printf -v "${created_variable}" '%s' true
+  identity=$(stat -c '%d:%i' -- "${path}") || die "could not record the identity of ${path}"
+  printf -v "${identity_variable}" '%s' "${identity}"
+  chown "${owner}:${group}" -- "${path}" || die "could not set the owner of ${path}"
+  chmod "${mode}" -- "${path}" || die "could not set the mode of ${path}"
+  resume_cleanup_signals || die "installation was interrupted while journaling ${path}"
+}
+
+ensure_root_directory() {
+  local path=$1
+  local create_mode=$2
+  local created_variable=$3
+  local identity_variable=$4
+  local mode
+  if [[ -e ${path} || -L ${path} ]]; then
+    [[ -d ${path} && ! -L ${path} ]] || die "${path} must be a non-symlink directory"
+    [[ $(stat -c '%U:%G' -- "${path}") == "root:root" ]] || die "${path} must be owned by root:root"
+    mode=$(stat -c '%a' -- "${path}")
+    (( (8#${mode} & 0022) == 0 )) || die "${path} must not be writable by group or other"
+    return
+  fi
+  create_managed_directory \
+    "${path}" root root "${create_mode}" "${created_variable}" "${identity_variable}"
+}
+
+validate_private_root_directory() {
+  local path=$1
+  [[ -d ${path} && ! -L ${path} ]] || die "${path} must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "root:root:700" ]] || \
+    die "${path} must be root:root 0700"
+}
+
+recheck_private_root_directory() {
+  local path=$1
+  local expected_identity=$2
+  validate_private_root_directory "${path}"
+  [[ $(stat -c '%d:%i' -- "${path}") == "${expected_identity}" ]] || \
+    die "${path} changed after preflight"
+}
+
+create_private_root_directory() {
+  local path=$1
+  local created_variable=$2
+  local identity_variable=$3
+  create_managed_directory \
+    "${path}" root root 0700 "${created_variable}" "${identity_variable}"
+  validate_private_root_directory "${path}"
+}
+
+validate_identity_directory() {
+  local path=$1
+  [[ -d ${path} && ! -L ${path} ]] || \
+    die "${path} must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "root:${AGENT_GROUP}:750" ]] || \
+    die "${path} must be root:${AGENT_GROUP} 0750"
+}
+
+ensure_root_directory \
+  /etc/autostream 0755 etc_autostream_dir_created etc_autostream_dir_identity
+ensure_root_directory \
+  /usr/local/bin 0755 usr_local_bin_dir_created usr_local_bin_dir_identity
+ensure_root_directory \
+  /etc/systemd/system 0755 systemd_system_dir_created systemd_system_dir_identity
+if [[ -e ${CONFIG_DIR} || -L ${CONFIG_DIR} ]]; then
+  validate_identity_directory "${CONFIG_DIR}"
+  identity_config_dir_identity=$(stat -c '%d:%i' -- "${CONFIG_DIR}")
+else
+  create_managed_directory \
+    "${CONFIG_DIR}" root "${AGENT_GROUP}" 0750 \
+    identity_config_dir_created identity_config_dir_identity
+  validate_identity_directory "${CONFIG_DIR}"
+fi
+local_executor_config_dir_existed=false
+local_executor_data_dir_existed=false
+local_executor_port_config_dir_existed=false
+local_executor_config_dir_identity=""
+local_executor_data_dir_identity=""
+local_executor_port_config_dir_identity=""
+if [[ ${install_mode} == "prepare" ]]; then
+  ensure_root_directory \
+    /usr/local/libexec 0755 usr_local_libexec_dir_created usr_local_libexec_dir_identity
+  ensure_root_directory \
+    /etc/tmpfiles.d 0755 etc_tmpfiles_dir_created etc_tmpfiles_dir_identity
+  ensure_root_directory \
+    /opt/autostream 0755 opt_autostream_dir_created opt_autostream_dir_identity
+  if [[ -e ${LOCAL_EXECUTOR_CONFIG_DIR} || -L ${LOCAL_EXECUTOR_CONFIG_DIR} ]]; then
+    validate_private_root_directory "${LOCAL_EXECUTOR_CONFIG_DIR}"
+    local_executor_config_dir_existed=true
+    local_executor_config_dir_identity=$(stat -c '%d:%i' -- "${LOCAL_EXECUTOR_CONFIG_DIR}")
+  fi
+  if [[ -e ${LOCAL_EXECUTOR_DATA_DIR} || -L ${LOCAL_EXECUTOR_DATA_DIR} ]]; then
+    validate_private_root_directory "${LOCAL_EXECUTOR_DATA_DIR}"
+    local_executor_data_dir_existed=true
+    local_executor_data_dir_identity=$(stat -c '%d:%i' -- "${LOCAL_EXECUTOR_DATA_DIR}")
+  fi
+  if [[ -e ${LOCAL_EXECUTOR_PORT_CONFIG_DIR} || -L ${LOCAL_EXECUTOR_PORT_CONFIG_DIR} ]]; then
+    validate_private_root_directory "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}"
+    local_executor_port_config_dir_existed=true
+    local_executor_port_config_dir_identity=$(stat -c '%d:%i' -- "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}")
+  fi
+fi
+if [[ -e ${STATE_DIR} || -L ${STATE_DIR} ]]; then
+  [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} ]] || die "${STATE_DIR} must be a non-symlink directory"
+  [[ $(stat -c '%U:%G:%a' -- "${STATE_DIR}") == "${AGENT_USER}:${AGENT_GROUP}:700" ]] || \
+    die "${STATE_DIR} must be ${AGENT_USER}:${AGENT_GROUP} 0700"
+  state_dir_existed=true
+  state_dir_identity=$(stat -c '%d:%i' -- "${STATE_DIR}")
+  state_root_snapshot=$(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}")
+else
+  create_managed_directory \
+    "${STATE_DIR}" "${AGENT_USER}" "${AGENT_GROUP}" 0700 \
+    state_dir_created state_dir_identity
+fi
+
+config_stage_sha256=""
+if [[ ${install_mode} == "configured" ]]; then
+  create_temp_file config_stage "${CONFIG_DIR}/.identity.json.new.XXXXXX"
+fi
+create_temp_file binary_stage /usr/local/bin/.autostream-host-agent.new.XXXXXX
+create_temp_file unit_stage /etc/systemd/system/.autostream-host-agent.service.new.XXXXXX
+if [[ ${install_mode} == "prepare" ]]; then
+  create_temp_file \
+    local_executor_binary_stage /usr/local/libexec/.autostream-local-executor.new.XXXXXX
+  create_temp_file \
+    local_executor_service_stage /etc/systemd/system/.autostream-local-executor.service.new.XXXXXX
+  create_temp_file \
+    local_executor_socket_stage /etc/systemd/system/.autostream-local-executor.socket.new.XXXXXX
+  create_temp_file \
+    local_executor_tmpfiles_stage /etc/tmpfiles.d/.autostream-local-executor.conf.new.XXXXXX
+  create_temp_file \
+    self_update_recovery_service_stage /etc/systemd/system/.autostream-host-self-update-recovery.service.new.XXXXXX
+  create_temp_file \
+    self_update_recovery_timer_stage /etc/systemd/system/.autostream-host-self-update-recovery.timer.new.XXXXXX
+fi
+config_backup=""
+binary_backup=""
+unit_backup=""
+local_executor_binary_backup=""
+local_executor_service_backup=""
+local_executor_socket_backup=""
+local_executor_tmpfiles_backup=""
+self_update_recovery_service_backup=""
+self_update_recovery_timer_backup=""
+commit_started=false
+installation_complete=false
+was_active=false
+was_enabled=false
+service_quiesce_attempted=false
+config_existed=false
+config_identity=""
+config_sha256=""
+legacy_config_existed=false
+legacy_config_identity=""
+legacy_config_sha256=""
+legacy_config_retired=false
+binary_existed=false
+unit_existed=false
+local_executor_binary_existed=false
+local_executor_service_existed=false
+local_executor_socket_existed=false
+local_executor_tmpfiles_existed=false
+self_update_recovery_service_existed=false
+self_update_recovery_timer_existed=false
+config_backed_up=false
+binary_backed_up=false
+unit_backed_up=false
+local_executor_binary_backed_up=false
+local_executor_service_backed_up=false
+local_executor_socket_backed_up=false
+local_executor_tmpfiles_backed_up=false
+self_update_recovery_service_backed_up=false
+self_update_recovery_timer_backed_up=false
+config_installed=false
+binary_installed=false
+unit_installed=false
+local_executor_binary_installed=false
+local_executor_service_installed=false
+local_executor_socket_installed=false
+local_executor_tmpfiles_installed=false
+self_update_recovery_service_installed=false
+self_update_recovery_timer_installed=false
+self_update_recovery_timer_a_enabled=false
+self_update_recovery_timer_b_enabled=false
+self_update_recovery_timer_a_enable_attempted=false
+self_update_recovery_timer_b_enable_attempted=false
+agent_activation_attempted=false
+binary_managed_link=false
+local_executor_config_dir_created=false
+local_executor_data_dir_created=false
+local_executor_port_config_dir_created=false
+
+rollback_prepared_private_directory() {
+  local path=$1
+  local expected_identity=$2
+  local label=$3
+  if [[ ! -d ${path} || -L ${path} ||
+    $(stat -c '%d:%i' -- "${path}" 2>/dev/null || true) != "${expected_identity}" ]]; then
+    printf '%s\n' "install-autostream-host-agent: rollback refused changed ${label}; inspect ${path}" >&2
+    return 1
+  fi
+  if ! rmdir -- "${path}"; then
+    printf '%s\n' "install-autostream-host-agent: rollback could not remove new ${label}; inspect ${path}" >&2
+    return 1
+  fi
+}
+
+rollback_created_host_runtime() {
+  local entry
+  local entry_mode
+  local runtime_device
+  [[ ${host_runtime_root_created} == true ]] || return
+  if [[ ! -d ${HOST_RUNTIME_ROOT} ||
+    -L ${HOST_RUNTIME_ROOT} ||
+    $(stat -c '%d:%i' -- "${HOST_RUNTIME_ROOT}" 2>/dev/null || true) != "${host_runtime_root_identity}" ||
+    $(stat -c '%U:%G:%a' -- "${HOST_RUNTIME_ROOT}" 2>/dev/null || true) != "root:root:755" ||
+    ! -d ${HOST_RUNTIME_SLOTS} ||
+    -L ${HOST_RUNTIME_SLOTS} ||
+    $(stat -c '%d:%i' -- "${HOST_RUNTIME_SLOTS}" 2>/dev/null || true) != "${host_runtime_slots_identity}" ||
+    ! -d ${HOST_RUNTIME_INITIAL_SLOT} ||
+    -L ${HOST_RUNTIME_INITIAL_SLOT} ||
+    $(stat -c '%d:%i' -- "${HOST_RUNTIME_INITIAL_SLOT}" 2>/dev/null || true) != "${host_runtime_initial_slot_identity}" ||
+    ! -d ${HOST_RUNTIME_INITIAL_SLOT}/bin ||
+    -L ${HOST_RUNTIME_INITIAL_SLOT}/bin ||
+    $(stat -c '%d:%i' -- "${HOST_RUNTIME_INITIAL_SLOT}/bin" 2>/dev/null || true) != "${host_runtime_bin_identity}" ]]; then
+    printf '%s\n' 'install-autostream-host-agent: rollback refused a changed Host Agent runtime directory tree' >&2
+    return 1
+  fi
+  if [[ ${host_runtime_agent_created} == true ]] &&
+    [[ ! -f ${HOST_RUNTIME_AGENT} ||
+      -L ${HOST_RUNTIME_AGENT} ||
+      $(stat -c '%d:%i' -- "${HOST_RUNTIME_AGENT}" 2>/dev/null || true) != "${host_runtime_agent_identity}" ||
+      $(stat -c '%U:%G:%a' -- "${HOST_RUNTIME_AGENT}" 2>/dev/null || true) != "root:root:755" ||
+      $(sha256sum -- "${HOST_RUNTIME_AGENT}" 2>/dev/null | awk 'NR == 1 { print $1 }') != \
+        "$(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')" ]]; then
+    printf '%s\n' 'install-autostream-host-agent: rollback refused a changed Host Agent runtime binary' >&2
+    return 1
+  fi
+  if [[ ${host_runtime_executor_created} == true ]] &&
+    [[ ! -f ${HOST_RUNTIME_EXECUTOR} ||
+      -L ${HOST_RUNTIME_EXECUTOR} ||
+      $(stat -c '%d:%i' -- "${HOST_RUNTIME_EXECUTOR}" 2>/dev/null || true) != "${host_runtime_executor_identity}" ||
+      $(stat -c '%U:%G:%a' -- "${HOST_RUNTIME_EXECUTOR}" 2>/dev/null || true) != "root:root:755" ||
+      $(sha256sum -- "${HOST_RUNTIME_EXECUTOR}" 2>/dev/null | awk 'NR == 1 { print $1 }') != \
+        "$(sha256sum -- "${LOCAL_EXECUTOR_BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')" ]]; then
+    printf '%s\n' 'install-autostream-host-agent: rollback refused a changed local executor runtime binary' >&2
+    return 1
+  fi
+  if [[ ${host_runtime_current_created} == true ]] &&
+    [[ ! -L ${HOST_RUNTIME_CURRENT} ||
+      $(stat -c '%d:%i' -- "${HOST_RUNTIME_CURRENT}" 2>/dev/null || true) != "${host_runtime_current_identity}" ||
+      $(stat -c '%U:%G' -- "${HOST_RUNTIME_CURRENT}" 2>/dev/null || true) != "root:root" ||
+      $(readlink -- "${HOST_RUNTIME_CURRENT}" 2>/dev/null || true) != "slots/a" ]]; then
+    printf '%s\n' 'install-autostream-host-agent: rollback refused a changed Host Agent current link' >&2
+    return 1
+  fi
+  if [[ ${binary_installed} == true ]] &&
+    [[ ! -L ${BINARY_DEST} ||
+      $(stat -c '%d:%i' -- "${BINARY_DEST}" 2>/dev/null || true) != "${host_binary_link_identity}" ||
+      $(readlink -- "${BINARY_DEST}" 2>/dev/null || true) != \
+        "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" ]]; then
+    printf '%s\n' 'install-autostream-host-agent: rollback refused a changed Host Agent public link' >&2
+    return 1
+  fi
+  if [[ ${local_executor_binary_installed} == true ]] &&
+    [[ ! -L ${LOCAL_EXECUTOR_BINARY_DEST} ||
+      $(stat -c '%d:%i' -- "${LOCAL_EXECUTOR_BINARY_DEST}" 2>/dev/null || true) != \
+        "${local_executor_binary_link_identity}" ||
+      $(readlink -- "${LOCAL_EXECUTOR_BINARY_DEST}" 2>/dev/null || true) != \
+        "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" ]]; then
+    printf '%s\n' 'install-autostream-host-agent: rollback refused a changed local executor public link' >&2
+    return 1
+  fi
+  runtime_device=$(stat -c '%d' -- "${HOST_RUNTIME_ROOT}") || return 1
+  while IFS= read -r -d '' entry; do
+    if [[ -L ${entry} ]]; then
+      if [[ ${entry} != "${HOST_RUNTIME_CURRENT}" ||
+        ${host_runtime_current_created} != true ||
+        $(stat -c '%d:%i' -- "${entry}" 2>/dev/null || true) != "${host_runtime_current_identity}" ||
+        $(readlink -- "${entry}" 2>/dev/null || true) != "slots/a" ]]; then
+        printf '%s\n' "install-autostream-host-agent: rollback refused unsafe runtime link ${entry}" >&2
+        return 1
+      fi
+      continue
+    fi
+    if [[ ! -d ${entry} && ! -f ${entry} ]] ||
+      [[ $(stat -c '%d:%u' -- "${entry}" 2>/dev/null || true) != "${runtime_device}:0" ]]; then
+      printf '%s\n' "install-autostream-host-agent: rollback refused unsafe runtime entry ${entry}" >&2
+      return 1
+    fi
+    entry_mode=$(stat -c '%a' -- "${entry}") || return 1
+    if (( (8#${entry_mode} & 0022) != 0 )); then
+      printf '%s\n' "install-autostream-host-agent: rollback refused writable runtime entry ${entry}" >&2
+      return 1
+    fi
+  done < <(find "${HOST_RUNTIME_ROOT}" -xdev -mindepth 1 -print0)
+
+  if [[ ${binary_installed} == true ]]; then
+    rm -f -- "${BINARY_DEST}" || return 1
+    binary_installed=false
+  fi
+  if [[ ${local_executor_binary_installed} == true ]]; then
+    rm -f -- "${LOCAL_EXECUTOR_BINARY_DEST}" || return 1
+    local_executor_binary_installed=false
+  fi
+  find "${HOST_RUNTIME_ROOT}" -xdev -mindepth 1 -delete || return 1
+  host_runtime_current_created=false
+  host_runtime_agent_created=false
+  host_runtime_executor_created=false
+  host_runtime_bin_created=false
+  host_runtime_initial_slot_created=false
+  host_runtime_slots_created=false
+  rollback_created_directory \
+    "${HOST_RUNTIME_ROOT}" "${host_runtime_root_identity}" \
+    "Host Agent runtime root" || return 1
+  host_runtime_root_created=false
+}
+
+cleanup() {
+  local status=$?
+  local rollback_failed=false
+  local recovery_quiesce_failed=false
+  local observed_state=""
+  trap '' INT TERM
+  trap - EXIT
+  if [[ ${installation_complete} == true ]]; then
+    [[ -z ${config_stage} ]] || rm -f -- "${config_stage}"
+    rm -f -- "${binary_stage}" "${unit_stage}"
+    [[ -z ${local_executor_binary_stage} ]] || rm -f -- "${local_executor_binary_stage}"
+    [[ -z ${local_executor_service_stage} ]] || rm -f -- "${local_executor_service_stage}"
+    [[ -z ${local_executor_socket_stage} ]] || rm -f -- "${local_executor_socket_stage}"
+    [[ -z ${local_executor_tmpfiles_stage} ]] || rm -f -- "${local_executor_tmpfiles_stage}"
+    [[ -z ${self_update_recovery_service_stage} ]] || rm -f -- "${self_update_recovery_service_stage}"
+    [[ -z ${self_update_recovery_timer_stage} ]] || rm -f -- "${self_update_recovery_timer_stage}"
+    [[ -z ${config_backup} ]] || rm -f -- "${config_backup}"
+    [[ -z ${binary_backup} ]] || rm -f -- "${binary_backup}"
+    [[ -z ${unit_backup} ]] || rm -f -- "${unit_backup}"
+    [[ -z ${local_executor_binary_backup} ]] || rm -f -- "${local_executor_binary_backup}"
+    [[ -z ${local_executor_service_backup} ]] || rm -f -- "${local_executor_service_backup}"
+    [[ -z ${local_executor_socket_backup} ]] || rm -f -- "${local_executor_socket_backup}"
+    [[ -z ${local_executor_tmpfiles_backup} ]] || rm -f -- "${local_executor_tmpfiles_backup}"
+    [[ -z ${self_update_recovery_service_backup} ]] || rm -f -- "${self_update_recovery_service_backup}"
+    [[ -z ${self_update_recovery_timer_backup} ]] || rm -f -- "${self_update_recovery_timer_backup}"
+    rm -rf -- "${BUNDLE_STAGE}"
+    exit "${status}"
+  fi
+
+  [[ -z ${config_stage} ]] || rm -f -- "${config_stage}"
+  rm -f -- "${binary_stage}" "${unit_stage}"
+  [[ -z ${local_executor_binary_stage} ]] || rm -f -- "${local_executor_binary_stage}"
+  [[ -z ${local_executor_service_stage} ]] || rm -f -- "${local_executor_service_stage}"
+  [[ -z ${local_executor_socket_stage} ]] || rm -f -- "${local_executor_socket_stage}"
+  [[ -z ${local_executor_tmpfiles_stage} ]] || rm -f -- "${local_executor_tmpfiles_stage}"
+  [[ -z ${self_update_recovery_service_stage} ]] || rm -f -- "${self_update_recovery_service_stage}"
+  [[ -z ${self_update_recovery_timer_stage} ]] || rm -f -- "${self_update_recovery_timer_stage}"
+  if [[ ${commit_started} == true ]]; then
+    if ! systemctl stop "${UNIT_NAME}" >/dev/null 2>&1; then
+      observed_state=$(unit_active_state "${UNIT_NAME}" 2>/dev/null || true)
+      if [[ ${observed_state} != "inactive" ]]; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not stop the Host Agent; installed state was left for console recovery' >&2
+        if ! rollback_bootstrap_prerequisites false; then
+          :
+        fi
+        rm -rf -- "${BUNDLE_STAGE}"
+        exit 1
+      fi
+    fi
+    observed_state=$(unit_active_state "${UNIT_NAME}" 2>/dev/null || true)
+    if [[ ${observed_state} != "inactive" ]]; then
+      printf '%s\n' 'install-autostream-host-agent: rollback refused to mutate files while the Host Agent remained active' >&2
+      if ! rollback_bootstrap_prerequisites false; then
+        :
+      fi
+      rm -rf -- "${BUNDLE_STAGE}"
+      exit 1
+    fi
+    if [[ ${self_update_recovery_timer_a_enable_attempted} == true ||
+      ${self_update_recovery_timer_b_enable_attempted} == true ]]; then
+      if [[ ${self_update_recovery_timer_a_enable_attempted} == true ]] &&
+        ! systemctl disable --now "${SELF_UPDATE_RECOVERY_TIMER_A}" >/dev/null 2>&1; then
+        printf '%s\n' 'install-autostream-host-agent: rollback timer A disable command failed; checking the resulting state' >&2
+      fi
+      if [[ ${self_update_recovery_timer_b_enable_attempted} == true ]] &&
+        ! systemctl disable --now "${SELF_UPDATE_RECOVERY_TIMER_B}" >/dev/null 2>&1; then
+        printf '%s\n' 'install-autostream-host-agent: rollback timer B disable command failed; checking the resulting state' >&2
+      fi
+      if ! systemctl stop "${SELF_UPDATE_RECOVERY_SERVICE_A}" >/dev/null 2>&1; then
+        printf '%s\n' 'install-autostream-host-agent: rollback recovery service A stop command failed; checking the resulting state' >&2
+      fi
+      if ! systemctl stop "${SELF_UPDATE_RECOVERY_SERVICE_B}" >/dev/null 2>&1; then
+        printf '%s\n' 'install-autostream-host-agent: rollback recovery service B stop command failed; checking the resulting state' >&2
+      fi
+      observed_state=$(unit_active_state "${SELF_UPDATE_RECOVERY_SERVICE_A}" 2>/dev/null || true)
+      [[ ${observed_state} == "inactive" ]] || recovery_quiesce_failed=true
+      observed_state=$(unit_active_state "${SELF_UPDATE_RECOVERY_SERVICE_B}" 2>/dev/null || true)
+      [[ ${observed_state} == "inactive" ]] || recovery_quiesce_failed=true
+      if [[ ${self_update_recovery_timer_a_enable_attempted} == true ]]; then
+        observed_state=$(unit_active_state "${SELF_UPDATE_RECOVERY_TIMER_A}" 2>/dev/null || true)
+        [[ ${observed_state} == "inactive" ]] || recovery_quiesce_failed=true
+        observed_state=$(unit_enabled_state "${SELF_UPDATE_RECOVERY_TIMER_A}" 2>/dev/null || true)
+        [[ ${observed_state} == "disabled" ]] || recovery_quiesce_failed=true
+      fi
+      if [[ ${self_update_recovery_timer_b_enable_attempted} == true ]]; then
+        observed_state=$(unit_active_state "${SELF_UPDATE_RECOVERY_TIMER_B}" 2>/dev/null || true)
+        [[ ${observed_state} == "inactive" ]] || recovery_quiesce_failed=true
+        observed_state=$(unit_enabled_state "${SELF_UPDATE_RECOVERY_TIMER_B}" 2>/dev/null || true)
+        [[ ${observed_state} == "disabled" ]] || recovery_quiesce_failed=true
+      fi
+      if [[ ${recovery_quiesce_failed} == true ]]; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not quiesce the self-update timers and recovery services; installed runtime was left for console recovery' >&2
+        if ! rollback_bootstrap_prerequisites false; then
+          :
+        fi
+        rm -rf -- "${BUNDLE_STAGE}"
+        exit 1
+      fi
+    fi
+    if [[ ${managed_runtime_snapshot_ready} == true ]] &&
+      ! verify_managed_runtime_snapshot; then
+      printf '%s\n' 'install-autostream-host-agent: rollback refused a changed pre-existing managed runtime; installed state was left for console recovery' >&2
+      if ! rollback_bootstrap_prerequisites false; then
+        :
+      fi
+      rm -rf -- "${BUNDLE_STAGE}"
+      exit 1
+    fi
+    if [[ ${agent_activation_attempted} == true ]] &&
+      ! restore_host_agent_state; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not restore Host Agent state' >&2
+      rollback_failed=true
+    fi
+    if [[ ${host_runtime_root_created} == true ]] &&
+      ! rollback_created_host_runtime; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not safely remove the newly created Host Agent runtime' >&2
+      if ! rollback_bootstrap_prerequisites false; then
+        :
+      fi
+      rm -rf -- "${BUNDLE_STAGE}"
+      exit 1
+    fi
+    if [[ ${was_enabled} == false && ( ${unit_installed} == true || ${unit_existed} == true ) ]]; then
+      if ! systemctl disable "${UNIT_NAME}" >/dev/null 2>&1; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not restore the previous disabled state' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${config_installed} == true ]]; then
+      if ! rm -f -- "${CONFIG_DEST}"; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not remove the staged identity config' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${config_backed_up} == true && -e ${config_backup} ]]; then
+      if ! mv -f -- "${config_backup}" "${CONFIG_DEST}"; then
+        printf '%s\n' "install-autostream-host-agent: rollback could not restore ${config_backup}; preserve it for console recovery" >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${binary_installed} == true ]]; then
+      if ! rm -f -- "${BINARY_DEST}"; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not remove the staged binary' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${binary_backed_up} == true && -e ${binary_backup} ]]; then
+      if ! mv -f -- "${binary_backup}" "${BINARY_DEST}"; then
+        printf '%s\n' "install-autostream-host-agent: rollback could not restore ${binary_backup}; preserve it for console recovery" >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${unit_installed} == true ]]; then
+      if ! rm -f -- "${UNIT_DEST}"; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not remove the staged systemd unit' >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${unit_backed_up} == true && -e ${unit_backup} ]]; then
+      if ! mv -f -- "${unit_backup}" "${UNIT_DEST}"; then
+        printf '%s\n' "install-autostream-host-agent: rollback could not restore ${unit_backup}; preserve it for console recovery" >&2
+        rollback_failed=true
+      fi
+    fi
+    if [[ ${local_executor_binary_installed} == true ]] &&
+      ! rm -f -- "${LOCAL_EXECUTOR_BINARY_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the prepared local executor binary' >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_binary_backed_up} == true && -e ${local_executor_binary_backup} ]] &&
+      ! mv -f -- "${local_executor_binary_backup}" "${LOCAL_EXECUTOR_BINARY_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${local_executor_binary_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_service_installed} == true ]] &&
+      ! rm -f -- "${LOCAL_EXECUTOR_SERVICE_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the prepared local executor service' >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_service_backed_up} == true && -e ${local_executor_service_backup} ]] &&
+      ! mv -f -- "${local_executor_service_backup}" "${LOCAL_EXECUTOR_SERVICE_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${local_executor_service_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_socket_installed} == true ]] &&
+      ! rm -f -- "${LOCAL_EXECUTOR_SOCKET_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the prepared local executor socket' >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_socket_backed_up} == true && -e ${local_executor_socket_backup} ]] &&
+      ! mv -f -- "${local_executor_socket_backup}" "${LOCAL_EXECUTOR_SOCKET_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${local_executor_socket_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_tmpfiles_installed} == true ]] &&
+      ! rm -f -- "${LOCAL_EXECUTOR_TMPFILES_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the prepared local executor tmpfiles policy' >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_tmpfiles_backed_up} == true && -e ${local_executor_tmpfiles_backup} ]] &&
+      ! mv -f -- "${local_executor_tmpfiles_backup}" "${LOCAL_EXECUTOR_TMPFILES_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${local_executor_tmpfiles_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_service_installed} == true ]] &&
+      ! rm -f -- "${SELF_UPDATE_RECOVERY_SERVICE_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the self-update recovery service template' >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_service_backed_up} == true && -e ${self_update_recovery_service_backup} ]] &&
+      ! mv -f -- "${self_update_recovery_service_backup}" "${SELF_UPDATE_RECOVERY_SERVICE_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${self_update_recovery_service_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_timer_installed} == true ]] &&
+      ! rm -f -- "${SELF_UPDATE_RECOVERY_TIMER_DEST}"; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not remove the self-update recovery timer template' >&2
+      rollback_failed=true
+    fi
+    if [[ ${self_update_recovery_timer_backed_up} == true && -e ${self_update_recovery_timer_backup} ]] &&
+      ! mv -f -- "${self_update_recovery_timer_backup}" "${SELF_UPDATE_RECOVERY_TIMER_DEST}"; then
+      printf '%s\n' "install-autostream-host-agent: rollback could not restore ${self_update_recovery_timer_backup}; preserve it for console recovery" >&2
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_port_config_dir_created} == true ]] &&
+      ! rollback_prepared_private_directory \
+        "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}" \
+        "${local_executor_port_config_dir_identity}" \
+        "local executor port directory"; then
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_data_dir_created} == true ]] &&
+      ! rollback_prepared_private_directory \
+        "${LOCAL_EXECUTOR_DATA_DIR}" \
+        "${local_executor_data_dir_identity}" \
+        "local executor data directory"; then
+      rollback_failed=true
+    fi
+    if [[ ${local_executor_config_dir_created} == true ]] &&
+      ! rollback_prepared_private_directory \
+        "${LOCAL_EXECUTOR_CONFIG_DIR}" \
+        "${local_executor_config_dir_identity}" \
+        "local executor policy directory"; then
+      rollback_failed=true
+    fi
+    if ! systemctl daemon-reload >/dev/null 2>&1; then
+      printf '%s\n' 'install-autostream-host-agent: rollback could not reload systemd state' >&2
+      rollback_failed=true
+    fi
+    if [[ ${was_enabled} == true ]]; then
+      if ! systemctl enable "${UNIT_NAME}" >/dev/null 2>&1; then
+        printf '%s\n' 'install-autostream-host-agent: rollback could not re-enable the previous service; inspect it locally' >&2
+        rollback_failed=true
+      fi
+    fi
+  fi
+  if [[ ${service_quiesce_attempted} == true && ${was_active} == true ]]; then
+    systemctl start "${UNIT_NAME}" >/dev/null 2>&1 || \
+      {
+        printf '%s\n' 'install-autostream-host-agent: rollback could not restart the previous service; inspect it locally' >&2
+        rollback_failed=true
+      }
+  fi
+  if ! rollback_bootstrap_prerequisites; then
+    rollback_failed=true
+  fi
+  rm -rf -- "${BUNDLE_STAGE}"
+  if [[ ${rollback_failed} == true ]]; then
+    exit 1
+  fi
+  exit "${status}"
+}
+arm_cleanup_handler cleanup
+
+if [[ ${install_mode} == "configured" ]]; then
+  copy_verified_config_file "${config_source}" "${config_stage}"
+  config_stage_sha256=$(sha256sum -- "${config_stage}" | awk 'NR == 1 { print $1 }')
+fi
+copy_verified_release_file "${BINARY_SOURCE}" "${binary_stage}" root root 0755 "Host Agent binary"
+copy_verified_release_file "${UNIT_SOURCE}" "${unit_stage}" root root 0644 "Host Agent systemd unit"
+if [[ ${install_mode} == "prepare" ]]; then
+  copy_verified_release_file \
+    "${LOCAL_EXECUTOR_BINARY_SOURCE}" "${local_executor_binary_stage}" root root 0755 "local executor binary"
+  copy_verified_release_file \
+    "${LOCAL_EXECUTOR_SERVICE_SOURCE}" "${local_executor_service_stage}" root root 0644 "local executor service"
+  copy_verified_release_file \
+    "${LOCAL_EXECUTOR_SOCKET_SOURCE}" "${local_executor_socket_stage}" root root 0644 "local executor socket"
+  copy_verified_release_file \
+    "${LOCAL_EXECUTOR_TMPFILES_SOURCE}" "${local_executor_tmpfiles_stage}" root root 0644 "local executor tmpfiles policy"
+  copy_verified_release_file \
+    "${SELF_UPDATE_RECOVERY_SERVICE_SOURCE}" "${self_update_recovery_service_stage}" root root 0644 "self-update recovery service template"
+  copy_verified_release_file \
+    "${SELF_UPDATE_RECOVERY_TIMER_SOURCE}" "${self_update_recovery_timer_stage}" root root 0644 "self-update recovery timer template"
+fi
+
+if [[ ${install_mode} == "configured" ]]; then
+  "${binary_stage}" validate-config --config "${config_stage}"
+fi
+"${binary_stage}" --version >/dev/null
+if [[ ${install_mode} == "prepare" ]]; then
+  "${local_executor_binary_stage}" --version >/dev/null
+fi
+
+validate_existing() {
+  local path=$1
+  local owner=$2
+  local group=$3
+  local mode=$4
+  local label=$5
+  [[ ! -e ${path} && ! -L ${path} ]] && return 1
+  [[ -f ${path} && ! -L ${path} ]] || die "existing ${label} must be a regular non-symlink file"
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "${owner}:${group}:${mode}" ]] || \
+    die "existing ${label} must be ${owner}:${group} ${mode}"
+  return 0
+}
+
+retire_legacy_identity() {
+  local size
+  local blocks
+  local wipe_failed=false
+  validate_existing "${LEGACY_CONFIG_DEST}" root "${AGENT_GROUP}" 640 "legacy identity config" >/dev/null
+  [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${LEGACY_CONFIG_DEST}") == "${legacy_config_identity}" &&
+    $(sha256sum -- "${LEGACY_CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${legacy_config_sha256}" ]] || \
+    die "legacy Host Agent identity changed before retirement"
+  size=$(stat -c '%s' -- "${LEGACY_CONFIG_DEST}")
+  [[ ${size} =~ ^[1-9][0-9]*$ && ${size} -le 65536 ]] || \
+    die "legacy Host Agent identity has an unsafe size"
+  blocks=$(( (size + 4095) / 4096 ))
+  # The canonical identity and installed release become the only recoverable
+  # state immediately before the first destructive legacy-secret write.
+  defer_cleanup_signals
+  installation_complete=true
+  dd if=/dev/zero of="${LEGACY_CONFIG_DEST}" bs=4096 count="${blocks}" conv=notrunc status=none ||
+    wipe_failed=true
+  sync -d "${LEGACY_CONFIG_DEST}" >/dev/null 2>&1 || wipe_failed=true
+  rm -f -- "${LEGACY_CONFIG_DEST}" || \
+    die "could not unlink the retired legacy Host Agent identity; the new identity remains installed and the service stays stopped"
+  sync -f /etc/autostream
+  [[ ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+    die "legacy Host Agent identity survived retirement; the new identity remains installed and the service stays stopped"
+  legacy_config_retired=true
+  resume_cleanup_signals || \
+    die "installation was interrupted while retiring the legacy Host Agent identity"
+  if [[ ${wipe_failed} == true ]]; then
+    printf '%s\n' 'install-autostream-host-agent: warning: legacy identity was unlinked, but its best-effort overwrite or sync was incomplete' >&2
+  fi
+}
+
+snapshot_managed_runtime_path() {
+  local path=$1
+  if [[ -L ${path} ]]; then
+    printf 'symlink:%s:%s\n' \
+      "$(stat -c '%d:%i:%u:%g:%a' -- "${path}")" \
+      "$(readlink -- "${path}")"
+    return
+  fi
+  if [[ -f ${path} ]]; then
+    printf 'file:%s:%s\n' \
+      "$(stat -c '%d:%i:%s:%Y:%f:%u:%g:%a' -- "${path}")" \
+      "$(sha256sum -- "${path}" | awk 'NR == 1 { print $1 }')"
+    return
+  fi
+  if [[ -e ${path} ]]; then
+    die "managed runtime path has an unsupported type: ${path}"
+  fi
+  printf '%s\n' absent
+}
+
+capture_managed_runtime_snapshot() {
+  managed_binary_dest_snapshot=$(snapshot_managed_runtime_path "${BINARY_DEST}")
+  managed_runtime_current_snapshot=$(snapshot_managed_runtime_path "${HOST_RUNTIME_CURRENT}")
+  managed_runtime_agent_snapshot=$(snapshot_managed_runtime_path "${HOST_RUNTIME_AGENT}")
+  managed_local_executor_dest_snapshot=$(snapshot_managed_runtime_path "${LOCAL_EXECUTOR_BINARY_DEST}")
+  managed_runtime_executor_snapshot=$(snapshot_managed_runtime_path "${HOST_RUNTIME_EXECUTOR}")
+  managed_runtime_snapshot_ready=true
+}
+
+verify_managed_runtime_snapshot() {
+  [[ $(snapshot_managed_runtime_path "${BINARY_DEST}") == "${managed_binary_dest_snapshot}" &&
+    $(snapshot_managed_runtime_path "${HOST_RUNTIME_CURRENT}") == "${managed_runtime_current_snapshot}" &&
+    $(snapshot_managed_runtime_path "${HOST_RUNTIME_AGENT}") == "${managed_runtime_agent_snapshot}" &&
+    $(snapshot_managed_runtime_path "${LOCAL_EXECUTOR_BINARY_DEST}") == \
+      "${managed_local_executor_dest_snapshot}" &&
+    $(snapshot_managed_runtime_path "${HOST_RUNTIME_EXECUTOR}") == \
+      "${managed_runtime_executor_snapshot}" ]]
+}
+
+validate_managed_agent_link() {
+  [[ -L ${BINARY_DEST} ]] || return 1
+  validate_root_parent_chain "${BINARY_DEST}" "managed Host Agent binary destination"
+  [[ $(stat -c '%U:%G' -- "${BINARY_DEST}") == "root:root" ]] || \
+    die "managed Host Agent binary link must be owned by root:root"
+  [[ -L ${HOST_RUNTIME_CURRENT} ]] || \
+    die "managed Host Agent binary is missing the atomic current link"
+  local current_target
+  current_target=$(readlink -- "${HOST_RUNTIME_CURRENT}")
+  [[ ${current_target} == "slots/a" || ${current_target} == "slots/b" ]] || \
+    die "managed Host Agent current link points outside its fixed A/B slots"
+  [[ $(readlink -- "${BINARY_DEST}") == "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" ]] || \
+    die "managed Host Agent binary link points outside the atomic current runtime"
+  local resolved
+  resolved=$(readlink -f -- "${BINARY_DEST}")
+  [[ ${resolved} == "${HOST_RUNTIME_SLOTS}/a/bin/autostream-host-agent" ||
+    ${resolved} == "${HOST_RUNTIME_SLOTS}/b/bin/autostream-host-agent" ]] || \
+    die "managed Host Agent binary resolves outside its fixed A/B slots"
+  [[ -f ${resolved} && ! -L ${resolved} ]] || \
+    die "managed Host Agent active binary is missing or unsafe"
+  [[ $(stat -c '%U:%G:%a' -- "${resolved}") == "root:root:755" ]] || \
+    die "managed Host Agent active binary must be root:root 0755"
+  validate_root_parent_chain "${resolved}" "managed Host Agent active binary"
+  [[ $(sha256sum -- "${resolved}" | awk 'NR == 1 { print $1 }') == \
+    "$(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')" ]] || \
+    die "managed Host Agent active binary does not match this verified release"
+  return 0
+}
+
+validate_installed_agent_binary() {
+  if [[ ${binary_managed_link} == true ]]; then
+    validate_managed_agent_link || die "installed managed Host Agent binary failed verification"
+    return
+  fi
+  [[ -f ${BINARY_DEST} && ! -L ${BINARY_DEST} &&
+    $(stat -c '%U:%G:%a' -- "${BINARY_DEST}") == "root:root:755" ]] || \
+    die "installed Host Agent binary is missing or unsafe"
+  validate_root_parent_chain "${BINARY_DEST}" "installed Host Agent binary"
+  [[ $(sha256sum -- "${BINARY_DEST}" | awk 'NR == 1 { print $1 }') == \
+    "$(sha256sum -- "${BINARY_SOURCE}" | awk 'NR == 1 { print $1 }')" ]] || \
+    die "installed Host Agent binary does not match this verified release"
+}
+
+if [[ ${install_mode} == "configured" ]]; then
+  if [[ ( -e ${CONFIG_DEST} || -L ${CONFIG_DEST} ) &&
+    ( -e ${LEGACY_CONFIG_DEST} || -L ${LEGACY_CONFIG_DEST} ) ]]; then
+    die "both current and legacy Host Agent identities exist; refusing an ambiguous migration"
+  fi
+  if validate_existing "${CONFIG_DEST}" root "${AGENT_GROUP}" 640 "identity config"; then
+    config_existed=true
+    config_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${CONFIG_DEST}")
+    config_sha256=$(sha256sum -- "${CONFIG_DEST}" | awk 'NR == 1 { print $1 }')
+  elif validate_existing "${LEGACY_CONFIG_DEST}" root "${AGENT_GROUP}" 640 "legacy identity config"; then
+    legacy_config_existed=true
+    legacy_config_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${LEGACY_CONFIG_DEST}")
+    legacy_config_sha256=$(sha256sum -- "${LEGACY_CONFIG_DEST}" | awk 'NR == 1 { print $1 }')
+  fi
+fi
+if [[ -L ${BINARY_DEST} ]]; then
+  if validate_managed_agent_link; then
+    binary_managed_link=true
+    capture_managed_runtime_snapshot
+  fi
+elif validate_existing "${BINARY_DEST}" root root 755 "binary"; then
+  binary_existed=true
+fi
+if validate_existing "${UNIT_DEST}" root root 644 "systemd unit"; then
+  unit_existed=true
+fi
+if [[ ${install_mode} == "prepare" ]]; then
+  if validate_existing "${LOCAL_EXECUTOR_BINARY_DEST}" root root 755 "local executor binary"; then
+    local_executor_binary_existed=true
+  fi
+  if validate_existing "${LOCAL_EXECUTOR_SERVICE_DEST}" root root 644 "local executor service"; then
+    local_executor_service_existed=true
+  fi
+  if validate_existing "${LOCAL_EXECUTOR_SOCKET_DEST}" root root 644 "local executor socket"; then
+    local_executor_socket_existed=true
+  fi
+  if validate_existing "${LOCAL_EXECUTOR_TMPFILES_DEST}" root root 644 "local executor tmpfiles policy"; then
+    local_executor_tmpfiles_existed=true
+  fi
+  if validate_existing "${SELF_UPDATE_RECOVERY_SERVICE_DEST}" root root 644 "self-update recovery service template"; then
+    self_update_recovery_service_existed=true
+  fi
+  if validate_existing "${SELF_UPDATE_RECOVERY_TIMER_DEST}" root root 644 "self-update recovery timer template"; then
+    self_update_recovery_timer_existed=true
+  fi
+fi
+initial_unit_active_state=$(unit_active_state "${UNIT_NAME}")
+if [[ ${initial_unit_active_state} == "active" ]]; then
+  was_active=true
+fi
+initial_unit_enabled_state=$(unit_enabled_state "${UNIT_NAME}")
+if [[ ${initial_unit_enabled_state} == "enabled" ]]; then
+  was_enabled=true
+fi
+if [[ ${install_mode} == "prepare" ]]; then
+  [[ ${was_active} == false ]] || die "--prepare requires the Host Agent service to remain inactive"
+  [[ ${was_enabled} == false ]] || die "--prepare requires the Host Agent service to remain disabled"
+  [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+    ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+    die "an identity appeared during --prepare; refusing to install or start the service"
+  [[ ! -e ${LOCAL_EXECUTOR_POLICY_DEST} && ! -L ${LOCAL_EXECUTOR_POLICY_DEST} ]] || \
+    die "a local executor policy appeared during --prepare; refusing to replace its runtime"
+  for runtime_unit in \
+    "${LOCAL_EXECUTOR_SERVICE_NAME}" \
+    "${LOCAL_EXECUTOR_SOCKET_NAME}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_A}" \
+    "${SELF_UPDATE_RECOVERY_SERVICE_B}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_A}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_B}"; do
+    [[ $(unit_active_state "${runtime_unit}") == "inactive" ]] || \
+      die "--prepare requires the local executor and self-update recovery timers to remain disabled and inactive"
+  done
+  for runtime_unit in \
+    "${LOCAL_EXECUTOR_SERVICE_NAME}" \
+    "${LOCAL_EXECUTOR_SOCKET_NAME}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_A}" \
+    "${SELF_UPDATE_RECOVERY_TIMER_B}"; do
+    [[ $(unit_enabled_state "${runtime_unit}") == "disabled" ]] || \
+      die "--prepare requires the local executor and self-update recovery timers to remain disabled and inactive"
+  done
+else
+  validate_identity_directory "${CONFIG_DIR}"
+  [[ $(stat -c '%d:%i' -- "${CONFIG_DIR}") == "${identity_config_dir_identity}" ]] || \
+    die "Host Agent identity directory changed after preflight"
+  if [[ ${config_existed} == true ]]; then
+    validate_existing "${CONFIG_DEST}" root "${AGENT_GROUP}" 640 "identity config" >/dev/null
+    [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${CONFIG_DEST}") == "${config_identity}" &&
+      $(sha256sum -- "${CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${config_sha256}" ]] || \
+      die "existing Host Agent identity changed after preflight"
+    [[ ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+      die "a legacy Host Agent identity appeared after preflight"
+  elif [[ ${legacy_config_existed} == true ]]; then
+    [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} ]] || \
+      die "a current Host Agent identity appeared during legacy migration"
+    validate_existing "${LEGACY_CONFIG_DEST}" root "${AGENT_GROUP}" 640 "legacy identity config" >/dev/null
+    [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' -- "${LEGACY_CONFIG_DEST}") == "${legacy_config_identity}" &&
+      $(sha256sum -- "${LEGACY_CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${legacy_config_sha256}" ]] || \
+      die "legacy Host Agent identity changed after preflight"
+  else
+    [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+      ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+      die "a Host Agent identity appeared after preflight"
+  fi
+  if [[ ${was_active} == true ]]; then
+    service_quiesce_attempted=true
+    systemctl stop "${UNIT_NAME}" >/dev/null 2>&1 || \
+      die "could not stop the existing host agent"
+    verify_unit_inactive "${UNIT_NAME}"
+  fi
+  if [[ ${binary_managed_link} == true ]]; then
+    staged_binary_sha=$(sha256sum -- "${binary_stage}" | awk 'NR == 1 { print $1 }')
+    active_binary_sha=$(sha256sum -- "${BINARY_DEST}" | awk 'NR == 1 { print $1 }')
+    [[ ${staged_binary_sha} == "${active_binary_sha}" ]] || \
+      die "--config cannot replace an existing A/B runtime with a different release"
+  fi
+  snapshot_host_agent_state
+fi
+
+commit_started=true
+if [[ ${install_mode} == "prepare" ]]; then
+  if [[ ${local_executor_config_dir_existed} == true ]]; then
+    recheck_private_root_directory \
+      "${LOCAL_EXECUTOR_CONFIG_DIR}" \
+      "${local_executor_config_dir_identity}"
+  else
+    create_private_root_directory \
+      "${LOCAL_EXECUTOR_CONFIG_DIR}" \
+      local_executor_config_dir_created \
+      local_executor_config_dir_identity
+  fi
+  if [[ ${local_executor_data_dir_existed} == true ]]; then
+    recheck_private_root_directory \
+      "${LOCAL_EXECUTOR_DATA_DIR}" \
+      "${local_executor_data_dir_identity}"
+  else
+    create_private_root_directory \
+      "${LOCAL_EXECUTOR_DATA_DIR}" \
+      local_executor_data_dir_created \
+      local_executor_data_dir_identity
+  fi
+  if [[ ${local_executor_port_config_dir_existed} == true ]]; then
+    recheck_private_root_directory \
+      "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}" \
+      "${local_executor_port_config_dir_identity}"
+  else
+    create_private_root_directory \
+      "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}" \
+      local_executor_port_config_dir_created \
+      local_executor_port_config_dir_identity
+  fi
+fi
+if [[ ${install_mode} == "configured" && ${config_existed} == true ]]; then
+  create_temp_file config_backup "${CONFIG_DIR}/.identity.json.backup.XXXXXX"
+  rm -f -- "${config_backup}"
+  move_with_journal "${CONFIG_DEST}" "${config_backup}" config_backed_up
+fi
+if [[ ${binary_existed} == true ]]; then
+  create_temp_file binary_backup /usr/local/bin/.autostream-host-agent.backup.XXXXXX
+  rm -f -- "${binary_backup}"
+  move_with_journal "${BINARY_DEST}" "${binary_backup}" binary_backed_up
+fi
+if [[ ${unit_existed} == true ]]; then
+  create_temp_file unit_backup /etc/systemd/system/.autostream-host-agent.service.backup.XXXXXX
+  rm -f -- "${unit_backup}"
+  move_with_journal "${UNIT_DEST}" "${unit_backup}" unit_backed_up
+fi
+if [[ ${local_executor_binary_existed} == true ]]; then
+  create_temp_file \
+    local_executor_binary_backup /usr/local/libexec/.autostream-local-executor.backup.XXXXXX
+  rm -f -- "${local_executor_binary_backup}"
+  move_with_journal \
+    "${LOCAL_EXECUTOR_BINARY_DEST}" "${local_executor_binary_backup}" \
+    local_executor_binary_backed_up
+fi
+if [[ ${local_executor_service_existed} == true ]]; then
+  create_temp_file \
+    local_executor_service_backup /etc/systemd/system/.autostream-local-executor.service.backup.XXXXXX
+  rm -f -- "${local_executor_service_backup}"
+  move_with_journal \
+    "${LOCAL_EXECUTOR_SERVICE_DEST}" "${local_executor_service_backup}" \
+    local_executor_service_backed_up
+fi
+if [[ ${local_executor_socket_existed} == true ]]; then
+  create_temp_file \
+    local_executor_socket_backup /etc/systemd/system/.autostream-local-executor.socket.backup.XXXXXX
+  rm -f -- "${local_executor_socket_backup}"
+  move_with_journal \
+    "${LOCAL_EXECUTOR_SOCKET_DEST}" "${local_executor_socket_backup}" \
+    local_executor_socket_backed_up
+fi
+if [[ ${local_executor_tmpfiles_existed} == true ]]; then
+  create_temp_file \
+    local_executor_tmpfiles_backup /etc/tmpfiles.d/.autostream-local-executor.conf.backup.XXXXXX
+  rm -f -- "${local_executor_tmpfiles_backup}"
+  move_with_journal \
+    "${LOCAL_EXECUTOR_TMPFILES_DEST}" "${local_executor_tmpfiles_backup}" \
+    local_executor_tmpfiles_backed_up
+fi
+if [[ ${self_update_recovery_service_existed} == true ]]; then
+  create_temp_file \
+    self_update_recovery_service_backup /etc/systemd/system/.autostream-host-self-update-recovery.service.backup.XXXXXX
+  rm -f -- "${self_update_recovery_service_backup}"
+  move_with_journal \
+    "${SELF_UPDATE_RECOVERY_SERVICE_DEST}" "${self_update_recovery_service_backup}" \
+    self_update_recovery_service_backed_up
+fi
+if [[ ${self_update_recovery_timer_existed} == true ]]; then
+  create_temp_file \
+    self_update_recovery_timer_backup /etc/systemd/system/.autostream-host-self-update-recovery.timer.backup.XXXXXX
+  rm -f -- "${self_update_recovery_timer_backup}"
+  move_with_journal \
+    "${SELF_UPDATE_RECOVERY_TIMER_DEST}" "${self_update_recovery_timer_backup}" \
+    self_update_recovery_timer_backed_up
+fi
+
+if [[ ${install_mode} == "configured" ]]; then
+  move_with_journal "${config_stage}" "${CONFIG_DEST}" config_installed
+  sync -f "${CONFIG_DIR}"
+fi
+if [[ ${install_mode} == "prepare" ]]; then
+  create_managed_directory \
+    "${HOST_RUNTIME_ROOT}" root root 0755 \
+    host_runtime_root_created host_runtime_root_identity
+  create_managed_directory \
+    "${HOST_RUNTIME_SLOTS}" root root 0755 \
+    host_runtime_slots_created host_runtime_slots_identity
+  create_managed_directory \
+    "${HOST_RUNTIME_INITIAL_SLOT}" root root 0755 \
+    host_runtime_initial_slot_created host_runtime_initial_slot_identity
+  create_managed_directory \
+    "${HOST_RUNTIME_INITIAL_SLOT}/bin" root root 0755 \
+    host_runtime_bin_created host_runtime_bin_identity
+  move_with_identity_journal \
+    "${binary_stage}" "${HOST_RUNTIME_AGENT}" \
+    host_runtime_agent_created host_runtime_agent_identity
+  move_with_identity_journal \
+    "${local_executor_binary_stage}" "${HOST_RUNTIME_EXECUTOR}" \
+    host_runtime_executor_created host_runtime_executor_identity
+  create_symlink_with_journal \
+    "slots/a" "${HOST_RUNTIME_CURRENT}" \
+    host_runtime_current_created host_runtime_current_identity
+  create_symlink_with_journal \
+    "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" "${BINARY_DEST}" \
+    binary_installed host_binary_link_identity
+  create_symlink_with_journal \
+    "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" \
+    "${LOCAL_EXECUTOR_BINARY_DEST}" \
+    local_executor_binary_installed local_executor_binary_link_identity
+elif [[ ${binary_managed_link} == true ]]; then
+  rm -f -- "${binary_stage}"
+else
+  move_with_journal "${binary_stage}" "${BINARY_DEST}" binary_installed
+fi
+move_with_journal "${unit_stage}" "${UNIT_DEST}" unit_installed
+if [[ ${install_mode} == "prepare" ]]; then
+  move_with_journal \
+    "${local_executor_service_stage}" "${LOCAL_EXECUTOR_SERVICE_DEST}" \
+    local_executor_service_installed
+  move_with_journal \
+    "${local_executor_socket_stage}" "${LOCAL_EXECUTOR_SOCKET_DEST}" \
+    local_executor_socket_installed
+  move_with_journal \
+    "${local_executor_tmpfiles_stage}" "${LOCAL_EXECUTOR_TMPFILES_DEST}" \
+    local_executor_tmpfiles_installed
+  move_with_journal \
+    "${self_update_recovery_service_stage}" "${SELF_UPDATE_RECOVERY_SERVICE_DEST}" \
+    self_update_recovery_service_installed
+  move_with_journal \
+    "${self_update_recovery_timer_stage}" "${SELF_UPDATE_RECOVERY_TIMER_DEST}" \
+    self_update_recovery_timer_installed
+fi
+
+validate_identity_directory "${CONFIG_DIR}"
+[[ $(stat -c '%d:%i' -- "${CONFIG_DIR}") == "${identity_config_dir_identity}" ]] || \
+  die "Host Agent identity directory changed during installation"
+if [[ ${install_mode} == "configured" ]]; then
+  [[ $(stat -c '%U:%G:%a' -- "${CONFIG_DEST}") == "root:${AGENT_GROUP}:640" ]] || die "installed identity config failed verification"
+  [[ $(sha256sum -- "${CONFIG_DEST}" | awk 'NR == 1 { print $1 }') == "${config_stage_sha256}" ]] || \
+    die "installed identity content changed during atomic replacement"
+fi
+if [[ ${install_mode} == "prepare" || ${binary_managed_link} == true ]]; then
+  validate_managed_agent_link || die "installed managed Host Agent binary failed verification"
+else
+  [[ $(stat -c '%U:%G:%a' -- "${BINARY_DEST}") == "root:root:755" ]] || \
+    die "installed binary failed verification"
+fi
+[[ $(stat -c '%U:%G:%a' -- "${UNIT_DEST}") == "root:root:644" ]] || die "installed systemd unit failed verification"
+if [[ ${install_mode} == "prepare" ]]; then
+  recheck_private_root_directory \
+    "${LOCAL_EXECUTOR_CONFIG_DIR}" \
+    "${local_executor_config_dir_identity}"
+  recheck_private_root_directory \
+    "${LOCAL_EXECUTOR_DATA_DIR}" \
+    "${local_executor_data_dir_identity}"
+  recheck_private_root_directory \
+    "${LOCAL_EXECUTOR_PORT_CONFIG_DIR}" \
+    "${local_executor_port_config_dir_identity}"
+  [[ -L ${LOCAL_EXECUTOR_BINARY_DEST} ]] || \
+    die "prepared local executor binary is not linked to the atomic current runtime"
+  [[ $(readlink -- "${LOCAL_EXECUTOR_BINARY_DEST}") == "${HOST_RUNTIME_CURRENT}/bin/autostream-local-executor" ]] || \
+    die "prepared local executor binary link escaped the atomic current runtime"
+  [[ $(readlink -f -- "${LOCAL_EXECUTOR_BINARY_DEST}") == "${HOST_RUNTIME_EXECUTOR}" ]] || \
+    die "prepared local executor binary resolves outside the initial A/B slot"
+  [[ $(stat -c '%U:%G:%a' -- "${HOST_RUNTIME_EXECUTOR}") == "root:root:755" ]] || \
+    die "prepared local executor binary failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${LOCAL_EXECUTOR_SERVICE_DEST}") == "root:root:644" ]] || \
+    die "prepared local executor service failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${LOCAL_EXECUTOR_SOCKET_DEST}") == "root:root:644" ]] || \
+    die "prepared local executor socket failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${LOCAL_EXECUTOR_TMPFILES_DEST}") == "root:root:644" ]] || \
+    die "prepared local executor tmpfiles policy failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${SELF_UPDATE_RECOVERY_SERVICE_DEST}") == "root:root:644" ]] || \
+    die "prepared self-update recovery service template failed verification"
+  [[ $(stat -c '%U:%G:%a' -- "${SELF_UPDATE_RECOVERY_TIMER_DEST}") == "root:root:644" ]] || \
+    die "prepared self-update recovery timer template failed verification"
+fi
+if [[ ${install_mode} == "configured" ]]; then
+  runuser -u "${AGENT_USER}" -- test -r "${CONFIG_DEST}" || die "agent service user cannot read installed identity config"
+  validate_installed_agent_binary
+fi
+
+systemctl daemon-reload
+if [[ ${install_mode} == "configured" ]]; then
+  if [[ ${legacy_config_existed} == true ]]; then
+    # Retirement keeps rollback available through its non-destructive checks,
+    # then commits the new identity and unit immediately before the first
+    # destructive write to the legacy secret.
+    retire_legacy_identity
+  fi
+  "${BINARY_DEST}" validate-config --config "${CONFIG_DEST}" || \
+    die "installed identity failed secure reread validation"
+  agent_activation_attempted=true
+  systemctl enable --now autostream-host-agent.service
+  verify_unit_active "${UNIT_NAME}"
+else
+  [[ $(unit_active_state "${UNIT_NAME}") == "inactive" &&
+    $(unit_enabled_state "${UNIT_NAME}") == "disabled" &&
+    $(unit_active_state "${LOCAL_EXECUTOR_SERVICE_NAME}") == "inactive" &&
+    $(unit_active_state "${LOCAL_EXECUTOR_SOCKET_NAME}") == "inactive" &&
+    $(unit_enabled_state "${LOCAL_EXECUTOR_SERVICE_NAME}") == "disabled" &&
+    $(unit_enabled_state "${LOCAL_EXECUTOR_SOCKET_NAME}") == "disabled" ]] || \
+    die "--prepare must leave the Host Agent and local executor disabled and inactive"
+  self_update_recovery_timer_a_enable_attempted=true
+  systemctl enable --now "${SELF_UPDATE_RECOVERY_TIMER_A}"
+  self_update_recovery_timer_a_enabled=true
+  self_update_recovery_timer_b_enable_attempted=true
+  systemctl enable --now "${SELF_UPDATE_RECOVERY_TIMER_B}"
+  self_update_recovery_timer_b_enabled=true
+  [[ $(unit_enabled_state "${SELF_UPDATE_RECOVERY_TIMER_A}") == "enabled" ]] || \
+    die "slot A self-update recovery timer was not enabled"
+  [[ $(unit_enabled_state "${SELF_UPDATE_RECOVERY_TIMER_B}") == "enabled" ]] || \
+    die "slot B self-update recovery timer was not enabled"
+  [[ $(unit_active_state "${SELF_UPDATE_RECOVERY_TIMER_A}") == "active" ]] || \
+    die "slot A self-update recovery timer did not become active"
+  [[ $(unit_active_state "${SELF_UPDATE_RECOVERY_TIMER_B}") == "active" ]] || \
+    die "slot B self-update recovery timer did not become active"
+  [[ ! -e ${CONFIG_DEST} && ! -L ${CONFIG_DEST} &&
+    ! -e ${LEGACY_CONFIG_DEST} && ! -L ${LEGACY_CONFIG_DEST} ]] || \
+    die "--prepare must not create an identity configuration"
+  [[ ! -e ${LOCAL_EXECUTOR_POLICY_DEST} && ! -L ${LOCAL_EXECUTOR_POLICY_DEST} ]] || \
+    die "--prepare must not create a local executor policy"
+fi
+
+installation_complete=true
+printf '%s\n' "Verified Host Agent bundle archive SHA-256: ${ARTIFACT_SHA256}"
+if [[ ${install_mode} == "configured" ]]; then
+  printf '%s\n' "AutoStream Host Agent installed in outbound pull mode; it opens no inbound listener."
+else
+  printf '%s\n' "AutoStream Host Agent and local executor runtime prepared but disabled; root A/B recovery timers are active. Run the Control Panel configure command before enabling either runtime unit."
+fi

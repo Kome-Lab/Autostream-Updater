@@ -1,0 +1,524 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly AGENT_USER="autostream-host-agent"
+readonly AGENT_GROUP="autostream-host-agent"
+readonly CONFIG_DIR="/etc/autostream-host-agent"
+readonly CONFIG_DEST="${CONFIG_DIR}/identity.json"
+readonly STAGED_CONFIG_DEST="${CONFIG_DIR}/identity.staged.json"
+readonly WIPING_CONFIG_DEST="${CONFIG_DIR}/.identity.staged.wipe"
+readonly LEGACY_CONFIG_DEST="/etc/autostream/host-agent.json"
+readonly BINARY_DEST="/usr/local/bin/autostream-host-agent"
+readonly UNIT_DEST="/etc/systemd/system/autostream-host-agent.service"
+readonly STATE_DIR="/var/lib/autostream-host-agent"
+readonly UNIT_NAME="autostream-host-agent.service"
+readonly HOST_RUNTIME_CURRENT="/opt/autostream/host-agent/current"
+readonly HOST_RUNTIME_SLOTS="/opt/autostream/host-agent/slots"
+readonly HOST_RUNTIME_ROOT="/opt/autostream/host-agent"
+readonly LOCAL_EXECUTOR_POLICY="/etc/autostream-local-executor/policy.json"
+readonly LOCAL_EXECUTOR_BINARY="/usr/local/libexec/autostream-local-executor"
+readonly LOCAL_EXECUTOR_SERVICE="/etc/systemd/system/autostream-local-executor.service"
+readonly LOCAL_EXECUTOR_SOCKET="/etc/systemd/system/autostream-local-executor.socket"
+readonly LOCAL_EXECUTOR_TMPFILES="/etc/tmpfiles.d/autostream-local-executor.conf"
+readonly LOCAL_EXECUTOR_RUNTIME="/run/autostream-local-executor"
+readonly LOCAL_EXECUTOR_STATE="/var/lib/autostream-local-executor"
+readonly RECOVERY_SERVICE="/etc/systemd/system/autostream-host-self-update-recovery@.service"
+readonly RECOVERY_TIMER="/etc/systemd/system/autostream-host-self-update-recovery@.timer"
+readonly PRIVILEGED_LOCK_DIR="/run/autostream-updater"
+readonly SHARED_HOST_SETUP_LOCK="${PRIVILEGED_LOCK_DIR}/.autostream-runtime-host-setup.lock"
+readonly HOST_LIFECYCLE_LOCK="${PRIVILEGED_LOCK_DIR}/.autostream-host-lifecycle.lock"
+
+die() {
+  printf 'uninstall-autostream-host-agent: %s\n' "$*" >&2
+  exit 1
+}
+
+purge=false
+case "${1:-}" in
+  "")
+    ;;
+  --purge)
+    purge=true
+    ;;
+  -h|--help)
+    printf '%s\n' "Usage: uninstall-autostream-host-agent [--purge]"
+    exit 0
+    ;;
+  *)
+    printf 'uninstall-autostream-host-agent: unknown argument: %s\n' "$1" >&2
+    exit 1
+    ;;
+esac
+[[ $# -le 1 ]] || {
+  printf '%s\n' 'uninstall-autostream-host-agent: too many arguments' >&2
+  exit 1
+}
+[[ $(id -u) -eq 0 ]] || {
+  printf '%s\n' 'uninstall-autostream-host-agent: must run as root' >&2
+  exit 1
+}
+for command in dd dirname find flock getent groupdel id install mountpoint readlink rm rmdir sort stat sync systemctl tr userdel wc; do
+  command -v "${command}" >/dev/null 2>&1 || {
+    printf 'uninstall-autostream-host-agent: required command %s is unavailable\n' "${command}" >&2
+    exit 1
+  }
+done
+
+validate_lock_parent_chain() {
+  local path=$1
+  local current
+  local parent
+  local mode
+  current=$(dirname -- "${path}")
+  while true; do
+    [[ -d ${current} && ! -L ${current} ]] || \
+      die "privileged lock parents must be non-symlink directories"
+    [[ $(stat -c '%U:%G' -- "${current}") == "root:root" ]] || \
+      die "privileged lock parents must be owned by root:root"
+    mode=$(stat -c '%a' -- "${current}")
+    (( (8#${mode} & 0022) == 0 )) || \
+      die "privileged lock parents must not be writable by group or other"
+    parent=$(dirname -- "${current}")
+    [[ ${parent} == "${current}" ]] && break
+    current=${parent}
+  done
+}
+
+ensure_privileged_lock_path() {
+  local path=$1
+  if [[ -e ${path} || -L ${path} ]]; then
+    [[ -f ${path} &&
+      ! -L ${path} &&
+      $(readlink -f -- "${path}") == "${path}" &&
+      $(stat -c '%U:%G:%a:%h' -- "${path}") == "root:root:600:1" ]] || \
+      die "privileged lock path is unsafe: ${path}"
+  fi
+}
+
+validate_privileged_lock_fd() {
+  local path=$1
+  local fd=$2
+  local expected_directory_identity=$3
+  local expected_file_identity=$4
+  local fd_path="/proc/self/fd/${fd}"
+  [[ $(stat -c '%d:%i' -- "${PRIVILEGED_LOCK_DIR}") == "${expected_directory_identity}" &&
+    -f ${path} &&
+    ! -L ${path} &&
+    -f ${fd_path} &&
+    $(stat -c '%U:%G:%a:%h' -- "${path}") == "root:root:600:1" &&
+    $(stat -Lc '%U:%G:%a:%h' -- "${fd_path}") == "root:root:600:1" &&
+    ${expected_file_identity} == "$(stat -c '%d:%i' -- "${path}")" &&
+    ${expected_file_identity} == "$(stat -Lc '%d:%i' -- "${fd_path}")" ]]
+}
+
+acquire_host_runtime_locks() {
+  local directory_identity
+  local setup_identity
+  local lifecycle_identity
+  local setup_created=false
+  local lifecycle_created=false
+
+  validate_lock_parent_chain "${PRIVILEGED_LOCK_DIR}"
+  if [[ -e ${PRIVILEGED_LOCK_DIR} || -L ${PRIVILEGED_LOCK_DIR} ]]; then
+    [[ -d ${PRIVILEGED_LOCK_DIR} &&
+      ! -L ${PRIVILEGED_LOCK_DIR} &&
+      $(readlink -f -- "${PRIVILEGED_LOCK_DIR}") == "${PRIVILEGED_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${PRIVILEGED_LOCK_DIR}") == "root:root:700" ]] || \
+      die "privileged lock directory is unsafe"
+  else
+    install -d -o root -g root -m 0700 "${PRIVILEGED_LOCK_DIR}" || \
+      die "could not create the privileged lock directory"
+    [[ -d ${PRIVILEGED_LOCK_DIR} &&
+      ! -L ${PRIVILEGED_LOCK_DIR} &&
+      $(readlink -f -- "${PRIVILEGED_LOCK_DIR}") == "${PRIVILEGED_LOCK_DIR}" &&
+      $(stat -c '%U:%G:%a' -- "${PRIVILEGED_LOCK_DIR}") == "root:root:700" ]] || \
+      die "could not create a safe privileged lock directory"
+    sync -f /run
+  fi
+  validate_lock_parent_chain "${SHARED_HOST_SETUP_LOCK}"
+  directory_identity="$(stat -c '%d:%i' -- "${PRIVILEGED_LOCK_DIR}")" || \
+    die "could not record the privileged lock directory identity"
+
+  [[ -e ${SHARED_HOST_SETUP_LOCK} || -L ${SHARED_HOST_SETUP_LOCK} ]] || setup_created=true
+  ensure_privileged_lock_path "${SHARED_HOST_SETUP_LOCK}"
+  exec 8<>"${SHARED_HOST_SETUP_LOCK}" || die "could not open the shared host-setup lock"
+  setup_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/8)" || \
+    die "could not record the shared host-setup lock identity"
+  validate_privileged_lock_fd \
+    "${SHARED_HOST_SETUP_LOCK}" 8 "${directory_identity}" "${setup_identity}" || \
+    die "shared host-setup lock identity changed while being opened"
+  if [[ ${setup_created} == true ]]; then
+    sync -f "${PRIVILEGED_LOCK_DIR}"
+  fi
+  flock -n 8 || die "another AutoStream installer is provisioning shared host state"
+  validate_privileged_lock_fd \
+    "${SHARED_HOST_SETUP_LOCK}" 8 "${directory_identity}" "${setup_identity}" || \
+    die "shared host-setup lock identity changed after acquisition"
+
+  [[ -e ${HOST_LIFECYCLE_LOCK} || -L ${HOST_LIFECYCLE_LOCK} ]] || lifecycle_created=true
+  ensure_privileged_lock_path "${HOST_LIFECYCLE_LOCK}"
+  exec 9<>"${HOST_LIFECYCLE_LOCK}" || die "could not open the Host lifecycle lock"
+  lifecycle_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/9)" || \
+    die "could not record the Host lifecycle lock identity"
+  validate_privileged_lock_fd \
+    "${HOST_LIFECYCLE_LOCK}" 9 "${directory_identity}" "${lifecycle_identity}" || \
+    die "Host lifecycle lock identity changed while being opened"
+  if [[ ${lifecycle_created} == true ]]; then
+    sync -f "${PRIVILEGED_LOCK_DIR}"
+  fi
+  flock -n 9 || die "another privileged Host lifecycle operation is active"
+  validate_privileged_lock_fd \
+    "${HOST_LIFECYCLE_LOCK}" 9 "${directory_identity}" "${lifecycle_identity}" || \
+    die "Host lifecycle lock identity changed after acquisition"
+}
+
+acquire_host_runtime_locks
+
+verify_managed_file() {
+  local path=$1
+  local expected=$2
+  local label=$3
+  [[ ! -e ${path} && ! -L ${path} ]] && return 1
+  [[ -f ${path} && ! -L ${path} ]] || {
+    printf 'uninstall-autostream-host-agent: %s is not a managed regular file\n' "${label}" >&2
+    exit 1
+  }
+  [[ $(stat -c '%U:%G:%a' -- "${path}") == "${expected}" ]] || {
+    printf 'uninstall-autostream-host-agent: %s owner or mode drifted; refusing removal\n' "${label}" >&2
+    exit 1
+  }
+  return 0
+}
+
+verify_managed_binary() {
+  local resolved
+  [[ ! -e ${BINARY_DEST} && ! -L ${BINARY_DEST} ]] && return 1
+  if [[ -L ${BINARY_DEST} ]]; then
+    [[ $(readlink -- "${BINARY_DEST}") == "${HOST_RUNTIME_CURRENT}/bin/autostream-host-agent" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: binary link escaped the managed A/B runtime' >&2
+      exit 1
+    }
+    resolved=$(readlink -f -- "${BINARY_DEST}")
+    [[ ${resolved} == "${HOST_RUNTIME_SLOTS}/a/bin/autostream-host-agent" ||
+      ${resolved} == "${HOST_RUNTIME_SLOTS}/b/bin/autostream-host-agent" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: binary resolved outside the managed A/B slots' >&2
+      exit 1
+    }
+    [[ -f ${resolved} && ! -L ${resolved} &&
+      $(stat -c '%U:%G:%a' -- "${resolved}") == "root:root:755" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: managed A/B binary owner or mode drifted' >&2
+      exit 1
+    }
+    return 0
+  fi
+  verify_managed_file "${BINARY_DEST}" "root:root:755" "binary"
+}
+
+wipe_and_unlink_identity() {
+  local path=$1
+  local expected_snapshot=$2
+  local label=$3
+  local allow_empty=${4:-false}
+  local size
+  local wipe_failed=false
+  verify_managed_file "${path}" "root:${AGENT_GROUP}:640" "${label}" >/dev/null
+  [[ $(stat -c '%d:%i:%s:%Y:%Z:%f:%u:%g' -- "${path}") == "${expected_snapshot}" ]] || {
+    printf 'uninstall-autostream-host-agent: %s changed after purge preflight\n' "${label}" >&2
+    exit 1
+  }
+  size=$(stat -c '%s' -- "${path}")
+  [[ ${size} =~ ^[0-9]+$ && ${size} -le 1048576 &&
+    (${size} -gt 0 || ${allow_empty} == true) ]] || {
+    printf 'uninstall-autostream-host-agent: %s has an unsafe size\n' "${label}" >&2
+    exit 1
+  }
+  if [[ ${size} -gt 0 ]]; then
+    dd if=/dev/zero of="${path}" bs="${size}" count=1 conv=notrunc status=none ||
+      wipe_failed=true
+  fi
+  sync -d "${path}" >/dev/null 2>&1 || wipe_failed=true
+  rm -f -- "${path}" || {
+    printf 'uninstall-autostream-host-agent: could not unlink %s\n' "${label}" >&2
+    exit 1
+  }
+  sync -f "$(dirname -- "${path}")" >/dev/null 2>&1 || wipe_failed=true
+  [[ ! -e ${path} && ! -L ${path} ]] || {
+    printf 'uninstall-autostream-host-agent: %s survived purge\n' "${label}" >&2
+    exit 1
+  }
+  if [[ ${wipe_failed} == true ]]; then
+    printf 'uninstall-autostream-host-agent: warning: %s was unlinked, but its best-effort overwrite or file sync was incomplete\n' "${label}" >&2
+  fi
+}
+
+purge_config=false
+purge_staged_config=false
+purge_wiping_config=false
+purge_legacy_config=false
+config_snapshot=""
+staged_config_snapshot=""
+wiping_config_snapshot=""
+legacy_config_snapshot=""
+purge_state=false
+purge_identity_dir=false
+purge_runtime=false
+if [[ ${purge} == true ]]; then
+  if systemctl is-active --quiet autostream-local-executor.service ||
+    systemctl is-active --quiet autostream-local-executor.socket ||
+    systemctl is-enabled --quiet autostream-local-executor.service ||
+    systemctl is-enabled --quiet autostream-local-executor.socket; then
+    printf '%s\n' 'uninstall-autostream-host-agent: local executor is still active or enabled; run uninstall-autostream-local-executor --purge first' >&2
+    exit 1
+  fi
+  for executor_asset in \
+    "${LOCAL_EXECUTOR_POLICY}" \
+    "${LOCAL_EXECUTOR_BINARY}" \
+    "${LOCAL_EXECUTOR_SERVICE}" \
+    "${LOCAL_EXECUTOR_SOCKET}" \
+    "${LOCAL_EXECUTOR_TMPFILES}" \
+    "${LOCAL_EXECUTOR_RUNTIME}" \
+    "${LOCAL_EXECUTOR_STATE}"; do
+    if [[ -e ${executor_asset} || -L ${executor_asset} ]]; then
+      printf 'uninstall-autostream-host-agent: local executor asset remains at %s; run uninstall-autostream-local-executor --purge first\n' "${executor_asset}" >&2
+      exit 1
+    fi
+  done
+  if id "${AGENT_USER}" >/dev/null 2>&1; then
+    [[ $(id -u "${AGENT_USER}") -ne 0 ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: agent identity unexpectedly resolves to root' >&2
+      exit 1
+    }
+    [[ $(id -gn "${AGENT_USER}") == "${AGENT_GROUP}" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: agent primary group drifted; refusing purge' >&2
+      exit 1
+    }
+    mapfile -t supplementary_groups < <(id -Gn "${AGENT_USER}" | tr ' ' '\n' | LC_ALL=C sort -u)
+    [[ ${#supplementary_groups[@]} -eq 1 && ${supplementary_groups[0]} == "${AGENT_GROUP}" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: agent supplementary groups drifted; refusing purge' >&2
+      exit 1
+    }
+    IFS=: read -r _ _ _ _ _ agent_home agent_shell < <(getent passwd "${AGENT_USER}")
+    [[ ${agent_home} == "${STATE_DIR}" && ${agent_shell} == "/usr/sbin/nologin" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: agent account home or shell drifted; refusing purge' >&2
+      exit 1
+    }
+  fi
+  if getent group "${AGENT_GROUP}" >/dev/null; then
+    IFS=: read -r _ _ agent_gid agent_group_members < <(getent group "${AGENT_GROUP}")
+    [[ ${agent_gid} =~ ^[0-9]+$ ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: agent group gid is invalid' >&2
+      exit 1
+    }
+    if [[ -n ${agent_group_members} ]]; then
+      IFS=, read -r -a explicit_group_members <<<"${agent_group_members}"
+      for member in "${explicit_group_members[@]}"; do
+        [[ ${member} == "${AGENT_USER}" ]] || {
+          printf '%s\n' 'uninstall-autostream-host-agent: agent group grants access to another user; refusing purge' >&2
+          exit 1
+        }
+      done
+    fi
+    while IFS=: read -r account_name _ _ account_gid _ _ _; do
+      if [[ ${account_gid} == "${agent_gid}" && ${account_name} != "${AGENT_USER}" ]]; then
+        printf '%s\n' 'uninstall-autostream-host-agent: agent group is shared as another primary group; refusing purge' >&2
+        exit 1
+      fi
+    done < <(getent passwd)
+  fi
+  if verify_managed_file "${CONFIG_DEST}" "root:${AGENT_GROUP}:640" "identity config"; then
+    purge_config=true
+    config_snapshot=$(stat -c '%d:%i:%s:%Y:%Z:%f:%u:%g' -- "${CONFIG_DEST}")
+  fi
+  if verify_managed_file "${STAGED_CONFIG_DEST}" "root:${AGENT_GROUP}:640" "staged identity config"; then
+    purge_staged_config=true
+    staged_config_snapshot=$(stat -c '%d:%i:%s:%Y:%Z:%f:%u:%g' -- "${STAGED_CONFIG_DEST}")
+  fi
+  if verify_managed_file "${WIPING_CONFIG_DEST}" "root:${AGENT_GROUP}:640" "quarantined staged identity config"; then
+    purge_wiping_config=true
+    wiping_config_snapshot=$(stat -c '%d:%i:%s:%Y:%Z:%f:%u:%g' -- "${WIPING_CONFIG_DEST}")
+  fi
+  if verify_managed_file "${LEGACY_CONFIG_DEST}" "root:${AGENT_GROUP}:640" "legacy identity config"; then
+    purge_legacy_config=true
+    legacy_config_snapshot=$(stat -c '%d:%i:%s:%Y:%Z:%f:%u:%g' -- "${LEGACY_CONFIG_DEST}")
+  fi
+  if [[ -e ${CONFIG_DIR} || -L ${CONFIG_DIR} ]]; then
+    [[ -d ${CONFIG_DIR} && ! -L ${CONFIG_DIR} &&
+      $(stat -c '%U:%G:%a' -- "${CONFIG_DIR}") == "root:${AGENT_GROUP}:750" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: identity directory owner or mode drifted; refusing purge' >&2
+      exit 1
+    }
+    unexpected_identity=$(find "${CONFIG_DIR}" -mindepth 1 -maxdepth 1 \
+      ! -name identity.json ! -name identity.staged.json \
+      ! -name .identity.staged.wipe -print -quit)
+    [[ -z ${unexpected_identity} ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: identity directory contains an unmanaged entry; refusing purge' >&2
+      exit 1
+    }
+    purge_identity_dir=true
+  fi
+  if [[ -e ${STATE_DIR} || -L ${STATE_DIR} ]]; then
+    [[ -d ${STATE_DIR} && ! -L ${STATE_DIR} ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: state path is not a managed directory' >&2
+      exit 1
+    }
+    [[ $(stat -c '%U:%G:%a' -- "${STATE_DIR}") == "${AGENT_USER}:${AGENT_GROUP}:700" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: state directory owner or mode drifted; refusing purge' >&2
+      exit 1
+    }
+    purge_state=true
+  fi
+  if [[ -e ${HOST_RUNTIME_ROOT} || -L ${HOST_RUNTIME_ROOT} ]]; then
+    [[ -d ${HOST_RUNTIME_ROOT} && ! -L ${HOST_RUNTIME_ROOT} &&
+      $(stat -c '%U:%G:%a' -- "${HOST_RUNTIME_ROOT}") == "root:root:755" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: A/B runtime root is unsafe; refusing purge' >&2
+      exit 1
+    }
+    nested_runtime_mount=$(find "${HOST_RUNTIME_ROOT}" -xdev -type d \
+      -exec mountpoint -q -- {} \; -print -quit)
+    [[ -z ${nested_runtime_mount} ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: A/B runtime contains a mount point; refusing purge' >&2
+      exit 1
+    }
+    [[ -L ${HOST_RUNTIME_CURRENT} ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: A/B runtime current link is missing; refusing purge' >&2
+      exit 1
+    }
+    current_target=$(readlink -- "${HOST_RUNTIME_CURRENT}")
+    [[ ${current_target} == "slots/a" || ${current_target} == "slots/b" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: A/B runtime current link escaped fixed slots' >&2
+      exit 1
+    }
+    unexpected_runtime_root=$(find "${HOST_RUNTIME_ROOT}" -mindepth 1 -maxdepth 1 \
+      ! -name current ! -name slots -print -quit)
+    [[ -z ${unexpected_runtime_root} ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: A/B runtime root contains an unmanaged entry' >&2
+      exit 1
+    }
+    [[ -d ${HOST_RUNTIME_SLOTS} && ! -L ${HOST_RUNTIME_SLOTS} &&
+      $(stat -c '%U:%G:%a' -- "${HOST_RUNTIME_SLOTS}") == "root:root:755" ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: A/B slots directory is unsafe' >&2
+      exit 1
+    }
+    unexpected_slot=$(find "${HOST_RUNTIME_SLOTS}" -mindepth 1 -maxdepth 1 \
+      ! -name a ! -name b -print -quit)
+    [[ -z ${unexpected_slot} ]] || {
+      printf '%s\n' 'uninstall-autostream-host-agent: A/B slots contain an unmanaged entry' >&2
+      exit 1
+    }
+    for slot in a b; do
+      slot_root="${HOST_RUNTIME_SLOTS}/${slot}"
+      [[ ! -e ${slot_root} && ! -L ${slot_root} ]] && continue
+      [[ -d ${slot_root} && ! -L ${slot_root} &&
+        $(stat -c '%U:%G:%a' -- "${slot_root}") == "root:root:755" ]] || {
+        printf 'uninstall-autostream-host-agent: slot %s is unsafe\n' "${slot}" >&2
+        exit 1
+      }
+      unexpected_slot_entry=$(find "${slot_root}" -mindepth 1 -maxdepth 1 \
+        ! -name bin ! -name .agent-version ! -name .executor-version \
+        ! -name .commit ! -name .artifact-sha256 -print -quit)
+      [[ -z ${unexpected_slot_entry} ]] || {
+        printf 'uninstall-autostream-host-agent: slot %s contains an unmanaged entry\n' "${slot}" >&2
+        exit 1
+      }
+      [[ -d ${slot_root}/bin && ! -L ${slot_root}/bin &&
+        $(stat -c '%U:%G:%a' -- "${slot_root}/bin") == "root:root:755" ]] || {
+        printf 'uninstall-autostream-host-agent: slot %s bin directory is unsafe\n' "${slot}" >&2
+        exit 1
+      }
+      unexpected_binary=$(find "${slot_root}/bin" -mindepth 1 -maxdepth 1 \
+        ! -name autostream-host-agent ! -name autostream-local-executor -print -quit)
+      [[ -z ${unexpected_binary} ]] || {
+        printf 'uninstall-autostream-host-agent: slot %s contains an unmanaged binary\n' "${slot}" >&2
+        exit 1
+      }
+      for binary in autostream-host-agent autostream-local-executor; do
+        verify_path="${slot_root}/bin/${binary}"
+        [[ -f ${verify_path} && ! -L ${verify_path} &&
+          $(stat -c '%U:%G:%a' -- "${verify_path}") == "root:root:755" ]] || {
+          printf 'uninstall-autostream-host-agent: slot %s binary %s is unsafe\n' "${slot}" "${binary}" >&2
+          exit 1
+        }
+      done
+      for marker in .agent-version .executor-version .commit .artifact-sha256; do
+        marker_path="${slot_root}/${marker}"
+        if [[ -e ${marker_path} || -L ${marker_path} ]]; then
+          [[ -f ${marker_path} && ! -L ${marker_path} &&
+            $(stat -c '%U:%G:%a' -- "${marker_path}") == "root:root:444" ]] || {
+            printf 'uninstall-autostream-host-agent: slot %s marker %s is unsafe\n' "${slot}" "${marker}" >&2
+            exit 1
+          }
+        fi
+      done
+      marker_count=$(find "${slot_root}" -mindepth 1 -maxdepth 1 -type f \
+        \( -name .agent-version -o -name .executor-version -o \
+        -name .commit -o -name .artifact-sha256 \) -print | wc -l)
+      [[ ${marker_count} -eq 0 || ${marker_count} -eq 4 ]] || {
+        printf 'uninstall-autostream-host-agent: slot %s has an incomplete marker set\n' "${slot}" >&2
+        exit 1
+      }
+    done
+    purge_runtime=true
+  fi
+fi
+
+if [[ -e ${UNIT_DEST} || -L ${UNIT_DEST} ]]; then
+  verify_managed_file "${UNIT_DEST}" "root:root:644" "systemd unit"
+  systemctl disable --now autostream-host-agent.service
+else
+  systemctl stop "${UNIT_NAME}" >/dev/null 2>&1 || true
+fi
+for instance in a b; do
+  systemctl disable --now "autostream-host-self-update-recovery@${instance}.timer" >/dev/null 2>&1 || true
+  systemctl stop "autostream-host-self-update-recovery@${instance}.service" >/dev/null 2>&1 || true
+done
+verify_managed_file "${RECOVERY_SERVICE}" "root:root:644" "self-update recovery service" || true
+verify_managed_file "${RECOVERY_TIMER}" "root:root:644" "self-update recovery timer" || true
+
+if verify_managed_binary; then
+  rm -f -- "${BINARY_DEST}"
+fi
+if [[ -e ${UNIT_DEST} ]]; then
+  rm -f -- "${UNIT_DEST}"
+fi
+rm -f -- "${RECOVERY_SERVICE}" "${RECOVERY_TIMER}"
+systemctl daemon-reload
+systemctl reset-failed "${UNIT_NAME}" >/dev/null 2>&1 || true
+
+if [[ ${purge} == false ]]; then
+  printf '%s\n' "Host Agent binary and unit removed; ${CONFIG_DEST} and ${STATE_DIR} were preserved."
+  exit 0
+fi
+
+if [[ ${purge_config} == true ]]; then
+  wipe_and_unlink_identity "${CONFIG_DEST}" "${config_snapshot}" "identity config"
+fi
+if [[ ${purge_staged_config} == true ]]; then
+  wipe_and_unlink_identity "${STAGED_CONFIG_DEST}" "${staged_config_snapshot}" "staged identity config"
+fi
+if [[ ${purge_wiping_config} == true ]]; then
+  wipe_and_unlink_identity "${WIPING_CONFIG_DEST}" "${wiping_config_snapshot}" "quarantined staged identity config" true
+fi
+if [[ ${purge_legacy_config} == true ]]; then
+  wipe_and_unlink_identity "${LEGACY_CONFIG_DEST}" "${legacy_config_snapshot}" "legacy identity config"
+fi
+if [[ ${purge_identity_dir} == true ]]; then
+  rmdir -- "${CONFIG_DIR}"
+fi
+if [[ ${purge_state} == true ]]; then
+  find "${STATE_DIR}" -xdev -mindepth 1 -delete
+  rmdir -- "${STATE_DIR}"
+fi
+if [[ ${purge_runtime} == true ]]; then
+  find "${HOST_RUNTIME_ROOT}" -xdev -depth -delete
+fi
+if id "${AGENT_USER}" >/dev/null 2>&1; then
+  userdel "${AGENT_USER}"
+fi
+if getent group "${AGENT_GROUP}" >/dev/null; then
+  groupdel "${AGENT_GROUP}"
+fi
+printf '%s\n' "Host Agent identity and state purged."
