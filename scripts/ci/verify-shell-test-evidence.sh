@@ -38,10 +38,10 @@ mapfile -t evidence_files < <(find "${EVIDENCE_DIRECTORY}" -maxdepth 1 -type f -
 jq -s -e --rawfile expected "${expected_names}" '
   ($expected | split("\n") | map(select(length > 0))) as $tests |
   ([.[] | select(.action == "skip" or .action == "fail")] | length) == 0 and
-  all($tests[] as $test;
-    ([.[] | select(.action == "run" and .test == $test)] | length) == 1 and
-    ([.[] | select(.action == "pass" and .test == $test)] | length) == 1
-  )
+  ([ $tests[] as $test |
+    (([.[] | select(.action == "run" and .test == $test)] | length) == 1 and
+     ([.[] | select(.action == "pass" and .test == $test)] | length) == 1)
+  ] | all)
 ' "${evidence_files[@]}" >/dev/null || {
   printf '%s\n' 'required shell suite did not prove exact run/pass events with skip=0 and fail=0' >&2
   exit 1

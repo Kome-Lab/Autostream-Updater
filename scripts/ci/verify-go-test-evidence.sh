@@ -45,7 +45,8 @@ while IFS= read -r test_name; do
     printf 'invalid exact Go test name: %s\n' "${test_name}" >&2
     exit 1
   }
-  matches=$(rg -n --glob '*_test.go' "^func[[:space:]]+${test_name}[[:space:]]*\\(" "${SOURCE_ROOT}" || true)
+  matches=$(grep -R -n -E --include='*_test.go' \
+    "^func[[:space:]]+${test_name}[[:space:]]*\\(" "${SOURCE_ROOT}" || true)
   match_count=$(printf '%s\n' "${matches}" | sed '/^$/d' | wc -l)
   if [[ ${match_count} -ne 1 ]]; then
     printf 'required Go test must have exactly one source declaration: %s (found %s)\n' \
@@ -70,14 +71,14 @@ jq -s -e --rawfile expected "${expected_file}" '
   ($expected | split("\n") | map(select(length > 0))) as $tests |
   ([.[] | select(.Action == "skip")] | length) == 0 and
   ([.[] | select(.Action == "fail")] | length) == 0 and
-  all($tests[] as $test;
-    ([.[] | select(.Action == "run" and .Test == $test)] | length) == 1 and
-    ([.[] | select(.Action == "pass" and .Test == $test)] | length) == 1 and
-    ([.[] | select(
-      .Action == "skip" and
-      ((.Test // "") == $test or ((.Test // "") | startswith($test + "/")))
-    )] | length) == 0
-  )
+  ([ $tests[] as $test |
+    (([.[] | select(.Action == "run" and .Test == $test)] | length) == 1 and
+     ([.[] | select(.Action == "pass" and .Test == $test)] | length) == 1 and
+     ([.[] | select(
+       .Action == "skip" and
+       ((.Test // "") == $test or ((.Test // "") | startswith($test + "/")))
+     )] | length) == 0)
+  ] | all)
 ' "${evidence_files[@]}" >/dev/null || {
   printf '%s\n' 'required Go suite did not prove exact run/pass events with skip=0 and fail=0' >&2
   exit 1
