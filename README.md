@@ -20,9 +20,10 @@ authority; AutoStream Contracts remains the wire authority.
 - Target `/updater/version` responses are application-owned identity probes;
   Updater health is independent and cannot substitute for them.
 
-The v2 command intake is intentionally not connected yet. The current
-Contracts authority does not carry the typed desired mutation payload required
-to execute software, port, bootstrap, or self-update operations. See
+The Agent consumes the strict v2 lease, progress, result, and mutation-grant
+envelopes from the pinned Contracts authority. Desired operations are a closed
+typed union; unknown operations, legacy claim bodies, cacheable responses, and
+responses that do not confirm contract major 2 fail closed. See
 [`docs/contracts-boundary.md`](docs/contracts-boundary.md).
 
 ## Existing-host compatibility

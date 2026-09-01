@@ -165,6 +165,112 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  cross-service-probes:
+    name: Fresh application probe / ${{ matrix.service }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: go
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: control-panel
+            repository: Kome-Lab/Autostream-ControlPanel
+            sha: eb8bb0ccc4374f2dd3bb4fbc08c02195d988ebc9
+            required: scripts/ci/application-probes/control-panel.txt
+          - service: worker
+            repository: Kome-Lab/Autostream-Worker
+            sha: eca6d9db189209eddc6c92e6cf0f7c529124e911
+            required: scripts/ci/application-probes/worker.txt
+          - service: encoder-recorder
+            repository: Kome-Lab/Autostream-Encoder-Recorder
+            sha: 7626d6824b3b21a85df7f60e4b4d33399a942b7a
+            required: scripts/ci/application-probes/encoder-recorder.txt
+          - service: discord-bot
+            repository: Kome-Lab/Autostream-DiscordBot
+            sha: b13fe6bf0f08250338a6eead6a1e9bcba0949c30
+            required: scripts/ci/application-probes/discord-bot.txt
+          - service: observability
+            repository: Kome-Lab/Autostream-Observability
+            sha: 2cbaccd05854a9ff2db9a8f5af6904be6be45494
+            required: scripts/ci/application-probes/observability.txt
+    steps:
+      - name: Check out Updater evidence verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out exact application source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.sha }}
+          path: application
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: application/go.mod
+          cache-dependency-path: application/go.sum
+      - name: Require the immutable application revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C application rev-parse HEAD)"
+          test "${actual}" = "${{ matrix.sha }}"
+      - name: Run exact fresh application probe behavior
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/cross-service-probe-${{ matrix.service }}"
+          mkdir -p "${evidence_dir}"
+          pattern="$(paste -sd '|' "${{ matrix.required }}")"
+          set +e
+          (
+            cd application
+            go test -json -p 1 \
+              -run "^(${pattern})$" \
+              -count=1 \
+              ./internal/httpapi \
+              > "${evidence_dir}/probe.json"
+          )
+          status=$?
+          set -e
+          exit "${status}"
+      - name: Require exact run/pass evidence and skip zero
+        if: always()
+        shell: bash
+        run: |
+          bash scripts/ci/verify-go-test-evidence.sh \
+            "${RUNNER_TEMP}/cross-service-probe-${{ matrix.service }}" \
+            "${GITHUB_WORKSPACE}/application/internal/httpapi" \
+            "${{ matrix.required }}"
+      - name: Upload exact application probe evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cross-service-probe-${{ matrix.service }}-${{ matrix.sha }}
+          path: ${{ runner.temp }}/cross-service-probe-${{ matrix.service }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  application-probe-denominator:
+    name: Cross-service application identity probes 5/5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs:
+      - application-probes
+      - cross-service-probes
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require exactly five independently pinned services
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t lists < <(find scripts/ci/application-probes \
+            -maxdepth 1 -type f -name '*.txt' -print | sort)
+          test "${#lists[@]}" -eq 5
+          expected=$'control-panel.txt\ndiscord-bot.txt\nencoder-recorder.txt\nobservability.txt\nworker.txt'
+          actual="$(printf '%s\n' "${lists[@]##*/}")"
+          test "${actual}" = "${expected}"
+
   privileged-linux:
     name: Required root, socket, peer, upgrade, and rollback suite
     runs-on: ubuntu-24.04
