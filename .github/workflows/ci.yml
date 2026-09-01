@@ -83,12 +83,29 @@ jobs:
           set -euo pipefail
           units="${RUNNER_TEMP}/updater-units"
           mkdir -p "${units}"
+          getent group autostream-host-agent >/dev/null 2>&1 ||
+            sudo groupadd --system autostream-host-agent
+          id autostream-host-agent >/dev/null 2>&1 ||
+            sudo useradd --system \
+              --gid autostream-host-agent \
+              --home-dir /var/lib/autostream-host-agent \
+              --shell /usr/sbin/nologin \
+              autostream-host-agent
+          sudo install -D -m 0755 \
+            "${RUNNER_TEMP}/updater-cross-build/autostream-host-agent-amd64" \
+            /usr/local/bin/autostream-host-agent
+          sudo install -D -m 0755 \
+            "${RUNNER_TEMP}/updater-cross-build/autostream-local-executor-amd64" \
+            /usr/local/libexec/autostream-local-executor
+          sudo install -D -m 0755 \
+            "${RUNNER_TEMP}/updater-cross-build/autostream-local-executor-amd64" \
+            /opt/autostream/host-agent/slots/i/bin/autostream-local-executor
           cp systemd/autostream-updater-agent.service.example "${units}/autostream-host-agent.service"
           cp systemd/autostream-local-executor.service.example "${units}/autostream-local-executor.service"
           cp systemd/autostream-local-executor.socket.example "${units}/autostream-local-executor.socket"
           cp systemd/autostream-host-self-update-recovery@.service.example "${units}/autostream-host-self-update-recovery@.service"
           cp systemd/autostream-host-self-update-recovery@.timer.example "${units}/autostream-host-self-update-recovery@.timer"
-          SYSTEMD_UNIT_PATH="${units}" systemd-analyze verify \
+          systemd-analyze verify \
             "${units}/autostream-host-agent.service" \
             "${units}/autostream-local-executor.service" \
             "${units}/autostream-local-executor.socket" \
