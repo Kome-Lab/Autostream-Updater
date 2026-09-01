@@ -45,7 +45,7 @@ func TestProductionSourceBoundary(t *testing.T) {
 	callerCounts := map[string]int{
 		"hostruntime.NewHostPullAgent(":                                     2,
 		"hostruntime.ServeLocalExecutor":                                    1,
-		"(applicationprobe.Client{HTTP: client}).FetchApplicationIdentity(": 1,
+		"(applicationprobe.Client{HTTP: client}).FetchApplicationIdentity(": 2,
 	}
 	observed := make(map[string]int, len(callerCounts))
 	for _, tree := range []string{"cmd", "internal"} {

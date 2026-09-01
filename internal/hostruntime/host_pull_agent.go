@@ -305,7 +305,9 @@ func (c recoveryOnlyHostPullControlPlane) ClaimHost(
 		return nil, false, err
 	}
 	if clearActive && (job == nil || job.ID != strings.TrimSpace(activeJobID) ||
-		!isTerminalUpdateStatus(job.Status)) {
+		(!isTerminalUpdateStatus(job.Status) &&
+			!(job.RecoveryClear && job.ProtocolVersion == 2 &&
+				isV2RecoveryClearStatus(job.Status)))) {
 		return nil, false, errors.New("recovery-only claim received an unproven active cursor clear")
 	}
 	return job, clearActive, nil

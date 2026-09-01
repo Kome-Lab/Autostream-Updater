@@ -180,10 +180,14 @@ func validateV2RecoveryClear(active, terminal UpdateJob, updaterID string) error
 		terminal.LeaseToken != "" ||
 		terminal.LeaseExpiresAt != "" ||
 		terminal.LeaseGeneration != 0 ||
-		!isTerminalUpdateStatus(terminal.Status) {
+		!isV2RecoveryClearStatus(terminal.Status) {
 		return errors.New("v2 recovery clear does not match the active job")
 	}
 	return nil
+}
+
+func isV2RecoveryClearStatus(status string) bool {
+	return status == "canceled"
 }
 
 func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBinding, policy HostAgentPolicy) error {

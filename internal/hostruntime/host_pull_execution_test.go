@@ -938,6 +938,9 @@ func TestValidateV2RecoveryClearRejectsIdentityAndCredentialMutants(t *testing.T
 		Status:          "canceled",
 		RecoveryClear:   true,
 	}
+	if err := validateV2RecoveryClear(active, valid, active.AgentServiceID); err != nil {
+		t.Fatalf("valid v2 recovery clear rejected: %v", err)
+	}
 	mutants := map[string]func(*UpdateJob){
 		"job":         func(job *UpdateJob) { job.ID = "job-other" },
 		"service":     func(job *UpdateJob) { job.AgentServiceID = "updater-other" },

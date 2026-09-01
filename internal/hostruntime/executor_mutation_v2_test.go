@@ -13,13 +13,7 @@ import (
 )
 
 func TestLocalExecutorProtocolPreservesExactV2GrantBinding(t *testing.T) {
-	plan := MutationPlan{
-		JobID: "job-one", HostID: "host-a", TargetID: "worker-01",
-		ServiceType: "worker", DeploymentMode: ModeSystemd,
-		TargetVersion: "v1.2.4", LeaseGeneration: 4,
-		SessionID:  "session-0123456789abcdef",
-		PlanSHA256: "sha256:" + strings.Repeat("a", 64),
-	}
+	plan := validMutationPlan()
 	binding := contracts.UpdaterMutationGrantBinding{
 		Lease: contracts.UpdaterLeaseEnvelope{
 			ProtocolVersion: 2,

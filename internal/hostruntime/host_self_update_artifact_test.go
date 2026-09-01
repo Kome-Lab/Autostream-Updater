@@ -21,23 +21,31 @@ const (
 	hostSelfUpdateArtifactTestCommit  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
 
-func TestHostReleaseWorkflowRecoveryProtocolMatchesRuntime(t *testing.T) {
-	payload, err := os.ReadFile(filepath.Join(
-		"..", "..", ".github", "workflows", "release-build.yml",
-	))
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflow := string(payload)
+func TestHostReleaseScriptsRecoveryProtocolMatchesRuntime(t *testing.T) {
 	protocol := strconv.Itoa(HostSelfUpdateRecoveryProtocolVersion)
-	for _, marker := range []string{
-		"recovery_protocol_version: " + protocol + ",",
-		"(.recovery_protocol_version == " + protocol + ") and",
-	} {
-		if !strings.Contains(workflow, marker) {
+	checks := []struct {
+		path   string
+		marker string
+	}{
+		{
+			path:   filepath.Join("..", "..", "scripts", "ci", "build-release-bundles.sh"),
+			marker: "recovery_protocol_version: " + protocol + ",",
+		},
+		{
+			path:   filepath.Join("..", "..", "scripts", "ci", "verify-release-bundles.sh"),
+			marker: ".recovery_protocol_version == " + protocol + " and",
+		},
+	}
+	for _, check := range checks {
+		payload, err := os.ReadFile(check.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(payload), check.marker) {
 			t.Fatalf(
-				"host release workflow recovery protocol does not match runtime: missing %q",
-				marker,
+				"host release script recovery protocol does not match runtime: %s missing %q",
+				check.path,
+				check.marker,
 			)
 		}
 	}
