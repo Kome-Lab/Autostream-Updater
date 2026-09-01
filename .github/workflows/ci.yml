@@ -193,9 +193,11 @@ jobs:
               --home-dir /var/lib/autostream-host-agent \
               --shell /usr/sbin/nologin \
               autostream-host-agent
+          # Go's t.TempDir appends the test name; keep this base short enough
+          # for Linux's sockaddr_un path limit while retaining 0700 ownership.
           sudo install -d -o autostream-host-agent -g autostream-host-agent -m 0700 \
             /var/lib/autostream-host-agent \
-            /var/lib/autostream-host-agent/ci-tmp
+            /tmp/as-ci
           getent group autostream-updater >/dev/null 2>&1 ||
             sudo groupadd --system autostream-updater
       - name: Run exact root-owned tests
@@ -234,7 +236,7 @@ jobs:
           sudo -u autostream-host-agent /usr/bin/env -i \
             HOME=/var/lib/autostream-host-agent \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-            TMPDIR=/var/lib/autostream-host-agent/ci-tmp \
+            TMPDIR=/tmp/as-ci \
             TZ=UTC \
             /usr/local/libexec/autostream-hostruntime-required.test \
               -test.v=test2json \
