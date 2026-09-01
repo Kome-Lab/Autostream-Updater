@@ -168,7 +168,7 @@ jobs:
   cross-service-probes:
     name: Fresh application probe / ${{ matrix.service }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     needs: go
     strategy:
       fail-fast: false
@@ -204,6 +204,7 @@ jobs:
           ref: ${{ matrix.sha }}
           path: application
           persist-credentials: false
+          submodules: ${{ matrix.service == 'discord-bot' && 'recursive' || 'false' }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: application/go.mod
@@ -214,6 +215,59 @@ jobs:
           set -euo pipefail
           actual="$(git -C application rev-parse HEAD)"
           test "${actual}" = "${{ matrix.sha }}"
+      - name: Cache pinned Discord libdave build
+        if: matrix.service == 'discord-bot'
+        id: discord-dave-cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            application/third_party/discordgo/dave/libdave/cpp/build
+            application/third_party/discordgo/dave/libdave/cpp/vcpkg/vcpkg
+            application/third_party/discordgo/dave/libdave/cpp/vcpkg/downloads
+            application/third_party/discordgo/dave/libdave/cpp/vcpkg/packages
+            application/third_party/discordgo/dave/libdave/cpp/vcpkg/installed
+          key: cross-service-discord-dave-${{ runner.os }}-${{ runner.arch }}-${{ matrix.sha }}
+      - name: Build pinned Discord libdave dependency
+        if: matrix.service == 'discord-bot'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cpp_root="$PWD/application/third_party/discordgo/dave/libdave/cpp"
+          vcpkg_root="$cpp_root/vcpkg"
+          build_dir="$cpp_root/build"
+          if [ "${{ steps.discord-dave-cache.outputs.cache-hit }}" = "true" ] && [ -f "$build_dir/libdave.a" ]; then
+            echo 'Using exact cached libdave build.'
+            exit 0
+          fi
+          missing_tool=0
+          for tool in cmake ninja g++ make pkg-config autoconf automake libtool zip unzip tar; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              missing_tool=1
+            fi
+          done
+          if [ "$missing_tool" -eq 1 ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              cmake ninja-build g++ make pkg-config autoconf automake libtool \
+              zip unzip tar
+          fi
+          if [ ! -x "$vcpkg_root/vcpkg" ]; then
+            git -C "$vcpkg_root" fetch --unshallow || git -C "$vcpkg_root" fetch --all --tags
+            "$vcpkg_root/bootstrap-vcpkg.sh" -disableMetrics
+          fi
+          test -x "$vcpkg_root/vcpkg"
+          export CC=gcc CXX=g++
+          cmake -S "$cpp_root" -B "$build_dir" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DVCPKG_MANIFEST_DIR="$cpp_root/vcpkg-alts/openssl_3" \
+            -DCMAKE_TOOLCHAIN_FILE="$cpp_root/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_SANITIZERS=OFF \
+            -DPERSISTENT_KEYS=OFF \
+            -DTESTING=OFF \
+            -DCMAKE_INSTALL_PREFIX="$build_dir/install" \
+            -DINSTALL_VCPKG_LICENSES=OFF
+          cmake --build "$build_dir" --target libdave --config Release
       - name: Run exact fresh application probe behavior
         continue-on-error: true
         shell: bash
@@ -225,6 +279,15 @@ jobs:
           set +e
           (
             cd application
+            if [ "${{ matrix.service }}" = "discord-bot" ]; then
+              libdave_build="$PWD/third_party/discordgo/dave/libdave/cpp/build"
+              vcpkg_libdir="$(find "$libdave_build/vcpkg_installed" -maxdepth 2 -type d -name lib -print -quit)"
+              test -n "$vcpkg_libdir"
+              vcpkg_libs="$(find "$vcpkg_libdir" -maxdepth 1 -type f -name '*.a' -print | sort | tr '\n' ' ')"
+              export CGO_ENABLED=1
+              export CGO_CFLAGS="-I$PWD/third_party/discordgo/dave/libdave/cpp/includes"
+              export CGO_LDFLAGS="-L$vcpkg_libdir $libdave_build/libdave.a -Wl,--start-group $vcpkg_libs -Wl,--end-group -lstdc++ -lm -ldl -lpthread"
+            fi
             go test -json -p 1 \
               -run "^(${pattern})$" \
               -count=1 \
