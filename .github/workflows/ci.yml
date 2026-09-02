@@ -176,7 +176,7 @@ jobs:
         include:
           - service: control-panel
             repository: Kome-Lab/Autostream-ControlPanel
-            sha: eb8bb0ccc4374f2dd3bb4fbc08c02195d988ebc9
+            sha: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
             required: scripts/ci/application-probes/control-panel.txt
           - service: worker
             repository: Kome-Lab/Autostream-Worker
@@ -333,6 +333,142 @@ jobs:
           expected=$'control-panel.txt\ndiscord-bot.txt\nencoder-recorder.txt\nobservability.txt\nworker.txt'
           actual="$(printf '%s\n' "${lists[@]##*/}")"
           test "${actual}" = "${expected}"
+
+  replacement-integration:
+    name: Replacement integration / exact Control Panel and Updater
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs:
+      - go
+      - application-probe-denominator
+    env:
+      CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
+    steps:
+      - name: Check out exact Updater source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out exact Control Panel adapter source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-ControlPanel
+          ref: ${{ env.CONTROL_PANEL_SHA }}
+          path: control-panel
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            control-panel/go.sum
+      - name: Require both immutable revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git -C control-panel rev-parse HEAD)" = "${CONTROL_PANEL_SHA}"
+      - name: Run exact Updater replacement behavior
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/replacement-updater-evidence"
+          mkdir -p "${evidence_dir}"
+          pattern="$(paste -sd '|' scripts/ci/required-replacement-updater-tests.txt)"
+          go test -json -p 1 \
+            -run "^(${pattern})$" \
+            -count=1 \
+            ./internal/controlplane ./internal/hostruntime \
+            > "${evidence_dir}/updater.json"
+      - name: Run exact Control Panel adapter and fail-closed behavior
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/replacement-control-panel-evidence"
+          mkdir -p "${evidence_dir}"
+          pattern="$(paste -sd '|' scripts/ci/required-replacement-control-panel-tests.txt)"
+          (
+            cd control-panel
+            go test -json -p 1 \
+              -run "^(${pattern})$" \
+              -count=1 \
+              ./internal/httpapi \
+              > "${evidence_dir}/control-panel.json"
+          )
+      - name: Require exact replacement run/pass evidence and skip zero
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/verify-go-test-evidence.sh \
+            "${RUNNER_TEMP}/replacement-updater-evidence" \
+            "${GITHUB_WORKSPACE}/internal" \
+            scripts/ci/required-replacement-updater-tests.txt
+          bash scripts/ci/verify-go-test-evidence.sh \
+            "${RUNNER_TEMP}/replacement-control-panel-evidence" \
+            "${GITHUB_WORKSPACE}/control-panel/internal/httpapi" \
+            scripts/ci/required-replacement-control-panel-tests.txt
+      - name: Record immutable replacement provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg updater_sha "${GITHUB_SHA}" \
+            --arg control_panel_sha "${CONTROL_PANEL_SHA}" \
+            '{
+              schema_version: 1,
+              updater_sha: $updater_sha,
+              control_panel_sha: $control_panel_sha,
+              contracts_major: 2,
+              evidence: {
+                new_control_panel_new_updater: "pass",
+                missing_updater_fail_closed: "pass",
+                legacy_claim_no_fallback: "pass",
+                identity_and_token_lifecycle: "pass",
+                reconcile_and_rollback: "pass"
+              }
+            }' > "${RUNNER_TEMP}/replacement-proof.json"
+      - name: Upload exact replacement evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: replacement-proof-${{ github.sha }}-control-panel-${{ env.CONTROL_PANEL_SHA }}
+          path: |
+            ${{ runner.temp }}/replacement-updater-evidence/
+            ${{ runner.temp }}/replacement-control-panel-evidence/
+            ${{ runner.temp }}/replacement-proof.json
+          if-no-files-found: error
+          retention-days: 14
+
+  rollback-package:
+    name: Exact-SHA pre-removal rollback candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: replacement-integration
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build and verify exact rollback candidate without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          commit_epoch="$(git show -s --format=%ct "${GITHUB_SHA}")"
+          build_date="$(date -u -d "@${commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')"
+          bash scripts/ci/build-release-bundles.sh \
+            v0.0.0 "${GITHUB_SHA}" "${build_date}" \
+            "${RUNNER_TEMP}/rollback-candidate"
+          bash scripts/ci/verify-release-bundles.sh \
+            "${RUNNER_TEMP}/rollback-candidate" v0.0.0 "${GITHUB_SHA}"
+      - name: Upload verified rollback candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pre-removal-rollback-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/rollback-candidate/
+          if-no-files-found: error
+          retention-days: 14
 
   privileged-linux:
     name: Required root, socket, peer, upgrade, and rollback suite
@@ -636,5 +772,55 @@ jobs:
         with:
           name: docker-required-evidence-${{ github.sha }}
           path: ${{ runner.temp }}/required-docker-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  replacement-gate:
+    name: Pre-removal replacement gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs:
+      - go
+      - application-probe-denominator
+      - replacement-integration
+      - rollback-package
+      - privileged-linux
+      - installers
+      - docker-fixture
+    env:
+      CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Record the exact successful pre-removal gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          mkdir -p "${RUNNER_TEMP}/replacement-gate"
+          jq -n \
+            --arg updater_sha "${GITHUB_SHA}" \
+            --arg control_panel_sha "${CONTROL_PANEL_SHA}" \
+            --arg workflow_run_id "${GITHUB_RUN_ID}" \
+            '{
+              schema_version: 1,
+              state: "ready_for_embedded_removal",
+              updater_sha: $updater_sha,
+              control_panel_sha: $control_panel_sha,
+              workflow_run_id: $workflow_run_id,
+              prerequisites: {
+                updater_ci: "pass",
+                five_service_probes: "pass",
+                replacement_integration: "pass",
+                rollback_candidate: "pass",
+                privileged_linux: "pass",
+                installers: "pass",
+                docker: "pass"
+              }
+            }' > "${RUNNER_TEMP}/replacement-gate/replacement-gate.json"
+      - name: Upload pre-removal gate evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pre-removal-replacement-gate-${{ github.sha }}
+          path: ${{ runner.temp }}/replacement-gate/
           if-no-files-found: error
           retention-days: 14

@@ -53,12 +53,16 @@ been re-read and validated.
 The journal, mutation ledgers, runtime-token rotation state, and host
 self-update state are durable and private. An interrupted upgrade is recovered
 by the version-matched Local Executor in the A/B slot. A replacement proof must
-complete before the embedded Control Panel runtime is removed.
+complete before the embedded Control Panel runtime is removed. Ordinary CI pins
+the exact Control Panel adapter revision, proves the strict v2 boundary and
+fail-closed mixed-fleet behavior, and produces a verified exact-SHA rollback
+candidate. Removal is prohibited unless that pre-removal gate succeeds.
 
 The Updater repository does not own central job records, service inventory,
 authorization, or audit history. Those remain Control Panel responsibilities.
-The v2 desired-command consumer is fail-closed until Contracts publishes the
-typed payload described in `contracts-boundary.md`.
+The v2 desired-command consumer uses the pinned typed Contracts payload
+described in `contracts-boundary.md`; unknown, legacy, cacheable, or
+contract-major-mismatched claims fail closed without an embedded fallback.
 
 ## Verification
 
