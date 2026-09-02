@@ -18,10 +18,11 @@ unit validation gates. Required integration jobs add machine-readable evidence:
 - the Docker suite creates a fresh Compose service fixture against the real
   Docker daemon, exercises fixed service-update behavior and sequential
   mutations, and proves both transaction and software-update rollback paths.
-- the pre-removal replacement suite pins both repository SHAs, proves the v2
-  Control Panel adapter and independent Updater behavior together, requires
-  missing or legacy peers to fail closed without fallback, and uploads exact
-  machine-readable test evidence;
+- the post-removal integration suite pins both repository SHAs, runs the
+  Control Panel embedded-runtime absence oracle, proves the v2 adapter and
+  independent Updater behavior together, requires missing or legacy peers to
+  fail closed without fallback, preserves the successful pre-removal authority,
+  and uploads exact machine-readable mixed-fleet evidence;
 - the rollback-candidate job builds and fully verifies the amd64 and arm64
   release shape from that same Updater SHA, uploads it only as a short-lived
   artifact, and never tags, publishes, releases, or deploys it.

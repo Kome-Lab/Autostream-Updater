@@ -176,7 +176,7 @@ jobs:
         include:
           - service: control-panel
             repository: Kome-Lab/Autostream-ControlPanel
-            sha: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
+            sha: 9fa0bca7048334495c5d7afae956e9658f051603
             required: scripts/ci/application-probes/control-panel.txt
           - service: worker
             repository: Kome-Lab/Autostream-Worker
@@ -335,14 +335,14 @@ jobs:
           test "${actual}" = "${expected}"
 
   replacement-integration:
-    name: Replacement integration / exact Control Panel and Updater
+    name: Post-removal integration / exact Control Panel and Updater
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs:
       - go
       - application-probe-denominator
     env:
-      CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
+      CONTROL_PANEL_SHA: 9fa0bca7048334495c5d7afae956e9658f051603
     steps:
       - name: Check out exact Updater source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -365,6 +365,14 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
           test "$(git -C control-panel rev-parse HEAD)" = "${CONTROL_PANEL_SHA}"
+      - name: Verify embedded Control Panel Updater runtime is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd control-panel
+            bash scripts/ci/verify-no-embedded-updater.sh
+          )
       - name: Run exact Updater replacement behavior
         continue-on-error: true
         shell: bash
@@ -424,7 +432,14 @@ jobs:
                 missing_updater_fail_closed: "pass",
                 legacy_claim_no_fallback: "pass",
                 identity_and_token_lifecycle: "pass",
-                reconcile_and_rollback: "pass"
+                reconcile_and_rollback: "pass",
+                control_panel_embedded_runtime_absent: "pass"
+              },
+              mixed_fleet: {
+                new_control_panel_new_updater: "pass",
+                new_control_panel_no_updater: "blocked_no_fallback",
+                old_control_panel_new_updater: "blocked_no_unsafe_mutation",
+                new_control_panel_embedded_only: "blocked_no_fallback"
               }
             }' > "${RUNNER_TEMP}/replacement-proof.json"
       - name: Upload exact replacement evidence
@@ -440,7 +455,7 @@ jobs:
           retention-days: 14
 
   rollback-package:
-    name: Exact-SHA pre-removal rollback candidate
+    name: Exact-SHA Updater rollback candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: replacement-integration
@@ -465,7 +480,7 @@ jobs:
       - name: Upload verified rollback candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pre-removal-rollback-candidate-${{ github.sha }}
+          name: updater-rollback-candidate-${{ github.sha }}
           path: ${{ runner.temp }}/rollback-candidate/
           if-no-files-found: error
           retention-days: 14
@@ -776,7 +791,7 @@ jobs:
           retention-days: 14
 
   replacement-gate:
-    name: Pre-removal replacement gate
+    name: Post-removal final integration gate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs:
@@ -788,39 +803,58 @@ jobs:
       - installers
       - docker-fixture
     env:
-      CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
+      CONTROL_PANEL_SHA: 9fa0bca7048334495c5d7afae956e9658f051603
+      PRE_REMOVAL_UPDATER_SHA: ce27d4b7c849b75735cbbdb7720bea71b70e4bc1
+      PRE_REMOVAL_CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
+      PRE_REMOVAL_WORKFLOW_RUN_ID: "33576522166"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Record the exact successful pre-removal gate
+      - name: Record exact pre-removal authority and post-removal success
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          mkdir -p "${RUNNER_TEMP}/replacement-gate"
+          mkdir -p "${RUNNER_TEMP}/final-integration-gate"
           jq -n \
             --arg updater_sha "${GITHUB_SHA}" \
             --arg control_panel_sha "${CONTROL_PANEL_SHA}" \
+            --arg pre_removal_updater_sha "${PRE_REMOVAL_UPDATER_SHA}" \
+            --arg pre_removal_control_panel_sha "${PRE_REMOVAL_CONTROL_PANEL_SHA}" \
+            --arg pre_removal_workflow_run_id "${PRE_REMOVAL_WORKFLOW_RUN_ID}" \
             --arg workflow_run_id "${GITHUB_RUN_ID}" \
             '{
               schema_version: 1,
-              state: "ready_for_embedded_removal",
+              state: "embedded_runtime_removed_and_verified",
               updater_sha: $updater_sha,
               control_panel_sha: $control_panel_sha,
               workflow_run_id: $workflow_run_id,
+              pre_removal_authority: {
+                updater_sha: $pre_removal_updater_sha,
+                control_panel_sha: $pre_removal_control_panel_sha,
+                workflow_run_id: $pre_removal_workflow_run_id,
+                conclusion: "success"
+              },
+              mixed_fleet: {
+                new_control_panel_new_updater: "pass",
+                new_control_panel_no_updater: "blocked_no_fallback",
+                old_control_panel_new_updater: "blocked_no_unsafe_mutation",
+                new_control_panel_embedded_only: "blocked_no_fallback"
+              },
               prerequisites: {
                 updater_ci: "pass",
                 five_service_probes: "pass",
                 replacement_integration: "pass",
+                control_panel_embedded_runtime_absence: "pass",
                 rollback_candidate: "pass",
                 privileged_linux: "pass",
                 installers: "pass",
                 docker: "pass"
               }
-            }' > "${RUNNER_TEMP}/replacement-gate/replacement-gate.json"
-      - name: Upload pre-removal gate evidence
+            }' > "${RUNNER_TEMP}/final-integration-gate/final-integration-gate.json"
+      - name: Upload post-removal final integration evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pre-removal-replacement-gate-${{ github.sha }}
-          path: ${{ runner.temp }}/replacement-gate/
+          name: post-removal-final-integration-${{ github.sha }}
+          path: ${{ runner.temp }}/final-integration-gate/
           if-no-files-found: error
           retention-days: 14

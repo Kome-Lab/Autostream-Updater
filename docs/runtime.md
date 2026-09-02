@@ -52,11 +52,13 @@ been re-read and validated.
 
 The journal, mutation ledgers, runtime-token rotation state, and host
 self-update state are durable and private. An interrupted upgrade is recovered
-by the version-matched Local Executor in the A/B slot. A replacement proof must
-complete before the embedded Control Panel runtime is removed. Ordinary CI pins
-the exact Control Panel adapter revision, proves the strict v2 boundary and
-fail-closed mixed-fleet behavior, and produces a verified exact-SHA rollback
-candidate. Removal is prohibited unless that pre-removal gate succeeds.
+by the version-matched Local Executor in the A/B slot. The exact-SHA replacement
+proof must complete before the embedded Control Panel runtime is removed.
+After removal, ordinary CI pins the exact Control Panel adapter revision,
+executes its absence oracle, proves the strict v2 boundary and fail-closed
+mixed-fleet behavior, and produces a verified exact-SHA Updater rollback
+candidate. The final evidence preserves the successful pre-removal authority;
+an embedded fallback remains prohibited.
 
 The Updater repository does not own central job records, service inventory,
 authorization, or audit history. Those remain Control Panel responsibilities.
