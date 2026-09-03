@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	DefaultLocalExecutorPolicyPath       = "/etc/autostream-local-executor/policy.json"
+	DefaultLocalExecutorPolicyPath       = "/etc/autostream/updater/executor-policy.json"
 	defaultSystemdPortSidecarDirectory   = "/opt/autostream/local-executor/ports"
 	systemdPortSidecarConfigureMaxBytes  = 1 << 10
 	hostAgentSidecarRollbackProofTimeout = 15 * time.Second
@@ -57,7 +57,7 @@ type hostAgentLiveSystemdSidecarProof struct {
 	MainPIDStartTime     uint64
 	ListenerPIDStartTime uint64
 	SystemdUnitID        string
-	EnvironmentFiles     string
+	LoadCredential       string
 }
 
 type hostAgentLiveSystemdSidecarVerifier func(
@@ -351,7 +351,7 @@ func initialSystemdPortSidecarPlans(
 		}
 		seen[sidecarPath] = struct{}{}
 		body := systemdPortSidecarBytes(
-			adapter.BindVariable,
+			adapter.ServiceType,
 			target.LocalListen.Host,
 			target.LocalListen.Port,
 			target.ConfigRevision,
@@ -363,11 +363,15 @@ func initialSystemdPortSidecarPlans(
 				target.ServiceID,
 			)
 		}
-		if bytes.Count(body, []byte{'\n'}) != 2 ||
+		lineCount := 1
+		if target.ServiceType == "control_panel" {
+			lineCount = 2
+		}
+		if bytes.Count(body, []byte{'\n'}) != lineCount ||
 			len(body) == 0 ||
 			len(body) > systemdPortSidecarConfigureMaxBytes ||
 			body[len(body)-1] != '\n' {
-			return nil, errors.New("canonical systemd port sidecar is not exactly two bounded lines")
+			return nil, errors.New("canonical systemd listener projection has an invalid bounded encoding")
 		}
 		plans = append(plans, initialSystemdPortSidecarPlan{
 			ServiceID: target.ServiceID,
@@ -858,15 +862,7 @@ func authorizeHostAgentSystemdSidecarAdoption(
 }
 
 func decodeManagedHostAgentIdentity(data []byte) (Config, error) {
-	if len(bytes.TrimSpace(data)) == 0 {
-		return Config{}, errors.New("managed Host Agent identity is missing")
-	}
-	var identity Config
-	if err := json.Unmarshal(data, &identity); err != nil ||
-		identity.Validate() != nil || !identity.IsManagedBootstrap() {
-		return Config{}, errors.New("managed Host Agent identity is invalid")
-	}
-	return identity, nil
+	return decodeManagedBootstrapConfig(data)
 }
 
 func decodeCanonicalLocalExecutorPolicy(data []byte) (LocalExecutorPolicy, error) {
@@ -1611,7 +1607,7 @@ func prepareLocalExecutorPolicy(path string) (*preparedLocalExecutorPolicy, erro
 	if err != nil {
 		return nil, err
 	}
-	temp, err := os.CreateTemp(parent, ".policy.json.configure-*")
+	temp, err := os.CreateTemp(parent, ".executor-policy.json.configure-*")
 	if err != nil {
 		return nil, errors.New("create Local Executor policy temporary file")
 	}
@@ -1767,7 +1763,7 @@ func (p *preparedLocalExecutorPolicy) Rollback() error {
 		return syncDirectory(p.parent)
 	}
 	_ = current
-	temp, err := os.CreateTemp(p.parent, ".policy.json.rollback-*")
+	temp, err := os.CreateTemp(p.parent, ".executor-policy.json.rollback-*")
 	if err != nil {
 		return errors.New("create Local Executor policy rollback file")
 	}

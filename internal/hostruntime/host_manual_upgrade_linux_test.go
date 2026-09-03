@@ -3108,11 +3108,13 @@ func newManualHostUpgradeLinuxFixture(
 	)
 	manualHostUpgradeLinuxWriteChecksums(t, fixture.artifactRoot)
 
-	identityRoot := filepath.Join(fixture.root, "etc", "autostream-host-agent")
-	fixture.identityPath = filepath.Join(identityRoot, "identity.json")
+	identityRoot := filepath.Join(fixture.root, "etc", "autostream", "updater")
+	fixture.identityPath = filepath.Join(identityRoot, "agent.yaml")
 	identityPayload := []byte(
-		`{"panel_url":"https://panel.example.com","node_id":"host-a",` +
-			`"runtime_token":"runtime-secret","service_name":"Host A"}` + "\n",
+		"panel_url: https://panel.example.com\n" +
+			"node_id: host-a\n" +
+			"runtime_token: runtime-secret\n" +
+			"service_name: Host A\n",
 	)
 	manualHostUpgradeLinuxWriteFile(t, fixture.identityPath, identityPayload, 0o600)
 	fixture.policyPath = filepath.Join(
@@ -3194,9 +3196,8 @@ func newManualHostUpgradeLinuxFixture(
 		selfUpdate: selfUpdate,
 		paths: manualHostUpgradePaths{
 			identityPath:              fixture.identityPath,
-			legacyIdentityPath:        filepath.Join(fixture.root, "legacy-identity.json"),
-			stagedIdentityPath:        filepath.Join(identityRoot, "identity.json.staged"),
-			wipingIdentityPath:        filepath.Join(identityRoot, "identity.json.wiping"),
+			stagedIdentityPath:        filepath.Join(identityRoot, "agent.staged.yaml"),
+			wipingIdentityPath:        filepath.Join(identityRoot, ".agent.staged.wipe"),
 			policyPath:                fixture.policyPath,
 			hostStateRoot:             filepath.Join(fixture.root, "var", "lib", "autostream-host-agent"),
 			localExecutorStateRoot:    filepath.Join(fixture.root, "var", "lib", "autostream-local-executor"),

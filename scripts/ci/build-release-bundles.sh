@@ -56,8 +56,8 @@ for arch in amd64 arm64; do
     "${root}/install/install-autostream-local-executor"
   install -m 0755 "${REPOSITORY_ROOT}/install/uninstall-autostream-local-executor" \
     "${root}/install/uninstall-autostream-local-executor"
-  install -m 0644 "${REPOSITORY_ROOT}/install/autostream-updater-agent.json.example" \
-    "${root}/autostream-host-agent.json.example"
+  install -m 0644 "${REPOSITORY_ROOT}/install/agent.yaml.example" \
+    "${root}/agent.yaml.example"
   install -m 0644 "${REPOSITORY_ROOT}/install/autostream-local-executor-policy.json.example" \
     "${root}/autostream-local-executor-policy.json.example"
   install -m 0644 "${REPOSITORY_ROOT}/docs/runtime.md" "${root}/README.md"

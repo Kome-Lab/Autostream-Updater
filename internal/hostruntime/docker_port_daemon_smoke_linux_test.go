@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const (
@@ -37,7 +39,7 @@ const (
 	dockerPortDaemonSmokeOwnerFile  = ".docker-port-smoke-owner"
 
 	dockerPortSmokeProjectDir = "/opt/autostream"
-	dockerPortSmokePolicyPath = "/etc/autostream-local-executor/policy.json"
+	dockerPortSmokePolicyPath = "/etc/autostream/updater/executor-policy.json"
 	dockerPortSmokeImageRepo  = "ghcr.io/kome-lab/autostream-docker/worker"
 )
 
@@ -919,14 +921,20 @@ func setupDockerPortSmokeRoot(t *testing.T, image, imageID string) {
     pids_limit: 64
     stop_grace_period: 1s
     environment:
-      AUTOSTREAM_BIND_ADDR: "0.0.0.0:${AUTOSTREAM_WORKER_CONTAINER_PORT}"
-      AUTOSTREAM_CONFIG_REVISION: "${AUTOSTREAM_CONFIG_REVISION}"
+      CREDENTIALS_DIRECTORY: "/run/autostream-credentials"
       AUTOSTREAM_FIXTURE_ADVERTISED_PORT: "${AUTOSTREAM_FIXTURE_ADVERTISED_PORT}"
       AUTOSTREAM_FIXTURE_BUNDLE_PIN: "${AUTOSTREAM_DOCKER_VERSION}"
       AUTOSTREAM_FIXTURE_VERSION: "v1.0.0"
       AUTOSTREAM_FIXTURE_UNHEALTHY_PORT: "21080"
+    configs:
+      - source: worker_node_listener
+        target: /run/autostream-credentials/node-listener.json
     ports:
       - "127.0.0.1:${AUTOSTREAM_WORKER_PORT}:${AUTOSTREAM_WORKER_CONTAINER_PORT}/tcp"
+configs:
+  worker_node_listener:
+    content: |
+      {"schema_version":2,"service_type":"worker","bind_address":"0.0.0.0:${AUTOSTREAM_WORKER_CONTAINER_PORT}","config_revision":${AUTOSTREAM_CONFIG_REVISION}}
 `, image)
 	writeDockerPortSmokeFile(
 		t, "/opt/autostream/compose.yml", []byte(compose),
@@ -1369,6 +1377,20 @@ func startDockerPortSmokeForeignContainer(
 	publishedPort, containerPort int,
 ) {
 	t.Helper()
+	credentialDir := t.TempDir()
+	credentialPath := filepath.Join(credentialDir, "node-listener.json")
+	credential, err := contracts.MarshalNodeListenerConfig(contracts.NodeListenerConfig{
+		SchemaVersion:  2,
+		ServiceType:    "worker",
+		BindAddress:    fmt.Sprintf("0.0.0.0:%d", containerPort),
+		ConfigRevision: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialPath, credential, 0o444); err != nil {
+		t.Fatal(err)
+	}
 	mustDockerPortSmokeRun(
 		t, runner, "", "/usr/bin/docker",
 		"run", "-d",
@@ -1378,14 +1400,15 @@ func startDockerPortSmokeForeignContainer(
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
 		"--pids-limit", "64",
+		"--mount", fmt.Sprintf(
+			"type=bind,src=%s,dst=/run/autostream-credentials/node-listener.json,readonly",
+			credentialPath,
+		),
 		"-p", fmt.Sprintf(
 			"127.0.0.1:%d:%d/tcp", publishedPort, containerPort,
 		),
-		"-e", fmt.Sprintf(
-			"AUTOSTREAM_BIND_ADDR=0.0.0.0:%d", containerPort,
-		),
+		"-e", "CREDENTIALS_DIRECTORY=/run/autostream-credentials",
 		"-e", "AUTOSTREAM_FIXTURE_ADVERTISED_PORT=443",
-		"-e", "AUTOSTREAM_CONFIG_REVISION=5",
 		"-e", "AUTOSTREAM_FIXTURE_VERSION=v1.0.0",
 		image,
 	)
@@ -1772,7 +1795,7 @@ func cleanupDockerPortSmokeEnvironment(
 		"/opt/autostream/.env",
 		"/opt/autostream/.docker-port-smoke-owner",
 		"/etc/autostream-local-executor/docker/config.json",
-		"/etc/autostream-local-executor/policy.json",
+		"/etc/autostream/updater/executor-policy.json",
 		"/etc/autostream-local-executor/.docker-port-smoke-owner",
 		filepath.Join(
 			privilegedLockDir(), ".autostream-host-lifecycle.lock",

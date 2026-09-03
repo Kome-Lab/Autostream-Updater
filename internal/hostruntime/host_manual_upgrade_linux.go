@@ -30,7 +30,6 @@ const (
 
 type manualHostUpgradePaths struct {
 	identityPath              string
-	legacyIdentityPath        string
 	stagedIdentityPath        string
 	wipingIdentityPath        string
 	policyPath                string
@@ -121,7 +120,6 @@ func defaultManualHostUpgradeRuntime() manualHostUpgradeRuntime {
 		selfUpdate: selfUpdate,
 		paths: manualHostUpgradePaths{
 			identityPath:              HostAgentIdentityPath,
-			legacyIdentityPath:        LegacyHostAgentIdentityPath,
 			stagedIdentityPath:        HostAgentStagedIdentityPath,
 			wipingIdentityPath:        HostAgentWipingIdentityPath,
 			policyPath:                DefaultLocalExecutorPolicyPath,
@@ -1101,7 +1099,6 @@ func validateManualHostUpgradeInstallation(
 	rt manualHostUpgradeRuntime,
 ) (manualHostUpgradeSnapshot, error) {
 	for _, path := range []string{
-		rt.paths.legacyIdentityPath,
 		rt.paths.stagedIdentityPath,
 		rt.paths.wipingIdentityPath,
 	} {
@@ -1559,10 +1556,6 @@ func verifyManualHostUpgradeSnapshot(
 	} else if _, err := os.Lstat(rt.paths.legacyHelperConfigPath); err == nil ||
 		!errors.Is(err, os.ErrNotExist) {
 		return errors.New("legacy update helper configuration appeared during upgrade")
-	}
-	if _, err := os.Lstat(rt.paths.legacyIdentityPath); err == nil ||
-		!errors.Is(err, os.ErrNotExist) {
-		return errors.New("legacy Host Agent identity appeared during upgrade")
 	}
 	if !manualHostUpgradeDirectoryMatches(
 		snapshot.stateParent, rt.allowTestPaths,

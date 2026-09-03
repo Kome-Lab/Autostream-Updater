@@ -62,7 +62,7 @@ func TestAuthorizeHostAgentSystemdSidecarAdoptionRejectsArbitraryDriftAndBroadCh
 		changed := cloneInitialSidecarSnapshots(snapshots)
 		changed[plans[0].Path] = initialSystemdPortSidecarSnapshot{
 			Existed: true,
-			Body:    []byte("OBSERVABILITY_BIND_ADDR=127.0.0.1:19999\nAUTOSTREAM_CONFIG_REVISION=14\n"),
+			Body:    []byte("{\"schema_version\":2,\"service_type\":\"observability\",\"bind_address\":\"127.0.0.1:19999\",\"config_revision\":14}\n"),
 		}
 		if _, err := authorizeHostAgentSystemdSidecarAdoption(
 			staged, identity, identityBytes, currentProjection.Policy,
@@ -234,7 +234,7 @@ func setConfigureTargetPort(
 	}
 	target.LocalListen.Port = port
 	target.ConfigSHA256 = systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		target.LocalListen.Host,
 		port,
 		target.ConfigRevision,
@@ -266,7 +266,7 @@ func cloneInitialSidecarSnapshots(
 	return clone
 }
 
-func TestInitialSystemdPortSidecarPlansUseFiveFixedRootPathsAndExactTwoLines(
+func TestInitialSystemdPortSidecarPlansUseFiveFixedRootPathsAndCanonicalBodies(
 	t *testing.T,
 ) {
 	policy := configureTransactionPolicyFixture(t)
@@ -281,19 +281,24 @@ func TestInitialSystemdPortSidecarPlansUseFiveFixedRootPathsAndExactTwoLines(
 		t.Fatalf("plans = %#v", plans)
 	}
 	want := map[string]string{
-		"/opt/autostream/local-executor/ports/control-panel.env":    "AUTOSTREAM_BIND_ADDR=127.0.0.1:18080\nAUTOSTREAM_CONFIG_REVISION=10\n",
-		"/opt/autostream/local-executor/ports/worker.env":           "AUTOSTREAM_BIND_ADDR=127.0.0.1:18081\nAUTOSTREAM_CONFIG_REVISION=11\n",
-		"/opt/autostream/local-executor/ports/encoder-recorder.env": "AUTOSTREAM_BIND_ADDR=127.0.0.1:18082\nAUTOSTREAM_CONFIG_REVISION=12\n",
-		"/opt/autostream/local-executor/ports/discord-bot.env":      "AUTOSTREAM_BIND_ADDR=127.0.0.1:18083\nAUTOSTREAM_CONFIG_REVISION=13\n",
-		"/opt/autostream/local-executor/ports/observability.env":    "OBSERVABILITY_BIND_ADDR=127.0.0.1:18084\nAUTOSTREAM_CONFIG_REVISION=14\n",
+		"/opt/autostream/local-executor/ports/control-panel.env":     "AUTOSTREAM_BIND_ADDR=127.0.0.1:18080\nAUTOSTREAM_CONFIG_REVISION=10\n",
+		"/opt/autostream/local-executor/ports/worker.json":           "{\"schema_version\":2,\"service_type\":\"worker\",\"bind_address\":\"127.0.0.1:18081\",\"config_revision\":11}\n",
+		"/opt/autostream/local-executor/ports/encoder-recorder.json": "{\"schema_version\":2,\"service_type\":\"encoder_recorder\",\"bind_address\":\"127.0.0.1:18082\",\"config_revision\":12}\n",
+		"/opt/autostream/local-executor/ports/discord-bot.json":      "{\"schema_version\":2,\"service_type\":\"discord_bot\",\"bind_address\":\"127.0.0.1:18083\",\"config_revision\":13}\n",
+		"/opt/autostream/local-executor/ports/observability.json":    "{\"schema_version\":2,\"service_type\":\"observability\",\"bind_address\":\"127.0.0.1:18084\",\"config_revision\":14}\n",
 	}
 	for _, plan := range plans {
-		wantBody, ok := want[filepath.ToSlash(plan.Path)]
+		canonicalPath := filepath.ToSlash(plan.Path)
+		wantBody, ok := want[canonicalPath]
 		if !ok {
 			t.Fatalf("unexpected sidecar path %q", plan.Path)
 		}
+		wantLineCount := 1
+		if canonicalPath == "/opt/autostream/local-executor/ports/control-panel.env" {
+			wantLineCount = 2
+		}
 		if string(plan.Body) != wantBody ||
-			bytes.Count(plan.Body, []byte{'\n'}) != 2 ||
+			bytes.Count(plan.Body, []byte{'\n'}) != wantLineCount ||
 			plan.SHA256 != systemdPortSidecarSHA256(plan.Body) {
 			t.Fatalf("non-canonical sidecar plan = %#v", plan)
 		}
@@ -308,11 +313,11 @@ func TestCanonicalSystemdPortSidecarPathsCoverFiveConfigureServices(t *testing.T
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"/opt/autostream/local-executor/ports/control-panel.env":    true,
-		"/opt/autostream/local-executor/ports/worker.env":           true,
-		"/opt/autostream/local-executor/ports/encoder-recorder.env": true,
-		"/opt/autostream/local-executor/ports/discord-bot.env":      true,
-		"/opt/autostream/local-executor/ports/observability.env":    true,
+		"/opt/autostream/local-executor/ports/control-panel.env":     true,
+		"/opt/autostream/local-executor/ports/worker.json":           true,
+		"/opt/autostream/local-executor/ports/encoder-recorder.json": true,
+		"/opt/autostream/local-executor/ports/discord-bot.json":      true,
+		"/opt/autostream/local-executor/ports/observability.json":    true,
 	}
 	if len(paths) != len(want) {
 		t.Fatalf("canonical paths = %#v", paths)
@@ -353,9 +358,19 @@ func TestInitialSystemdPortSidecarsNeverOverwriteDifferingExistingFile(
 			Body:    append([]byte(nil), plan.Body...),
 		}
 	}
-	snapshots[plans[0].Path] = initialSystemdPortSidecarSnapshot{
+	legacyWorkerPath := ""
+	for _, plan := range plans {
+		if plan.ServiceID == "worker-a" {
+			legacyWorkerPath = plan.Path
+			break
+		}
+	}
+	if legacyWorkerPath == "" {
+		t.Fatal("worker listener plan is unavailable")
+	}
+	snapshots[legacyWorkerPath] = initialSystemdPortSidecarSnapshot{
 		Existed: true,
-		Body:    []byte("AUTOSTREAM_BIND_ADDR=127.0.0.1:19999\nAUTOSTREAM_CONFIG_REVISION=1\n"),
+		Body:    []byte("AUTOSTREAM_BIND_ADDR=127.0.0.1:18081\nAUTOSTREAM_CONFIG_REVISION=11\n"),
 	}
 	if err := validateInitialSystemdPortSidecarSnapshots(
 		plans,
@@ -420,7 +435,7 @@ func configureTransactionPolicyFixture(t *testing.T) LocalExecutorPolicy {
 			t.Fatal(err)
 		}
 		body := systemdPortSidecarBytes(
-			adapter.BindVariable,
+			adapter.ServiceType,
 			"127.0.0.1",
 			definition.port,
 			definition.revision,

@@ -22,12 +22,12 @@ func TestLinuxSystemdPortRuntimeWritesAndRestoresExactSidecar(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := systemdPortAdapter{
-		Unit:         "autostream-worker.service",
-		SidecarPath:  filepath.Join(directory, "worker.env"),
-		BindVariable: "AUTOSTREAM_BIND_ADDR",
+		Unit:        "autostream-worker.service",
+		SidecarPath: filepath.Join(directory, "worker.json"),
+		ServiceType: "worker",
 	}
-	oldBody := systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 8084, 11)
-	newBody := systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 18084, 12)
+	oldBody := systemdPortSidecarBytes("worker", "127.0.0.1", 8084, 11)
+	newBody := systemdPortSidecarBytes("worker", "127.0.0.1", 18084, 12)
 	if err := os.WriteFile(adapter.SidecarPath, oldBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -66,11 +66,11 @@ func TestLinuxSystemdPortRuntimeRefusesConcurrentSidecarDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := systemdPortAdapter{
-		Unit:         "autostream-worker.service",
-		SidecarPath:  filepath.Join(directory, "worker.env"),
-		BindVariable: "AUTOSTREAM_BIND_ADDR",
+		Unit:        "autostream-worker.service",
+		SidecarPath: filepath.Join(directory, "worker.json"),
+		ServiceType: "worker",
 	}
-	oldBody := systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 8084, 11)
+	oldBody := systemdPortSidecarBytes("worker", "127.0.0.1", 8084, 11)
 	if err := os.WriteFile(adapter.SidecarPath, oldBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -81,11 +81,11 @@ func TestLinuxSystemdPortRuntimeRefusesConcurrentSidecarDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	drift := systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 19000, 99)
+	drift := systemdPortSidecarBytes("worker", "127.0.0.1", 19000, 99)
 	if err := os.WriteFile(adapter.SidecarPath, drift, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	target := systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 18084, 12)
+	target := systemdPortSidecarBytes("worker", "127.0.0.1", 18084, 12)
 	if err := portRuntime.Write(adapter, checkpoint, target); err == nil {
 		t.Fatal("concurrent sidecar drift was overwritten")
 	}
@@ -104,9 +104,9 @@ func TestLinuxSystemdPortRuntimeRestoresAbsentSidecar(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := systemdPortAdapter{
-		Unit:         "autostream-worker.service",
-		SidecarPath:  filepath.Join(directory, "worker.env"),
-		BindVariable: "AUTOSTREAM_BIND_ADDR",
+		Unit:        "autostream-worker.service",
+		SidecarPath: filepath.Join(directory, "worker.json"),
+		ServiceType: "worker",
 	}
 	portRuntime := &linuxSystemdPortRuntime{
 		adapter: adapter, requireRootOwned: false,
@@ -118,7 +118,7 @@ func TestLinuxSystemdPortRuntimeRestoresAbsentSidecar(t *testing.T) {
 	if checkpoint.Existed {
 		t.Fatal("initial sidecar unexpectedly exists")
 	}
-	target := systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 18084, 12)
+	target := systemdPortSidecarBytes("worker", "127.0.0.1", 18084, 12)
 	if err := portRuntime.Write(adapter, checkpoint, target); err != nil {
 		t.Fatal(err)
 	}
@@ -284,9 +284,9 @@ func TestLinuxSystemdPortRuntimeRestartUsesOnlyFixedSystemctlAndUnit(t *testing.
 	runner := &linuxSystemdPortRunner{}
 	portRuntime := &linuxSystemdPortRuntime{
 		adapter: systemdPortAdapter{
-			Unit:         target.Systemd.Unit,
-			SidecarPath:  "/opt/autostream/local-executor/ports/worker.env",
-			BindVariable: "AUTOSTREAM_BIND_ADDR",
+			Unit:        target.Systemd.Unit,
+			SidecarPath: "/opt/autostream/local-executor/ports/worker.json",
+			ServiceType: "worker",
 		},
 		serviceID: target.ServiceID, serviceType: target.ServiceType,
 		listenHost:    target.LocalListen.Host,

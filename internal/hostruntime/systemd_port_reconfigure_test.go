@@ -25,7 +25,7 @@ func TestSystemdPortReconfigurePlanBindsEveryRevisionAndPortBoundary(t *testing.
 			plan.NewPort = testCase.port
 			if testCase.valid {
 				plan.TargetConfigSHA256 = systemdPortSidecarSHA256(
-					systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", plan.NewPort, plan.TargetConfigRevision),
+					systemdPortSidecarBytes("worker", "127.0.0.1", plan.NewPort, plan.TargetConfigRevision),
 				)
 				plan.PortPlanSHA256 = mustSystemdPortPlanSHA256(t, plan)
 			}
@@ -89,20 +89,20 @@ func TestSystemdPortReconfigurePlanBindsEveryRevisionAndPortBoundary(t *testing.
 func TestSystemdPortAdapterIsFixedByServiceTypeAndPolicyUnit(t *testing.T) {
 	for serviceType, expected := range map[string]systemdPortAdapter{
 		"worker": {
-			Unit: "autostream-worker.service", SidecarPath: "/opt/autostream/local-executor/ports/worker.env",
-			BindVariable: "AUTOSTREAM_BIND_ADDR",
+			Unit: "autostream-worker.service", SidecarPath: "/opt/autostream/local-executor/ports/worker.json",
+			ServiceType: "worker",
 		},
 		"encoder_recorder": {
-			Unit: "autostream-encoder-recorder.service", SidecarPath: "/opt/autostream/local-executor/ports/encoder-recorder.env",
-			BindVariable: "AUTOSTREAM_BIND_ADDR",
+			Unit: "autostream-encoder-recorder.service", SidecarPath: "/opt/autostream/local-executor/ports/encoder-recorder.json",
+			ServiceType: "encoder_recorder",
 		},
 		"discord_bot": {
-			Unit: "autostream-discord-bot.service", SidecarPath: "/opt/autostream/local-executor/ports/discord-bot.env",
-			BindVariable: "AUTOSTREAM_BIND_ADDR",
+			Unit: "autostream-discord-bot.service", SidecarPath: "/opt/autostream/local-executor/ports/discord-bot.json",
+			ServiceType: "discord_bot",
 		},
 		"observability": {
-			Unit: "autostream-observability.service", SidecarPath: "/opt/autostream/local-executor/ports/observability.env",
-			BindVariable: "OBSERVABILITY_BIND_ADDR",
+			Unit: "autostream-observability.service", SidecarPath: "/opt/autostream/local-executor/ports/observability.json",
+			ServiceType: "observability",
 		},
 	} {
 		t.Run(serviceType, func(t *testing.T) {
@@ -124,8 +124,8 @@ func TestSystemdPortAdapterIsFixedByServiceTypeAndPolicyUnit(t *testing.T) {
 }
 
 func TestSystemdPortSidecarIsCanonicalAndDigestBound(t *testing.T) {
-	body := systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "::1", 18084, 12)
-	expected := "AUTOSTREAM_BIND_ADDR=[::1]:18084\nAUTOSTREAM_CONFIG_REVISION=12\n"
+	body := systemdPortSidecarBytes("worker", "::1", 18084, 12)
+	expected := "{\"schema_version\":2,\"service_type\":\"worker\",\"bind_address\":\"[::1]:18084\",\"config_revision\":12}\n"
 	if string(body) != expected {
 		t.Fatalf("sidecar=%q", body)
 	}
@@ -541,7 +541,7 @@ func nextSystemdPortPlan(
 	next.TargetConfigRevision = next.ExpectedConfigRevision + 1
 	next.ExpectedConfigSHA256 = previous.ExpectedConfigSHA256
 	next.TargetConfigSHA256 = systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		"AUTOSTREAM_BIND_ADDR", "127.0.0.1", newPort, next.TargetConfigRevision,
+		"worker", "127.0.0.1", newPort, next.TargetConfigRevision,
 	))
 	next.LeaseGeneration++
 	next.SessionID = "port-session-two-0123456789"
@@ -558,10 +558,10 @@ func validSystemdPortReconfigurePlan(t *testing.T) SystemdPortReconfigurePlan {
 		ExpectedEndpointRevision: 4, TargetEndpointRevision: 5,
 		ExpectedConfigRevision: 11, TargetConfigRevision: 12,
 		ExpectedConfigSHA256: systemdPortSidecarSHA256(
-			systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 8084, 11),
+			systemdPortSidecarBytes("worker", "127.0.0.1", 8084, 11),
 		),
 		TargetConfigSHA256: systemdPortSidecarSHA256(
-			systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 18084, 12),
+			systemdPortSidecarBytes("worker", "127.0.0.1", 18084, 12),
 		),
 		ExpectedSourcePolicyRevision:   6,
 		ExpectedUpdaterPolicyRevision:  7,
@@ -601,7 +601,7 @@ func newSystemdPortHarness(t *testing.T) systemdPortHarness {
 	policy.ProjectionRevision = 7
 	policy.PolicyRevision = 8
 	policy.Targets[0].EndpointRevision = 4
-	old := systemdPortSidecarBytes("AUTOSTREAM_BIND_ADDR", "127.0.0.1", 8084, 11)
+	old := systemdPortSidecarBytes("worker", "127.0.0.1", 8084, 11)
 	policy.Targets[0].LocalListen = LocalExecutorEndpoint{Host: "127.0.0.1", Port: 8084}
 	policy.Targets[0].ConfigRevision = 11
 	policy.Targets[0].ConfigSHA256 = systemdPortSidecarSHA256(old)

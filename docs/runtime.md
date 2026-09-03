@@ -17,9 +17,12 @@ identity, journal, A/B, or recovery state.
 
 | Purpose | Path |
 | --- | --- |
-| Agent identity | `/etc/autostream-host-agent/identity.json` |
+| Agent identity | `/etc/autostream/updater/agent.yaml` |
+| Staged Agent identity | `/etc/autostream/updater/agent.staged.yaml` |
+| Interrupted staged-identity wipe | `/etc/autostream/updater/.agent.staged.wipe` |
 | Agent state and journal | `/var/lib/autostream-host-agent` |
-| Executor policy | `/etc/autostream-local-executor/policy.json` |
+| Executor policy | `/etc/autostream/updater/executor-policy.json` |
+| Executor-only Docker credentials | `/etc/autostream-local-executor/docker/config.json` |
 | Executor durable state | `/var/lib/autostream-local-executor` |
 | Executor socket | `/run/autostream-local-executor/executor.sock` |
 | Shared lifecycle locks | `/run/autostream-updater` |
@@ -29,6 +32,25 @@ The identity remains exactly four fields: `panel_url`, `node_id`,
 `runtime_token`, and `service_name`. It is root-owned and readable only by the
 Agent group. Runtime tokens are never accepted through argv or environment
 variables.
+
+identityの永続形式は4項目のYAMLのみです。JSON identity、追加項目、重複項目、
+複数documentは拒否し、旧パスへのfallbackは行いません。runtime-token rotationも
+同じYAML decoderを使用し、tokenそのものをエラーや診断へ出力しません。
+
+installerは`acl`パッケージの`getfacl`／`setfacl`を必要とします。
+`/etc/autostream`の既存所有者・modeや隣接サービスの秘密情報は変更せず、必要な場合のみ
+専用Host Agent userへtraverse専用ACLを追加します。失敗時は同一inode・ACLを確認して
+追加分を元へ戻します。identity directoryはroot:autostream-host-agent 0750、
+identityは0640、Executor policyはroot:root 0600です。identity directoryへの他user用ACLや
+default ACLは許可しません。`/etc/autostream-local-executor`はDocker credentials用の
+root-only directoryとして独立して残ります。
+通常uninstallはidentity、state、traverse ACLを保持します。明示的な`--purge`だけが、
+UID再利用前に専用Host Agent userのtraverse ACLをCAS確認付きで除去します。
+
+Agent／Executorのsystemd mount namespaceでは`/etc/autostream`を空のread-only filesystemで
+隠し、`updater`だけをbindします。Agentはread-only、Executorはidentity rotation用に
+read-writeです。共有parentを`InaccessiblePaths`に指定して子directoryを再公開する構成は
+使いません。A/B recovery unitは引き続きidentityと全サービス秘密情報へアクセスしません。
 
 ## Installation
 

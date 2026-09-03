@@ -32,7 +32,7 @@ func verifyHostAgentLiveSystemdSidecar(
 		return hostAgentLiveSystemdSidecarProof{}, errors.New("live systemd sidecar adoption adapter is invalid")
 	}
 	stagedBody := systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		stagedTarget.LocalListen.Host,
 		stagedTarget.LocalListen.Port,
 		stagedTarget.ConfigRevision,
@@ -70,21 +70,21 @@ func verifyHostAgentLiveSystemdSidecar(
 	if err != nil || unitID != stagedTarget.Systemd.Unit {
 		return hostAgentLiveSystemdSidecarProof{}, errors.New("live systemd sidecar unit identity is unavailable")
 	}
-	environmentFiles, err := runner.Run(
+	loadCredential, err := runner.Run(
 		ctx,
 		"",
 		nil,
 		stagedTarget.Systemd.SystemctlPath,
 		"show",
-		"--property=EnvironmentFiles",
+		"--property=LoadCredential",
 		"--value",
 		stagedTarget.Systemd.Unit,
 	)
-	if err != nil || !systemdEnvironmentFilesEndWith(
-		environmentFiles,
+	if err != nil || !systemdLoadCredentialHasNodeListener(
+		loadCredential,
 		adapter.SidecarPath,
 	) {
-		return hostAgentLiveSystemdSidecarProof{}, errors.New("live systemd sidecar is not the final unit environment file")
+		return hostAgentLiveSystemdSidecarProof{}, errors.New("live systemd sidecar credential binding is unavailable")
 	}
 	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
 		inUse, err := procNetTCPListeningPort(table, currentTarget.LocalListen.Port)
@@ -115,27 +115,26 @@ func verifyHostAgentLiveSystemdSidecar(
 		MainPIDStartTime:     mainStart,
 		ListenerPIDStartTime: listenerStart,
 		SystemdUnitID:        unitID,
-		EnvironmentFiles:     strings.TrimSpace(environmentFiles),
+		LoadCredential:       strings.TrimSpace(loadCredential),
 	}, nil
 }
 
-func systemdEnvironmentFilesEndWith(value, expected string) bool {
+func systemdLoadCredentialHasNodeListener(value, expected string) bool {
 	expected = path.Clean(expected)
-	paths := make([]string, 0, 4)
-	for _, field := range strings.Fields(value) {
-		candidate := strings.Trim(field, "\"")
-		candidate = strings.TrimPrefix(candidate, "EnvironmentFiles=")
-		if path.IsAbs(candidate) {
-			paths = append(paths, path.Clean(candidate))
-		}
-	}
-	if len(paths) == 0 || paths[len(paths)-1] != expected {
+	if !path.IsAbs(expected) {
 		return false
 	}
 	count := 0
-	for _, candidate := range paths {
-		if candidate == expected {
-			count++
+	for _, field := range strings.Fields(value) {
+		candidate := strings.Trim(field, "\"")
+		candidate = strings.TrimPrefix(candidate, "LoadCredential=")
+		name, source, ok := strings.Cut(candidate, ":")
+		if !ok || name != "node-listener.json" {
+			continue
+		}
+		count++
+		if !path.IsAbs(source) || path.Clean(source) != source || source != expected {
+			return false
 		}
 	}
 	return count == 1

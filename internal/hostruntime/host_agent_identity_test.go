@@ -3,285 +3,109 @@ package hostruntime
 import (
 	"errors"
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
 )
 
-func TestLoadHostAgentIdentityAcceptsCanonicalWhenLegacyIsInaccessible(t *testing.T) {
+func TestLoadHostAgentIdentityUsesOnlyRequestedPath(t *testing.T) {
 	want := Config{
 		PanelURL:     "https://panel.example.com",
 		NodeID:       "host-agent-a",
 		RuntimeToken: "runtime-token",
 		ServiceName:  "Host Agent A",
 	}
-	loaded := make([]string, 0, 1)
-	probed := make([]string, 0, 1)
-
-	got, err := loadHostAgentIdentity(
-		HostAgentIdentityPath,
-		true,
-		hostAgentIdentityDependencies{
-			load: func(path string, requireRootOwned bool) (Config, error) {
-				loaded = append(loaded, path)
-				if path != HostAgentIdentityPath || !requireRootOwned {
-					t.Fatalf("load = path %q root-owned %v", path, requireRootOwned)
-				}
-				return want, nil
-			},
-			lstat: func(path string) (os.FileInfo, error) {
-				probed = append(probed, path)
-				return nil, os.ErrPermission
-			},
-		},
-	)
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	data, err := marshalManagedBootstrapConfig(want)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.NodeID != want.NodeID || got.RuntimeToken != want.RuntimeToken {
-		t.Fatalf("identity = %#v", got)
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		t.Fatal(err)
 	}
-	if len(loaded) != 1 || loaded[0] != HostAgentIdentityPath {
-		t.Fatalf("loaded paths = %#v", loaded)
-	}
-	if len(probed) != 1 || probed[0] != LegacyHostAgentIdentityPath {
-		t.Fatalf("probed paths = %#v", probed)
-	}
-}
-
-func TestLoadHostAgentIdentityRejectsInaccessibleLegacyWithoutCanonical(t *testing.T) {
-	loadCalls := 0
-	_, err := loadHostAgentIdentity(
-		HostAgentIdentityPath,
-		true,
-		hostAgentIdentityDependencies{
-			load: func(path string, _ bool) (Config, error) {
-				loadCalls++
-				if path != HostAgentIdentityPath {
-					t.Fatalf("unexpected load path %q", path)
-				}
-				return Config{}, &os.PathError{Op: "stat", Path: path, Err: os.ErrNotExist}
-			},
-			lstat: func(path string) (os.FileInfo, error) {
-				if path != LegacyHostAgentIdentityPath {
-					t.Fatalf("unexpected probe path %q", path)
-				}
-				return nil, os.ErrPermission
-			},
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "stat legacy Host Agent identity") {
-		t.Fatalf("error = %v", err)
-	}
-	if loadCalls != 1 {
-		t.Fatalf("load calls = %d", loadCalls)
-	}
-}
-
-func TestLoadHostAgentIdentityRejectsVisibleDualIdentity(t *testing.T) {
-	_, err := loadHostAgentIdentity(
-		HostAgentIdentityPath,
-		true,
-		hostAgentIdentityDependencies{
-			load: func(string, bool) (Config, error) {
-				return Config{NodeID: "host-agent-a"}, nil
-			},
-			lstat: func(path string) (os.FileInfo, error) {
-				if path != LegacyHostAgentIdentityPath {
-					t.Fatalf("unexpected probe path %q", path)
-				}
-				return nil, nil
-			},
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "both current and legacy") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestLoadHostAgentIdentityFallsBackToVisibleLegacy(t *testing.T) {
-	loaded := make([]string, 0, 2)
-	got, err := loadHostAgentIdentity(
-		HostAgentIdentityPath,
-		true,
-		hostAgentIdentityDependencies{
-			load: func(path string, requireRootOwned bool) (Config, error) {
-				loaded = append(loaded, path)
-				if !requireRootOwned {
-					t.Fatal("legacy identity was not required to be root-owned")
-				}
-				if path == HostAgentIdentityPath {
-					return Config{}, &os.PathError{Op: "stat", Path: path, Err: os.ErrNotExist}
-				}
-				if path != LegacyHostAgentIdentityPath {
-					t.Fatalf("unexpected load path %q", path)
-				}
-				return Config{NodeID: "legacy-host-agent"}, nil
-			},
-			lstat: func(path string) (os.FileInfo, error) {
-				if path != LegacyHostAgentIdentityPath {
-					t.Fatalf("unexpected probe path %q", path)
-				}
-				return nil, nil
-			},
-		},
-	)
+	got, err := LoadHostAgentIdentity(path, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.NodeID != "legacy-host-agent" {
-		t.Fatalf("identity = %#v", got)
-	}
-	if len(loaded) != 2 || loaded[0] != HostAgentIdentityPath || loaded[1] != LegacyHostAgentIdentityPath {
-		t.Fatalf("loaded paths = %#v", loaded)
+	if got.PanelURL != want.PanelURL || got.NodeID != want.NodeID ||
+		got.RuntimeToken != want.RuntimeToken || got.ServiceName != want.ServiceName {
+		t.Fatal("loaded identity fields do not match the requested identity")
 	}
 }
 
-func TestLoadHostAgentIdentityRejectsUnexpectedLegacyProbeError(t *testing.T) {
-	_, err := loadHostAgentIdentity(
-		HostAgentIdentityPath,
-		true,
-		hostAgentIdentityDependencies{
-			load: func(string, bool) (Config, error) {
-				return Config{NodeID: "host-agent-a"}, nil
-			},
-			lstat: func(string) (os.FileInfo, error) {
-				return nil, errors.New("synthetic I/O failure")
-			},
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "stat legacy Host Agent identity") {
-		t.Fatalf("error = %v", err)
+func TestLoadHostAgentIdentityReturnsRequestedPathErrorWithoutFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	_, err := LoadHostAgentIdentity(path, false)
+	var pathError *os.PathError
+	if !errors.Is(err, os.ErrNotExist) || !errors.As(err, &pathError) || pathError.Path != path {
+		t.Fatalf("requested identity path error = %v", err)
 	}
 }
 
-func TestLoadHostAgentIdentityDoesNotFallbackFromInvalidCanonicalIdentity(t *testing.T) {
-	probeCalled := false
-	_, err := loadHostAgentIdentity(
-		HostAgentIdentityPath,
-		true,
-		hostAgentIdentityDependencies{
-			load: func(path string, _ bool) (Config, error) {
-				if path != HostAgentIdentityPath {
-					t.Fatalf("unexpected load path %q", path)
-				}
-				return Config{}, errors.New("canonical identity is invalid")
-			},
-			lstat: func(string) (os.FileInfo, error) {
-				probeCalled = true
-				return nil, nil
-			},
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "canonical identity is invalid") {
-		t.Fatalf("error = %v", err)
+func TestValidateHostAgentIdentityWriteLayoutRequiresInputs(t *testing.T) {
+	if err := validateHostAgentIdentityWriteLayout("", os.Lstat); err == nil {
+		t.Fatal("empty identity path was accepted")
 	}
-	if probeCalled {
-		t.Fatal("invalid canonical identity fell through to the legacy probe")
+	if err := validateHostAgentIdentityWriteLayout(HostAgentIdentityPath, nil); err == nil {
+		t.Fatal("missing layout verifier was accepted")
 	}
 }
 
-func TestLoadHostAgentIdentityReportsCanonicalMissingWhenBothAreAbsent(t *testing.T) {
-	_, err := loadHostAgentIdentity(
-		HostAgentIdentityPath,
-		true,
-		hostAgentIdentityDependencies{
-			load: func(path string, _ bool) (Config, error) {
-				return Config{}, &os.PathError{Op: "stat", Path: path, Err: os.ErrNotExist}
-			},
-			lstat: func(string) (os.FileInfo, error) {
-				return nil, os.ErrNotExist
-			},
-		},
-	)
-	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) || pathErr.Path != HostAgentIdentityPath ||
-		!errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("error = %#v", err)
-	}
+type hostAgentLayoutFileInfo struct {
+	os.FileInfo
+	mode os.FileMode
 }
 
-func TestLoadHostAgentIdentityLoadsCleanCustomPathDirectly(t *testing.T) {
-	probeCalled := false
-	got, err := loadHostAgentIdentity(
-		"/root/custom-identity.json",
-		true,
-		hostAgentIdentityDependencies{
-			load: func(path string, requireRootOwned bool) (Config, error) {
-				if path != "/root/custom-identity.json" || !requireRootOwned {
-					t.Fatalf("load = path %q root-owned %v", path, requireRootOwned)
-				}
-				return Config{NodeID: "custom-host-agent"}, nil
-			},
-			lstat: func(string) (os.FileInfo, error) {
-				probeCalled = true
-				return nil, nil
-			},
-		},
-	)
-	if err != nil || got.NodeID != "custom-host-agent" {
-		t.Fatalf("identity = %#v, error = %v", got, err)
-	}
-	if probeCalled {
-		t.Fatal("custom identity path probed the fixed legacy path")
-	}
-}
+func (info hostAgentLayoutFileInfo) Mode() os.FileMode { return info.mode }
+func (info hostAgentLayoutFileInfo) IsDir() bool       { return info.mode.IsDir() }
 
-func TestLoadHostAgentIdentityRejectsUncleanCanonicalAlias(t *testing.T) {
-	loadCalled := false
-	_, err := loadHostAgentIdentity(
-		"/etc/autostream-host-agent/./identity.json",
-		true,
-		hostAgentIdentityDependencies{
-			load: func(string, bool) (Config, error) {
-				loadCalled = true
-				return Config{}, nil
-			},
-			lstat: os.Lstat,
-		},
-	)
-	if err == nil || !strings.Contains(err.Error(), "clean absolute path") {
-		t.Fatalf("error = %v", err)
+func TestValidateHostAgentIdentityWriteLayoutChecksEachPathComponent(t *testing.T) {
+	rootPath := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	rootInfo, err := os.Stat(rootPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if loadCalled {
-		t.Fatal("unclean path reached identity loader")
-	}
-}
-
-func TestValidateHostAgentIdentityWriteLayoutRequiresLegacyAbsent(t *testing.T) {
-	tests := []struct {
-		name      string
-		path      string
-		legacyErr error
-		wantError string
-		wantCalls int
+	identityPath := filepath.Join(rootPath, "identity-fixture", "updater", "agent.yaml")
+	parent := filepath.Dir(identityPath)
+	for _, test := range []struct {
+		name        string
+		invalidPath string
+		mode        os.FileMode
+		statErr     error
+		wantErr     bool
 	}{
-		{name: "canonical absent", path: HostAgentIdentityPath, legacyErr: os.ErrNotExist, wantCalls: 1},
-		{name: "canonical legacy exists", path: HostAgentIdentityPath, wantError: "legacy Host Agent identity already exists", wantCalls: 1},
-		{name: "canonical legacy inaccessible", path: HostAgentIdentityPath, legacyErr: os.ErrPermission, wantError: "stat legacy Host Agent identity", wantCalls: 1},
-		{name: "custom path", path: "/root/custom-identity.json", wantCalls: 0},
-	}
-	for _, test := range tests {
+		{name: "existing-private-identity", mode: 0o640},
+		{name: "missing-identity-before-configure", invalidPath: identityPath, statErr: os.ErrNotExist},
+		{name: "missing-parent", invalidPath: parent, statErr: os.ErrNotExist, wantErr: true},
+		{name: "identity-stat-failed", invalidPath: identityPath, statErr: os.ErrPermission, wantErr: true},
+		{name: "identity-symlink", invalidPath: identityPath, mode: os.ModeSymlink | 0o640, wantErr: true},
+		{name: "identity-directory", invalidPath: identityPath, mode: os.ModeDir | 0o700, wantErr: true},
+		{name: "identity-world-readable", invalidPath: identityPath, mode: 0o644, wantErr: true},
+		{name: "identity-group-writable", invalidPath: identityPath, mode: 0o660, wantErr: true},
+		{name: "parent-symlink", invalidPath: parent, mode: os.ModeDir | os.ModeSymlink | 0o755, wantErr: true},
+		{name: "ancestor-group-writable", invalidPath: filepath.Dir(parent), mode: os.ModeDir | 0o775, wantErr: true},
+		{name: "root-other-writable", invalidPath: rootPath, mode: os.ModeDir | 0o777, wantErr: true},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			calls := 0
-			err := validateHostAgentIdentityWriteLayout(
-				test.path,
-				func(path string) (os.FileInfo, error) {
-					calls++
-					if path != LegacyHostAgentIdentityPath {
-						t.Fatalf("unexpected probe path %q", path)
-					}
-					return nil, test.legacyErr
-				},
-			)
-			if test.wantError == "" {
-				if err != nil {
-					t.Fatal(err)
+			visited := map[string]bool{}
+			err := validateHostAgentIdentityWriteLayout(identityPath, func(path string) (os.FileInfo, error) {
+				visited[path] = true
+				mode := os.ModeDir | 0o755
+				if path == identityPath {
+					mode = 0o640
 				}
-			} else if err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("error = %v, want %q", err, test.wantError)
+				if path == test.invalidPath {
+					if test.statErr != nil {
+						return nil, test.statErr
+					}
+					mode = test.mode
+				}
+				return hostAgentLayoutFileInfo{FileInfo: rootInfo, mode: mode}, nil
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("layout error = %v, want error %v", err, test.wantErr)
 			}
-			if calls != test.wantCalls {
-				t.Fatalf("probe calls = %d, want %d", calls, test.wantCalls)
+			if !test.wantErr && (!visited[rootPath] || !visited[parent] || !visited[identityPath]) {
+				t.Fatal("layout accepted without checking the complete identity path")
 			}
 		})
 	}

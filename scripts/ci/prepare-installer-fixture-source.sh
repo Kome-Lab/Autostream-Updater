@@ -24,8 +24,8 @@ install -m 0755 "${REPOSITORY_ROOT}/install/install-autostream-local-executor" \
   "${OUTPUT_DIRECTORY}/release/install-autostream-local-executor"
 install -m 0755 "${REPOSITORY_ROOT}/install/uninstall-autostream-local-executor" \
   "${OUTPUT_DIRECTORY}/release/uninstall-autostream-local-executor"
-install -m 0644 "${REPOSITORY_ROOT}/install/autostream-updater-agent.json.example" \
-  "${OUTPUT_DIRECTORY}/release/autostream-host-agent.json.example"
+install -m 0644 "${REPOSITORY_ROOT}/install/agent.yaml.example" \
+  "${OUTPUT_DIRECTORY}/release/agent.yaml.example"
 install -m 0644 "${REPOSITORY_ROOT}/install/autostream-local-executor-policy.json.example" \
   "${OUTPUT_DIRECTORY}/release/autostream-local-executor-policy.json.example"
 install -m 0644 "${REPOSITORY_ROOT}/systemd/autostream-updater-agent.service.example" \

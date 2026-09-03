@@ -437,11 +437,15 @@ if "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   exit 1
 fi
 rm -f -- /tmp/autostream-local-executor-wrong-id
-test ! -e /etc/autostream-local-executor/policy.json
+test ! -e /etc/autostream/updater/executor-policy.json
 test ! -e /usr/local/libexec/autostream-local-executor
 test ! -e /etc/systemd/system/autostream-local-executor.service
 test ! -e /etc/systemd/system/autostream-local-executor.socket
 
+install -d -o root -g root -m 0750 /etc/autostream
+install -o root -g root -m 0640 /dev/null /etc/autostream/private-service.env
+existing_parent_acl=$(getfacl --absolute-names --numeric /etc/autostream)
+existing_service_metadata=$(stat -c '%d:%i:%u:%g:%a' /etc/autostream/private-service.env)
 touch /tmp/autostream-local-executor-fail-service-start
 if "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   --policy /root/autostream-local-executor-policy.json; then
@@ -449,7 +453,12 @@ if "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   exit 1
 fi
 rm -f -- /tmp/autostream-local-executor-fail-service-start
-test ! -e /etc/autostream-local-executor/policy.json
+if [[ $(getfacl --absolute-names --numeric /etc/autostream) != "${existing_parent_acl}" ||
+  $(stat -c '%d:%i:%u:%g:%a' /etc/autostream/private-service.env) != "${existing_service_metadata}" ]]; then
+  printf '%s\n' 'failed executor installation changed the parent ACL or a sibling service secret' >&2
+  exit 1
+fi
+test ! -e /etc/autostream/updater/executor-policy.json
 test ! -e /usr/local/libexec/autostream-local-executor
 test ! -e /etc/systemd/system/autostream-local-executor.service
 test ! -e /etc/systemd/system/autostream-local-executor.socket
@@ -493,7 +502,17 @@ rmdir -- /var/lib/autostream-local-executor
 "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   --policy /root/autostream-local-executor-policy.json
 
-test "$(stat -c '%U:%G:%a' /etc/autostream-local-executor/policy.json)" = "root:root:600"
+test "$(stat -c '%U:%G:%a' /etc/autostream/updater/executor-policy.json)" = "root:root:600"
+test "$(stat -c '%U:%G:%a' /etc/autostream)" = "root:root:750"
+runuser -u autostream-host-agent -- test -x /etc/autostream
+if runuser -u autostream-host-agent -- test -r /etc/autostream/private-service.env ||
+  runuser -u autostream-host-agent -- test -r /etc/autostream/updater/executor-policy.json ||
+  runuser -u autostream-host-agent -- test -r /etc/autostream ||
+  runuser -u autostream-host-agent -- test -w /etc/autostream; then
+  printf '%s\n' 'executor installation widened dedicated Agent access' >&2
+  exit 1
+fi
+rm -f -- /etc/autostream/private-service.env
 test "$(stat -c '%U:%G:%a' /usr/local/libexec/autostream-local-executor)" = "root:root:755"
 test "$(stat -c '%U:%G:%a' /etc/systemd/system/autostream-local-executor.service)" = "root:root:644"
 test "$(stat -c '%U:%G:%a' /etc/systemd/system/autostream-local-executor.socket)" = "root:root:644"
@@ -516,7 +535,7 @@ grep -qx -- 'start autostream-local-executor.service' "${SYSTEMCTL_LOG}"
 
 managed_install_sha=$(
   sha256sum \
-    /etc/autostream-local-executor/policy.json \
+    /etc/autostream/updater/executor-policy.json \
     /usr/local/libexec/autostream-local-executor \
     /etc/systemd/system/autostream-local-executor.service \
     /etc/systemd/system/autostream-local-executor.socket \
@@ -537,7 +556,7 @@ for quiesce_failure_marker in \
   rm -f -- "/tmp/${quiesce_failure_marker}"
   if [[ $(
       sha256sum \
-        /etc/autostream-local-executor/policy.json \
+        /etc/autostream/updater/executor-policy.json \
         /usr/local/libexec/autostream-local-executor \
         /etc/systemd/system/autostream-local-executor.service \
         /etc/systemd/system/autostream-local-executor.socket \
@@ -557,7 +576,7 @@ if "${PACKAGE_ROOT}/install/uninstall-autostream-local-executor"; then
   exit 1
 fi
 rm -f -- /tmp/autostream-local-executor-fail-daemon-reload
-test -e /etc/autostream-local-executor/policy.json
+test -e /etc/autostream/updater/executor-policy.json
 test -e /usr/local/libexec/autostream-local-executor
 test -e /etc/systemd/system/autostream-local-executor.service
 test -e /etc/systemd/system/autostream-local-executor.socket
@@ -569,7 +588,7 @@ test -e /tmp/autostream-local-executor.socket.active
 test -e /tmp/autostream-local-executor.service.active
 
 "${PACKAGE_ROOT}/install/uninstall-autostream-local-executor"
-test -e /etc/autostream-local-executor/policy.json
+test -e /etc/autostream/updater/executor-policy.json
 test ! -e /usr/local/libexec/autostream-local-executor
 test ! -e /etc/systemd/system/autostream-local-executor.service
 test ! -e /etc/systemd/system/autostream-local-executor.socket
@@ -586,7 +605,7 @@ if "${PACKAGE_ROOT}/install/uninstall-autostream-local-executor" --purge; then
 fi
 rm -f -- /tmp/autostream-local-executor-fail-producer-state-query
 test -d /var/lib/autostream-local-executor
-test -e /etc/autostream-local-executor/policy.json
+test -e /etc/autostream/updater/executor-policy.json
 test -e /usr/local/libexec/autostream-local-executor
 
 touch \
@@ -607,7 +626,7 @@ if "${PACKAGE_ROOT}/install/uninstall-autostream-local-executor" --purge; then
 fi
 rm -f -- /tmp/autostream-local-executor-fail-producer-freeze
 test -d /var/lib/autostream-local-executor
-test -e /etc/autostream-local-executor/policy.json
+test -e /etc/autostream/updater/executor-policy.json
 test -e /usr/local/libexec/autostream-local-executor
 test -e /tmp/autostream-host-agent.service.active
 
@@ -617,7 +636,7 @@ if "${PACKAGE_ROOT}/install/uninstall-autostream-local-executor" --purge; then
   exit 1
 fi
 rm -f -- /tmp/autostream-local-executor-fail-state-delete
-test -e /etc/autostream-local-executor/policy.json
+test -e /etc/autostream/updater/executor-policy.json
 test -e /usr/local/libexec/autostream-local-executor
 test -e /etc/systemd/system/autostream-local-executor.service
 test -e /etc/systemd/system/autostream-local-executor.socket
@@ -657,10 +676,7 @@ test -n "${state_quarantine}"
 mv -T -- "${state_quarantine}" /var/lib/autostream-local-executor
 
 "${PACKAGE_ROOT}/install/uninstall-autostream-local-executor" --purge
-test ! -e /etc/autostream-local-executor/policy.json
+test ! -e /etc/autostream/updater/executor-policy.json
 test ! -e /var/lib/autostream-local-executor
 test -d /opt/autostream/local-executor/docker/ports
 test "$(id -u autostream-host-agent)" = "${AGENT_UID}"
-
-
-

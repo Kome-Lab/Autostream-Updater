@@ -44,7 +44,7 @@ func inspectPreparedRenameOutcome(
 }
 
 // PreparedUpdaterConfig reserves and validates every local resource needed to
-// update updater.json before a one-time Configure Token is consumed.
+// update agent.yaml before a one-time Configure Token is consumed.
 type PreparedUpdaterConfig struct {
 	path         string
 	parent       string
@@ -69,9 +69,8 @@ func PrepareUpdaterConfig(path string) (*PreparedUpdaterConfig, error) {
 }
 
 // PrepareManagedIdentityConfig reserves an atomic root-owned 0640 identity
-// file for a dedicated service group. It is shared by the legacy central
-// updater and the portless Host Agent; both persist the same four-field
-// identity and keep policy, endpoints, and transport fencing server-owned.
+// file for a dedicated service group. The portless Agent persists only its
+// four-field identity; policy, endpoints, and transport fencing stay server-owned.
 func PrepareManagedIdentityConfig(path, installGroup string) (*PreparedUpdaterConfig, error) {
 	installGID, err := updaterConfigInstallGID(installGroup)
 	if err != nil {
@@ -104,7 +103,7 @@ func prepareUpdaterConfig(path string, installGID int) (*PreparedUpdaterConfig, 
 		}
 	}
 
-	temp, err := os.CreateTemp(parent, ".updater.json.configure-*")
+	temp, err := os.CreateTemp(parent, ".agent.yaml.configure-*")
 	if err != nil {
 		if existingFile != nil {
 			_ = existingFile.Close()
@@ -139,7 +138,7 @@ func prepareUpdaterConfig(path string, installGID int) (*PreparedUpdaterConfig, 
 	}
 	// Preflight proves the final owner, mode and filesystem durability without
 	// duplicating runtime or release credentials into a second pathname.
-	if _, err := temp.Write([]byte("{}\n")); err != nil {
+	if _, err := temp.Write([]byte("# Identity transaction preflight; no credentials.\n")); err != nil {
 		return nil, errors.New("write updater config preflight file")
 	}
 	if err := temp.Sync(); err != nil {
@@ -159,8 +158,8 @@ func prepareUpdaterConfig(path string, installGID int) (*PreparedUpdaterConfig, 
 	return prepared, nil
 }
 
-// Commit replaces any legacy local policy with the four-field managed
-// bootstrap after rechecking that neither the destination nor its
+// Commit installs the four-field managed identity after rechecking that
+// neither the destination nor its
 // root-controlled parent changed since Prepare.
 func (p *PreparedUpdaterConfig) Commit(identity UpdaterConfigureIdentity) error {
 	if p == nil || p.temp == nil || p.committed {

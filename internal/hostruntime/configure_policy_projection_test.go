@@ -118,7 +118,7 @@ func TestBuildHostAgentConfigurePolicyDerivesFixedSystemdAuthority(t *testing.T)
 		t.Fatal(err)
 	}
 	wantConfigSHA := systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		"127.0.0.1",
 		input.Targets[0].AppliedEndpointPort,
 		input.Targets[0].AppliedConfigRevision,
@@ -177,46 +177,40 @@ func TestBuildHostAgentConfigurePolicySeparatesPublicAndLocalPorts(t *testing.T)
 
 func TestSystemdConfigurePortSidecarSHA256UsesOnlyFixedConfigureAuthority(t *testing.T) {
 	tests := []struct {
-		name         string
-		serviceType  string
-		bindVariable string
-		port         int
-		revision     int64
+		name        string
+		serviceType string
+		port        int
+		revision    int64
 	}{
 		{
-			name:         "control panel",
-			serviceType:  "control_panel",
-			bindVariable: "AUTOSTREAM_BIND_ADDR",
-			port:         18080,
-			revision:     7,
+			name:        "control panel",
+			serviceType: "control_panel",
+			port:        18080,
+			revision:    7,
 		},
 		{
-			name:         "encoder recorder",
-			serviceType:  "encoder_recorder",
-			bindVariable: "AUTOSTREAM_BIND_ADDR",
-			port:         18081,
-			revision:     8,
+			name:        "encoder recorder",
+			serviceType: "encoder_recorder",
+			port:        18081,
+			revision:    8,
 		},
 		{
-			name:         "observability",
-			serviceType:  "observability",
-			bindVariable: "OBSERVABILITY_BIND_ADDR",
-			port:         18082,
-			revision:     9,
+			name:        "observability",
+			serviceType: "observability",
+			port:        18082,
+			revision:    9,
 		},
 		{
-			name:         "discord bot",
-			serviceType:  "discord_bot",
-			bindVariable: "AUTOSTREAM_BIND_ADDR",
-			port:         18083,
-			revision:     10,
+			name:        "discord bot",
+			serviceType: "discord_bot",
+			port:        18083,
+			revision:    10,
 		},
 		{
-			name:         "worker",
-			serviceType:  "worker",
-			bindVariable: "AUTOSTREAM_BIND_ADDR",
-			port:         18084,
-			revision:     11,
+			name:        "worker",
+			serviceType: "worker",
+			port:        18084,
+			revision:    11,
 		},
 	}
 	for _, test := range tests {
@@ -230,7 +224,7 @@ func TestSystemdConfigurePortSidecarSHA256UsesOnlyFixedConfigureAuthority(t *tes
 				t.Fatalf("compute configure sidecar digest: %v", err)
 			}
 			want := systemdPortSidecarSHA256(systemdPortSidecarBytes(
-				test.bindVariable,
+				test.serviceType,
 				"127.0.0.1",
 				test.port,
 				test.revision,

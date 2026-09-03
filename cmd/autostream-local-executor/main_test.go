@@ -98,7 +98,7 @@ func TestRunRejectsUnexpectedArguments(t *testing.T) {
 		ServeExecutor: func(context.Context, string) error { return nil },
 	}
 	for _, args := range [][]string{
-		{"run", "--listen", "127.0.0.1:8090"},
+		{"run", "--listen", "127.0.0.1:19090"},
 		{"run", "--policy", "relative.json"},
 		{"validate-policy", "extra"},
 		{"apply"},

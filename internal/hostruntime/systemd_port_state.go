@@ -309,7 +309,7 @@ func (s *fileSystemdPortStateStore) VerifyAppliedSidecar(
 		return errors.New("systemd applied port sidecar is not root-owned")
 	}
 	expected := systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		target.LocalListen.Host,
 		applied.Port,
 		applied.ConfigRevision,

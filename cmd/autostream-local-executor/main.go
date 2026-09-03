@@ -17,7 +17,7 @@ import (
 	"github.com/Kome-Lab/Autostream-Updater/internal/version"
 )
 
-const defaultLocalExecutorPolicyPath = "/etc/autostream-local-executor/policy.json"
+const defaultLocalExecutorPolicyPath = "/etc/autostream/updater/executor-policy.json"
 const localExecutorUsage = "usage: autostream-local-executor run [--policy PATH] | inspect-host-update-recovery | manual-upgrade-host-runtime --artifact-root PATH --archive-sha256 SHA256 --archive-size BYTES [--agent-stopped-for-recovery] | guard-restart-host-agent --expected-slot a|b --agent-sha256 SHA256 --executor-sha256 SHA256 | recover-self-update --recovery-slot a|b | recover-runtime-credential --rotation-id ID --confirm-emergency-revoked | validate-policy [--policy PATH] | version"
 
 type localExecutorCLIDependencies struct {

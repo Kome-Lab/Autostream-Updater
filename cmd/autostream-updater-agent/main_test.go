@@ -38,10 +38,10 @@ func TestRunHostAgentUsesOnlyRootOwnedFourFieldIdentity(t *testing.T) {
 		return nil
 	}
 
-	if err := run([]string{"run", "--config", "/root/identity.json"}, dependencies); err != nil {
+	if err := run([]string{"run", "--config", "/root/agent.yaml"}, dependencies); err != nil {
 		t.Fatal(err)
 	}
-	if loadedPath != "/root/identity.json" || !requireRootOwned {
+	if loadedPath != "/root/agent.yaml" || !requireRootOwned {
 		t.Fatalf("load = path %q root-owned %v", loadedPath, requireRootOwned)
 	}
 	if started.NodeID != "host-agent-a" || started.RuntimeToken != "runtime-token" {
@@ -167,7 +167,7 @@ func TestRecoverUpdateRejectsNonCanonicalIdentityPath(t *testing.T) {
 		t.Fatal("non-canonical recovery identity was loaded")
 		return hostruntime.Config{}, nil
 	}
-	err := run([]string{"recover-update", "--config", "/etc/autostream/host-agent.json"}, dependencies)
+	err := run([]string{"recover-update", "--config", "/root/other-agent.yaml"}, dependencies)
 	if err == nil || !strings.Contains(err.Error(), "canonical Host Agent identity path") {
 		t.Fatalf("non-canonical recovery error = %v", err)
 	}

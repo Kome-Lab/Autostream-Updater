@@ -1,6 +1,0 @@
-{
-  "panel_url": "https://control.example.com",
-  "node_id": "replace-with-registered-update-agent-service-id",
-  "runtime_token": "replace-with-runtime-token",
-  "service_name": "AutoStream Host Agent"
-}

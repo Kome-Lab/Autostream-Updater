@@ -1317,58 +1317,11 @@ func runtimeCredentialResponse(
 }
 
 func marshalRuntimeCredentialIdentity(identity Config) ([]byte, error) {
-	if !identity.IsManagedBootstrap() {
-		return nil, errors.New("runtime credential identity is not managed")
-	}
-	payload, err := json.Marshal(struct {
-		PanelURL     string `json:"panel_url"`
-		NodeID       string `json:"node_id"`
-		RuntimeToken string `json:"runtime_token"`
-		ServiceName  string `json:"service_name"`
-	}{
-		PanelURL:     identity.PanelURL,
-		NodeID:       identity.NodeID,
-		RuntimeToken: identity.RuntimeToken,
-		ServiceName:  identity.ServiceName,
-	})
-	if err != nil {
-		return nil, errors.New("encode runtime credential identity")
-	}
-	return append(payload, '\n'), nil
+	return marshalManagedBootstrapConfig(identity)
 }
 
 func decodeRuntimeCredentialIdentity(data []byte) (Config, error) {
-	var identity struct {
-		PanelURL     string `json:"panel_url"`
-		NodeID       string `json:"node_id"`
-		RuntimeToken string `json:"runtime_token"`
-		ServiceName  string `json:"service_name"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&identity); err != nil {
-		return Config{}, errors.New("decode runtime credential identity")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Config{}, errors.New("runtime credential identity contains trailing data")
-	}
-	cfg := Config{
-		PanelURL:     identity.PanelURL,
-		NodeID:       identity.NodeID,
-		RuntimeToken: identity.RuntimeToken,
-		ServiceName:  identity.ServiceName,
-		configFields: map[string]bool{
-			"panel_url":     true,
-			"node_id":       true,
-			"runtime_token": true,
-			"service_name":  true,
-		},
-	}
-	if err := cfg.Validate(); err != nil || !cfg.IsManagedBootstrap() {
-		return Config{}, errors.New("runtime credential identity is invalid")
-	}
-	return cfg, nil
+	return decodeManagedBootstrapConfig(data)
 }
 
 func runtimeCredentialDigest(data []byte) string {

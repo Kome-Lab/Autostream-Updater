@@ -599,6 +599,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Prepare pinned installer image with real ACL tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag "autostream-installer-smoke:${GITHUB_SHA}" - <<'EOF'
+          FROM ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+          RUN apt-get update \
+            && apt-get install --yes --no-install-recommends acl \
+            && apt-get clean
+          EOF
       - name: Prepare version-matched installer fixture inputs
         shell: bash
         run: |
@@ -632,7 +642,7 @@ jobs:
               --cpus 1 \
               --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
               --mount "type=bind,source=${RUNNER_TEMP}/installer-smoke,target=/smoke,readonly" \
-              ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+              "autostream-installer-smoke:${GITHUB_SHA}" \
               /bin/bash /workspace/scripts/ci/run-host-agent-identity-permissions-smoke.sh \
                 /smoke/autostream-host-agent
       - name: Test Host Agent prepare and failure injection
@@ -651,7 +661,7 @@ jobs:
               --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
               --mount "type=bind,source=${RUNNER_TEMP}/installer-fixture-source,target=/fixture,readonly" \
               --mount "type=bind,source=${RUNNER_TEMP}/installer-smoke,target=/smoke,readonly" \
-              ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+              "autostream-installer-smoke:${GITHUB_SHA}" \
               /bin/bash /workspace/scripts/ci/run-host-agent-installer-prepare-smoke.sh \
                 /fixture /smoke/autostream-host-agent
       - name: Test Host Agent upgrade rollback and state preservation
@@ -670,7 +680,7 @@ jobs:
               --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
               --mount "type=bind,source=${RUNNER_TEMP}/installer-fixture-source,target=/fixture,readonly" \
               --mount "type=bind,source=${RUNNER_TEMP}/installer-smoke,target=/smoke,readonly" \
-              ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+              "autostream-installer-smoke:${GITHUB_SHA}" \
               /bin/bash /workspace/scripts/ci/run-host-agent-installer-upgrade-smoke.sh \
                 /fixture /smoke/host-runtime-process-fixture
       - name: Test Local Executor install, uninstall, and preservation
@@ -688,7 +698,7 @@ jobs:
               --cpus 1 \
               --mount "type=bind,source=${GITHUB_WORKSPACE},target=/workspace,readonly" \
               --mount "type=bind,source=${RUNNER_TEMP}/installer-fixture-source,target=/fixture,readonly" \
-              ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 \
+              "autostream-installer-smoke:${GITHUB_SHA}" \
               /bin/bash /workspace/scripts/ci/run-local-executor-installer-smoke.sh \
                 /fixture
       - name: Test Local Executor systemd sandbox negative boundary

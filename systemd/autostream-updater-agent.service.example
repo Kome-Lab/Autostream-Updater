@@ -3,14 +3,13 @@ Description=AutoStream portless host pull update agent
 Documentation=https://github.com/Kome-Lab/Autostream-Updater
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=|/etc/autostream-host-agent/identity.json
-ConditionPathExists=|/etc/autostream/host-agent.json
+ConditionPathExists=/etc/autostream/updater/agent.yaml
 
 [Service]
 Type=simple
 User=autostream-host-agent
 Group=autostream-host-agent
-ExecStart=/usr/local/bin/autostream-host-agent run --config /etc/autostream-host-agent/identity.json
+ExecStart=/usr/local/bin/autostream-host-agent run --config /etc/autostream/updater/agent.yaml
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
@@ -40,8 +39,11 @@ AmbientCapabilities=
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SocketBindDeny=any
-ReadOnlyPaths=-/etc/autostream-host-agent
-ReadOnlyPaths=-/etc/autostream/host-agent.json
+# Expose only the dedicated read-only identity namespace, never application
+# environment files or the Local Executor's Docker credentials.
+TemporaryFileSystem=/etc/autostream:ro,mode=0755
+BindReadOnlyPaths=/etc/autostream/updater
+InaccessiblePaths=-/etc/autostream-local-executor
 ReadWritePaths=/var/lib/autostream-host-agent
 StateDirectory=autostream-host-agent
 StateDirectoryMode=0700

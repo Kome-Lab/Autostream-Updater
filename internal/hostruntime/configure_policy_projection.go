@@ -202,9 +202,9 @@ func hostAgentConfigureSystemdPortAdapterFor(
 		return systemdPortAdapterFor(serviceType, policyUnit)
 	}
 	adapter := systemdPortAdapter{
-		Unit:         "autostream-control-panel.service",
-		SidecarPath:  "/opt/autostream/local-executor/ports/control-panel.env",
-		BindVariable: "AUTOSTREAM_BIND_ADDR",
+		Unit:        "autostream-control-panel.service",
+		SidecarPath: "/opt/autostream/local-executor/ports/control-panel.env",
+		ServiceType: "control_panel",
 	}
 	if policyUnit != adapter.Unit {
 		return systemdPortAdapter{}, errors.New("root policy unit does not match the fixed service adapter")
@@ -233,7 +233,7 @@ func SystemdConfigurePortSidecarSHA256(
 		return "", err
 	}
 	return systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		"127.0.0.1",
 		port,
 		configRevision,

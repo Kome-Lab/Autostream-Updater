@@ -5,7 +5,6 @@ package hostruntime
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -656,30 +654,11 @@ func sameDockerPortMappingCheckpoint(
 }
 
 func dockerPortComposeConfigRevision(raw []byte, service string) (int64, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var model struct {
-		Services map[string]struct {
-			Environment map[string]any `json:"environment"`
-		} `json:"services"`
+	listener, _, err := dockerNodeListenerFromCompose(raw, service)
+	if err != nil {
+		return 0, err
 	}
-	if err := decoder.Decode(&model); err != nil {
-		return 0, errors.New("Docker port Compose config revision is unavailable")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return 0, errors.New("Docker port Compose model contains trailing data")
-	}
-	managed, ok := model.Services[service]
-	if !ok {
-		return 0, errors.New("Docker port Compose service is unavailable")
-	}
-	text := fmt.Sprint(managed.Environment["AUTOSTREAM_CONFIG_REVISION"])
-	revision, err := strconv.ParseInt(text, 10, 64)
-	if err != nil || revision < 1 || strconv.FormatInt(revision, 10) != text {
-		return 0, errors.New("Docker port Compose config revision is invalid")
-	}
-	return revision, nil
+	return listener.ConfigRevision, nil
 }
 
 func ensureDockerPortWorkDirectory(path string, requireRootOwned bool) error {

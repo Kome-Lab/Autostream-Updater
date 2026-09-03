@@ -7,8 +7,9 @@ export LC_ALL=C
 
 readonly AGENT_USER="autostream-host-agent"
 readonly AGENT_GROUP="autostream-host-agent"
-readonly CONFIG_DIR="/etc/autostream-local-executor"
-readonly POLICY_DEST="${CONFIG_DIR}/policy.json"
+readonly CONFIG_DIR="/etc/autostream/updater"
+readonly POLICY_DEST="${CONFIG_DIR}/executor-policy.json"
+readonly EXECUTOR_CONFIG_DIR="/etc/autostream-local-executor"
 readonly BINARY_DEST="/usr/local/libexec/autostream-local-executor"
 readonly SERVICE_DEST="/etc/systemd/system/autostream-local-executor.service"
 readonly SOCKET_DEST="/etc/systemd/system/autostream-local-executor.socket"
@@ -21,7 +22,7 @@ readonly UPDATER_RUNTIME_DIR="/run/autostream-updater"
 readonly SHARED_HOST_SETUP_LOCK="${UPDATER_RUNTIME_DIR}/.autostream-runtime-host-setup.lock"
 readonly HOST_LIFECYCLE_LOCK="${UPDATER_RUNTIME_DIR}/.autostream-host-lifecycle.lock"
 readonly STATE_DIR="/var/lib/autostream-local-executor"
-readonly DOCKER_CONFIG_DIR="${CONFIG_DIR}/docker"
+readonly DOCKER_CONFIG_DIR="${EXECUTOR_CONFIG_DIR}/docker"
 readonly DOCKER_CONFIG_FILE="${DOCKER_CONFIG_DIR}/config.json"
 readonly EXECUTOR_DATA_DIR="/opt/autostream/local-executor"
 readonly PORT_CONFIG_DIR="${EXECUTOR_DATA_DIR}/ports"
@@ -216,7 +217,7 @@ case "${1:-}" in
     ;;
 esac
 
-for command in awk basename chmod chown dirname find flock getent id install jq mkdir mktemp mv pwd readlink rm rmdir sha256sum sort stat sync systemctl systemd-tmpfiles tar uname uniq; do
+for command in awk basename chmod chown dirname find flock getent getfacl id install jq mkdir mktemp mv pwd readlink rm rmdir runuser setfacl sha256sum sort stat sync systemctl systemd-tmpfiles tar uname uniq; do
   command -v "${command}" >/dev/null 2>&1 || die "required command ${command} is unavailable"
 done
 
@@ -554,6 +555,14 @@ copy_verified_release_file() {
 
 config_dir_existed=false
 config_dir_identity=""
+etc_autostream_dir_existed=false
+etc_autostream_dir_identity=""
+identity_parent_acl_changed=false
+identity_parent_acl_path_identity=""
+identity_parent_acl_before=""
+identity_parent_acl_after=""
+executor_config_dir_existed=false
+executor_config_dir_identity=""
 usr_local_libexec_dir_existed=false
 usr_local_libexec_dir_identity=""
 systemd_system_dir_existed=false
@@ -691,6 +700,76 @@ remove_fresh_empty_directory() {
   rollback_created_directory "${path}" "${expected_identity}" "${path} directory"
 }
 
+prepare_identity_parent_traversal() {
+  local acl_entry
+  local agent_gid
+  local agent_uid
+  local managed_acl_entry=""
+  agent_uid=$(id -u "${AGENT_USER}")
+  agent_gid=$(id -g "${AGENT_USER}")
+  identity_parent_acl_before=$(getfacl --absolute-names --numeric -- /etc/autostream) || \
+    die "could not snapshot the identity parent ACL"
+  while IFS= read -r acl_entry; do
+    case "${acl_entry}" in
+      "user:${agent_uid}:"*)
+        [[ -z ${managed_acl_entry} ]] || \
+          die "the identity parent contains duplicate Agent ACL entries"
+        managed_acl_entry=${acl_entry}
+        ;;
+      "group:${agent_gid}:"*)
+        die "the identity parent must not grant access through the dedicated Agent group"
+        ;;
+    esac
+  done <<<"${identity_parent_acl_before}"
+  if [[ -n ${managed_acl_entry} && ${managed_acl_entry} != "user:${agent_uid}:--x" ]]; then
+    die "the dedicated Agent has a customized identity parent ACL"
+  fi
+  # Preserve the shared directory mode and all sibling permissions. The
+  # dedicated Agent receives search permission only, not listing or writes.
+  if runuser --user "${AGENT_USER}" -- test -x /etc/autostream; then
+    if runuser --user "${AGENT_USER}" -- test -r /etc/autostream ||
+      runuser --user "${AGENT_USER}" -- test -w /etc/autostream; then
+      die "the dedicated Agent has excessive identity parent access"
+    fi
+    [[ ${managed_acl_entry} == "user:${agent_uid}:--x" ]] && return
+  fi
+  identity_parent_acl_path_identity=$(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream) || \
+    die "could not record the identity parent directory"
+  defer_cleanup_signals
+  identity_parent_acl_changed=true
+  if ! setfacl --no-mask -m "u:${agent_uid}:--x" -- /etc/autostream; then
+    identity_parent_acl_after=$(getfacl --absolute-names --numeric -- /etc/autostream) || true
+    die "could not grant the dedicated Agent identity traversal"
+  fi
+  identity_parent_acl_after=$(getfacl --absolute-names --numeric -- /etc/autostream) || \
+    die "could not verify the identity parent ACL"
+  [[ $(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream) == "${identity_parent_acl_path_identity}" ]] || \
+    die "identity traversal changed the shared directory ownership or mode"
+  sync -f /etc/autostream
+  resume_cleanup_signals || die "installation was interrupted while journaling identity traversal"
+  runuser --user "${AGENT_USER}" -- test -x /etc/autostream || \
+    die "the existing identity parent ACL mask does not allow dedicated traversal"
+  if runuser --user "${AGENT_USER}" -- test -r /etc/autostream ||
+    runuser --user "${AGENT_USER}" -- test -w /etc/autostream; then
+    die "identity traversal granted listing or write access to the shared directory"
+  fi
+}
+
+restore_identity_parent_traversal() {
+  [[ ${identity_parent_acl_changed} == true ]] || return 0
+  if [[ -L /etc/autostream || ! -d /etc/autostream ||
+    -z ${identity_parent_acl_after} ||
+    $(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream) != "${identity_parent_acl_path_identity}" ||
+    $(getfacl --absolute-names --numeric -- /etc/autostream) != "${identity_parent_acl_after}" ]]; then
+    printf '%s\n' 'AutoStream installer: rollback refused a changed identity parent ACL' >&2
+    return 1
+  fi
+  printf '%s\n' "${identity_parent_acl_before}" | setfacl --restore=- || return 1
+  [[ $(getfacl --absolute-names --numeric -- /etc/autostream) == "${identity_parent_acl_before}" ]] || return 1
+  sync -f /etc/autostream || return 1
+  identity_parent_acl_changed=false
+}
+
 rollback_prerequisite_directories() {
   local failed=false
   if [[ ${docker_config_dir_existed} == false && -n ${docker_config_dir_identity} ]] &&
@@ -698,9 +777,14 @@ rollback_prerequisite_directories() {
       "${DOCKER_CONFIG_DIR}" "${docker_config_dir_identity}" "Docker config directory"; then
     failed=true
   fi
+  if [[ ${executor_config_dir_existed} == false && -n ${executor_config_dir_identity} ]] &&
+    ! rollback_created_directory \
+      "${EXECUTOR_CONFIG_DIR}" "${executor_config_dir_identity}" "Local Executor private config directory"; then
+    failed=true
+  fi
   if [[ ${config_dir_existed} == false && -n ${config_dir_identity} ]] &&
     ! rollback_created_directory "${CONFIG_DIR}" "${config_dir_identity}" \
-      "Local Executor config directory"; then
+      "Updater configuration directory"; then
     failed=true
   fi
   if [[ ${docker_port_config_dir_existed} == false && -n ${docker_port_config_dir_identity} ]] &&
@@ -736,6 +820,14 @@ rollback_prerequisite_directories() {
   if [[ ${usr_local_libexec_dir_existed} == false && -n ${usr_local_libexec_dir_identity} ]] &&
     ! rollback_created_directory \
       /usr/local/libexec "${usr_local_libexec_dir_identity}" "/usr/local/libexec directory"; then
+    failed=true
+  fi
+  if ! restore_identity_parent_traversal; then
+    failed=true
+  fi
+  if [[ ${etc_autostream_dir_existed} == false && -n ${etc_autostream_dir_identity} ]] &&
+    ! rollback_created_directory \
+      /etc/autostream "${etc_autostream_dir_identity}" "identity parent directory"; then
     failed=true
   fi
   [[ ${failed} == false ]]
@@ -1017,9 +1109,27 @@ ensure_root_directory() {
     "${path}" root root "${create_mode}" "${existed_variable}" "${identity_variable}"
 }
 
-ensure_root_directory "${CONFIG_DIR}" 0700 config_dir_existed config_dir_identity
-[[ $(stat -c '%U:%G:%a' -- "${CONFIG_DIR}") == "root:root:700" ]] || \
-  die "${CONFIG_DIR} must be root:root 0700"
+ensure_root_directory /etc/autostream 0750 \
+  etc_autostream_dir_existed etc_autostream_dir_identity
+prepare_identity_parent_traversal
+if [[ -e ${CONFIG_DIR} || -L ${CONFIG_DIR} ]]; then
+  [[ -d ${CONFIG_DIR} && ! -L ${CONFIG_DIR} &&
+    $(stat -c '%U:%G:%a' -- "${CONFIG_DIR}") == "root:${AGENT_GROUP}:750" ]] || \
+    die "${CONFIG_DIR} must be root:${AGENT_GROUP} 0750"
+  [[ $(getfacl --omit-header --numeric -- "${CONFIG_DIR}") == $'user::rwx\ngroup::r-x\nother::---' ]] || \
+    die "Updater identity directory must not grant named or inherited ACL access"
+  config_dir_existed=true
+  config_dir_identity=$(stat -c '%d:%i' -- "${CONFIG_DIR}")
+else
+  create_managed_directory \
+    "${CONFIG_DIR}" root "${AGENT_GROUP}" 0750 config_dir_existed config_dir_identity
+  setfacl --remove-all --remove-default -- "${CONFIG_DIR}" || \
+    die "could not remove inherited ACLs from the new identity directory"
+fi
+ensure_root_directory \
+  "${EXECUTOR_CONFIG_DIR}" 0700 executor_config_dir_existed executor_config_dir_identity
+[[ $(stat -c '%U:%G:%a' -- "${EXECUTOR_CONFIG_DIR}") == "root:root:700" ]] || \
+  die "${EXECUTOR_CONFIG_DIR} must be root:root 0700"
 ensure_root_directory /usr/local/libexec 0755 \
   usr_local_libexec_dir_existed usr_local_libexec_dir_identity
 ensure_root_directory \
@@ -1079,7 +1189,7 @@ if [[ -e ${STATE_DIR} || -L ${STATE_DIR} ]]; then
   state_root_snapshot=$(stat -c '%d:%i:%u:%g:%a' -- "${STATE_DIR}")
 fi
 
-create_temp_file policy_stage "${CONFIG_DIR}/.policy.json.new.XXXXXX"
+create_temp_file policy_stage "${CONFIG_DIR}/.executor-policy.json.new.XXXXXX"
 create_temp_file binary_stage /usr/local/libexec/.autostream-local-executor.new.XXXXXX
 create_temp_file service_stage /etc/systemd/system/.autostream-local-executor.service.new.XXXXXX
 create_temp_file socket_stage /etc/systemd/system/.autostream-local-executor.socket.new.XXXXXX
@@ -1311,7 +1421,7 @@ verify_unit_disabled "${HOST_AGENT_SERVICE_NAME}"
 
 managed_file_change_started=true
 backup_file \
-  "${POLICY_DEST}" "${CONFIG_DIR}" .policy.json.backup \
+  "${POLICY_DEST}" "${CONFIG_DIR}" .executor-policy.json.backup \
   "${policy_existed}" "${policy_identity}" policy_backup policy_replacement_started
 if [[ ${binary_managed_link} == false ]]; then
   backup_file \

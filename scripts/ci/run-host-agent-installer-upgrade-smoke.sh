@@ -100,8 +100,8 @@ readonly RECOVERY_LIFECYCLE_LOCK=/run/autostream-updater/.autostream-host-lifecy
 readonly RECOVERY_SETUP_LOCK=/run/autostream-updater/.autostream-runtime-host-setup.lock
 readonly ARCHIVE_BACKUP="/root/.${ARTIFACT_ID}.valid.tar.gz"
 readonly HOST_BINARY_BACKUP=/root/.autostream-host-agent-upgrade-smoke.valid
-readonly IDENTITY_PATH=/etc/autostream-host-agent/identity.json
-readonly POLICY_PATH=/etc/autostream-local-executor/policy.json
+readonly IDENTITY_PATH=/etc/autostream/updater/agent.yaml
+readonly POLICY_PATH=/etc/autostream/updater/executor-policy.json
 readonly COMPLETION='Managed Host Agent and Local Executor runtime upgrade complete.'
 
 for path in \
@@ -139,7 +139,7 @@ for path in \
   "${RECOVERY_GUARD_SERVICE_PATH}" \
   "${RECOVERY_GUARD_TIMER_PATH}" \
   "${RECOVERY_CLEAR_FENCE_DIR}" \
-  /etc/autostream-host-agent \
+  /etc/autostream/updater \
   /etc/autostream-local-executor \
   /var/lib/autostream-host-agent; do
   [[ ! -e ${path} && ! -L ${path} ]] || {
@@ -218,7 +218,7 @@ case "${1:-}" in
   recover-update)
     [[ $# -eq 3 &&
       ${2:-} == --config &&
-      ${3:-} == /etc/autostream-host-agent/identity.json &&
+      ${3:-} == /etc/autostream/updater/agent.yaml &&
       $(id -u) -ne 0 &&
       $(id -un) == autostream-host-agent &&
       $(<"${RECOVERY_STATE}") == active ]] || exit 91
@@ -617,13 +617,16 @@ getent passwd autostream-host-agent >/dev/null 2>&1 || \
     --shell /usr/sbin/nologin \
     autostream-host-agent
 install -d -o root -g autostream-host-agent -m 0750 \
-  /etc/autostream-host-agent
+  /etc/autostream/updater
 install -d -o root -g root -m 0700 \
   /etc/autostream-local-executor
 install -d -o autostream-host-agent -g autostream-host-agent -m 0700 \
   /var/lib/autostream-host-agent
 printf '%s\n' \
-  '{"panel_url":"https://panel.example.com","node_id":"host-smoke","runtime_token":"sentinel-token","service_name":"Host smoke"}' \
+  'panel_url: https://panel.example.com' \
+  'node_id: host-smoke' \
+  'runtime_token: sentinel-token' \
+  'service_name: Host smoke' \
   > "${IDENTITY_PATH}"
 chown root:autostream-host-agent "${IDENTITY_PATH}"
 chmod 0640 "${IDENTITY_PATH}"
@@ -1740,7 +1743,7 @@ assert_recovery_invocation() {
   }
   grep -Fx -- "uid=${agent_uid}" "${RECOVERY_LOG}" >/dev/null
   grep -Fx -- \
-    'argv=recover-update --config /etc/autostream-host-agent/identity.json' \
+    'argv=recover-update --config /etc/autostream/updater/agent.yaml' \
     "${RECOVERY_LOG}" >/dev/null
   grep -E -- \
     '^executable=/run/autostream-host-agent-recovery\.[A-Za-z0-9]+/autostream-host-agent$' \
@@ -2280,5 +2283,3 @@ grep -Fq -- "Verified Host Agent bundle archive SHA-256: ${EXPECTED_ARCHIVE_SHA2
 assert_helper_arguments
 assert_private_stage_cleaned
 assert_sentinels_unchanged
-
-

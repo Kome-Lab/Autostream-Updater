@@ -7,11 +7,10 @@ export LC_ALL=C
 
 readonly AGENT_USER="autostream-host-agent"
 readonly AGENT_GROUP="autostream-host-agent"
-readonly CONFIG_DIR="/etc/autostream-host-agent"
-readonly CONFIG_DEST="${CONFIG_DIR}/identity.json"
-readonly STAGED_CONFIG_DEST="${CONFIG_DIR}/identity.staged.json"
-readonly WIPING_CONFIG_DEST="${CONFIG_DIR}/.identity.staged.wipe"
-readonly LEGACY_CONFIG_DEST="/etc/autostream/host-agent.json"
+readonly CONFIG_DIR="/etc/autostream/updater"
+readonly CONFIG_DEST="${CONFIG_DIR}/agent.yaml"
+readonly STAGED_CONFIG_DEST="${CONFIG_DIR}/agent.staged.yaml"
+readonly WIPING_CONFIG_DEST="${CONFIG_DIR}/.agent.staged.wipe"
 readonly BINARY_DEST="/usr/local/bin/autostream-host-agent"
 readonly UNIT_DEST="/etc/systemd/system/autostream-host-agent.service"
 readonly STATE_DIR="/var/lib/autostream-host-agent"
@@ -19,7 +18,7 @@ readonly UNIT_NAME="autostream-host-agent.service"
 readonly HOST_RUNTIME_CURRENT="/opt/autostream/host-agent/current"
 readonly HOST_RUNTIME_SLOTS="/opt/autostream/host-agent/slots"
 readonly HOST_RUNTIME_ROOT="/opt/autostream/host-agent"
-readonly LOCAL_EXECUTOR_POLICY="/etc/autostream-local-executor/policy.json"
+readonly LOCAL_EXECUTOR_POLICY="/etc/autostream/updater/executor-policy.json"
 readonly LOCAL_EXECUTOR_BINARY="/usr/local/libexec/autostream-local-executor"
 readonly LOCAL_EXECUTOR_SERVICE="/etc/systemd/system/autostream-local-executor.service"
 readonly LOCAL_EXECUTOR_SOCKET="/etc/systemd/system/autostream-local-executor.socket"
@@ -67,6 +66,14 @@ for command in dd dirname find flock getent groupdel id install mountpoint readl
     exit 1
   }
 done
+if [[ ${purge} == true ]]; then
+  for command in getfacl setfacl; do
+    command -v "${command}" >/dev/null 2>&1 || {
+      printf 'uninstall-autostream-host-agent: required purge command %s is unavailable\n' "${command}" >&2
+      exit 1
+    }
+  done
+fi
 
 validate_lock_parent_chain() {
   local path=$1
@@ -258,14 +265,18 @@ wipe_and_unlink_identity() {
 purge_config=false
 purge_staged_config=false
 purge_wiping_config=false
-purge_legacy_config=false
 config_snapshot=""
 staged_config_snapshot=""
 wiping_config_snapshot=""
-legacy_config_snapshot=""
 purge_state=false
 purge_identity_dir=false
 purge_runtime=false
+purge_agent_uid=""
+purge_agent_gid=""
+purge_parent_acl=false
+parent_acl_identity=""
+parent_acl_snapshot=""
+parent_acl_without_agent=""
 if [[ ${purge} == true ]]; then
   if systemctl is-active --quiet autostream-local-executor.service ||
     systemctl is-active --quiet autostream-local-executor.socket ||
@@ -288,6 +299,8 @@ if [[ ${purge} == true ]]; then
     fi
   done
   if id "${AGENT_USER}" >/dev/null 2>&1; then
+    purge_agent_uid=$(id -u "${AGENT_USER}")
+    purge_agent_gid=$(id -g "${AGENT_USER}")
     [[ $(id -u "${AGENT_USER}") -ne 0 ]] || {
       printf '%s\n' 'uninstall-autostream-host-agent: agent identity unexpectedly resolves to root' >&2
       exit 1
@@ -313,6 +326,11 @@ if [[ ${purge} == true ]]; then
       printf '%s\n' 'uninstall-autostream-host-agent: agent group gid is invalid' >&2
       exit 1
     }
+    if [[ -z ${purge_agent_gid} ]]; then
+      purge_agent_gid=${agent_gid}
+    elif [[ ${purge_agent_gid} != "${agent_gid}" ]]; then
+      die "agent account and group identities do not match"
+    fi
     if [[ -n ${agent_group_members} ]]; then
       IFS=, read -r -a explicit_group_members <<<"${agent_group_members}"
       for member in "${explicit_group_members[@]}"; do
@@ -329,6 +347,30 @@ if [[ ${purge} == true ]]; then
       fi
     done < <(getent passwd)
   fi
+  if [[ -n ${purge_agent_uid} || -n ${purge_agent_gid} ]] &&
+    [[ -e /etc/autostream || -L /etc/autostream ]]; then
+    [[ -d /etc/autostream && ! -L /etc/autostream &&
+      $(readlink -f -- /etc/autostream) == /etc/autostream &&
+      $(stat -c '%U:%G' -- /etc/autostream) == root:root ]] || \
+      die "identity parent is unsafe; refusing purge"
+    parent_mode=$(stat -c '%a' -- /etc/autostream)
+    (( (8#${parent_mode} & 0022) == 0 )) || \
+      die "identity parent permissions drifted; refusing purge"
+    parent_acl_identity=$(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream)
+    parent_acl_snapshot=$(getfacl --absolute-names --numeric -- /etc/autostream)
+    while IFS= read -r acl_entry; do
+      if [[ -n ${purge_agent_uid} && ${acl_entry} == "user:${purge_agent_uid}:"* ]]; then
+        [[ ${acl_entry} == "user:${purge_agent_uid}:--x" ]] || \
+          die "agent identity parent ACL drifted; refusing purge"
+        purge_parent_acl=true
+      elif [[ -n ${purge_agent_gid} && ${acl_entry} == "group:${purge_agent_gid}:"* ]]; then
+        die "identity parent contains a dedicated Agent group ACL; refusing purge"
+      else
+        parent_acl_without_agent+="${acl_entry}"$'\n'
+      fi
+    done <<<"${parent_acl_snapshot}"
+    parent_acl_without_agent=${parent_acl_without_agent%$'\n'}
+  fi
   if verify_managed_file "${CONFIG_DEST}" "root:${AGENT_GROUP}:640" "identity config"; then
     purge_config=true
     config_snapshot=$(stat -c '%d:%i:%s:%Y:%Z:%f:%u:%g' -- "${CONFIG_DEST}")
@@ -341,19 +383,16 @@ if [[ ${purge} == true ]]; then
     purge_wiping_config=true
     wiping_config_snapshot=$(stat -c '%d:%i:%s:%Y:%Z:%f:%u:%g' -- "${WIPING_CONFIG_DEST}")
   fi
-  if verify_managed_file "${LEGACY_CONFIG_DEST}" "root:${AGENT_GROUP}:640" "legacy identity config"; then
-    purge_legacy_config=true
-    legacy_config_snapshot=$(stat -c '%d:%i:%s:%Y:%Z:%f:%u:%g' -- "${LEGACY_CONFIG_DEST}")
-  fi
   if [[ -e ${CONFIG_DIR} || -L ${CONFIG_DIR} ]]; then
     [[ -d ${CONFIG_DIR} && ! -L ${CONFIG_DIR} &&
-      $(stat -c '%U:%G:%a' -- "${CONFIG_DIR}") == "root:${AGENT_GROUP}:750" ]] || {
+      $(stat -c '%U:%G:%a' -- "${CONFIG_DIR}") == "root:${AGENT_GROUP}:750" &&
+      $(getfacl --omit-header --numeric -- "${CONFIG_DIR}") == $'user::rwx\ngroup::r-x\nother::---' ]] || {
       printf '%s\n' 'uninstall-autostream-host-agent: identity directory owner or mode drifted; refusing purge' >&2
       exit 1
     }
     unexpected_identity=$(find "${CONFIG_DIR}" -mindepth 1 -maxdepth 1 \
-      ! -name identity.json ! -name identity.staged.json \
-      ! -name .identity.staged.wipe -print -quit)
+      ! -name agent.yaml ! -name agent.staged.yaml \
+      ! -name .agent.staged.wipe -print -quit)
     [[ -z ${unexpected_identity} ]] || {
       printf '%s\n' 'uninstall-autostream-host-agent: identity directory contains an unmanaged entry; refusing purge' >&2
       exit 1
@@ -502,9 +541,6 @@ fi
 if [[ ${purge_wiping_config} == true ]]; then
   wipe_and_unlink_identity "${WIPING_CONFIG_DEST}" "${wiping_config_snapshot}" "quarantined staged identity config" true
 fi
-if [[ ${purge_legacy_config} == true ]]; then
-  wipe_and_unlink_identity "${LEGACY_CONFIG_DEST}" "${legacy_config_snapshot}" "legacy identity config"
-fi
 if [[ ${purge_identity_dir} == true ]]; then
   rmdir -- "${CONFIG_DIR}"
 fi
@@ -514,6 +550,21 @@ if [[ ${purge_state} == true ]]; then
 fi
 if [[ ${purge_runtime} == true ]]; then
   find "${HOST_RUNTIME_ROOT}" -xdev -depth -delete
+fi
+if [[ ${purge_parent_acl} == true ]]; then
+  # Remove only the dedicated account's managed traverse grant before its UID
+  # can be reused. Preserve every unrelated ACL entry, the mask, and base mode.
+  [[ $(id -u "${AGENT_USER}") == "${purge_agent_uid}" &&
+    -d /etc/autostream && ! -L /etc/autostream &&
+    $(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream) == "${parent_acl_identity}" &&
+    $(getfacl --absolute-names --numeric -- /etc/autostream) == "${parent_acl_snapshot}" ]] || \
+    die "identity parent ACL changed after purge preflight"
+  setfacl --no-mask -x "u:${purge_agent_uid}" -- /etc/autostream || \
+    die "could not remove the agent identity parent ACL"
+  [[ $(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream) == "${parent_acl_identity}" &&
+    $(getfacl --absolute-names --numeric -- /etc/autostream) == "${parent_acl_without_agent}" ]] || \
+    die "identity parent ACL removal changed an unrelated permission"
+  sync -f /etc/autostream
 fi
 if id "${AGENT_USER}" >/dev/null 2>&1; then
   userdel "${AGENT_USER}"

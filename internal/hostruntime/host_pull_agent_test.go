@@ -23,9 +23,9 @@ func TestObserveOnlyHostAgentUsesEndpointlessOutboundControlLoop(t *testing.T) {
 	var forbiddenCalls atomic.Int32
 	heartbeatObserved := make(chan struct{}, 1)
 
-	statusPort, err := net.Listen("tcp", "127.0.0.1:8090")
+	statusPort, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skipf("cannot reserve legacy updater status port for listener-free proof: %v", err)
+		t.Skipf("cannot reserve local socket for listener-free proof: %v", err)
 	}
 	defer statusPort.Close()
 

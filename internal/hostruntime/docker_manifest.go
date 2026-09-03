@@ -1,41 +1,77 @@
 package hostruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"time"
-
-	controlversion "github.com/Kome-Lab/Autostream-Updater/internal/version"
 )
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var dockerSourceCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 type DockerReleaseManifest struct {
-	SchemaVersion       int                      `json:"schema_version"`
-	ReleaseID           string                   `json:"release_id"`
-	Channel             string                   `json:"channel"`
-	PublishedAt         string                   `json:"published_at"`
-	BundleVersion       string                   `json:"bundle_version"`
-	GeneratedAt         string                   `json:"generated_at"`
-	MinimumAgentVersion string                   `json:"minimum_agent_version"`
-	Components          []DockerReleaseComponent `json:"components"`
+	SchemaVersion int                      `json:"schema_version"`
+	ReleaseID     string                   `json:"release_id"`
+	Channel       string                   `json:"channel"`
+	PublishedAt   string                   `json:"published_at"`
+	ProtocolMajor int                      `json:"protocol_major"`
+	Components    []DockerReleaseComponent `json:"components"`
 }
 
 type DockerReleaseComponent struct {
 	Service            string            `json:"service"`
-	SourceVersion      string            `json:"source_version"`
-	Image              string            `json:"image"`
-	ManifestDigest     string            `json:"manifest_digest"`
-	PlatformDigests    map[string]string `json:"platform_digests"`
-	RollbackCompatible bool              `json:"rollback_compatible"`
-	DatabaseSchema     string            `json:"database_schema"`
+	Commit             string            `json:"commit"`
+	ProtocolMajor      int               `json:"protocol_major,omitempty"`
+	SourceVersion      string            `json:"source_version,omitempty"`
+	Image              string            `json:"image,omitempty"`
+	ManifestDigest     string            `json:"manifest_digest,omitempty"`
+	PlatformDigests    map[string]string `json:"platform_digests,omitempty"`
+	RollbackCompatible bool              `json:"rollback_compatible,omitempty"`
+	DatabaseSchema     string            `json:"database_schema,omitempty"`
+}
+
+// Updater is an independent host binary, not a sixth container image. Its
+// manifest entry carries only its immutable commit and protocol compatibility.
+func (component *DockerReleaseComponent) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return errors.New("Docker component must be an object")
+	}
+	var service string
+	if err := json.Unmarshal(fields["service"], &service); err != nil {
+		return errors.New("Docker component service is invalid")
+	}
+	required := []string{"service", "commit", "source_version", "image", "manifest_digest", "platform_digests", "rollback_compatible", "database_schema"}
+	if service == "updater" {
+		required = []string{"service", "commit", "protocol_major"}
+	}
+	if len(fields) != len(required) {
+		return errors.New("Docker component fields are invalid")
+	}
+	for _, name := range required {
+		value, ok := fields[name]
+		if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return errors.New("Docker component required field is missing")
+		}
+	}
+	type wireComponent DockerReleaseComponent
+	var decoded wireComponent
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return errors.New("Docker component fields are invalid")
+	}
+	*component = DockerReleaseComponent(decoded)
+	return nil
 }
 
 type ResolvedDockerRelease struct {
@@ -107,9 +143,12 @@ func (d ReleaseDownloader) ResolveDockerReleaseForArch(ctx context.Context, bund
 	if err := decoder.Decode(&manifest); err != nil {
 		return ResolvedDockerRelease{}, errors.New("Docker release manifest is invalid JSON")
 	}
-	published, publishedErr := time.Parse(time.RFC3339, manifest.PublishedAt)
-	generated, generatedErr := time.Parse(time.RFC3339, manifest.GeneratedAt)
-	if manifest.SchemaVersion != 1 || manifest.ReleaseID != bundleVersion || manifest.BundleVersion != bundleVersion || manifest.Channel != channel || publishedErr != nil || generatedErr != nil || manifest.PublishedAt != manifest.GeneratedAt || !published.Equal(generated) || !semverAtLeast(controlversion.Current(), manifest.MinimumAgentVersion) {
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return ResolvedDockerRelease{}, errors.New("Docker release manifest must contain one JSON object")
+	}
+	_, publishedErr := time.Parse(time.RFC3339, manifest.PublishedAt)
+	if manifest.SchemaVersion != 2 || manifest.ReleaseID != bundleVersion || manifest.Channel != "docker" || channel != "docker" || publishedErr != nil || manifest.ProtocolMajor != 2 {
 		return ResolvedDockerRelease{}, errors.New("Docker release manifest identity does not match the requested bundle")
 	}
 	expectedRepos := map[string]string{
@@ -119,12 +158,22 @@ func (d ReleaseDownloader) ResolveDockerReleaseForArch(ctx context.Context, bund
 		"discord-bot":      "ghcr.io/kome-lab/autostream-docker/discord-bot",
 		"observability":    "ghcr.io/kome-lab/autostream-docker/observability",
 	}
-	if len(manifest.Components) != len(expectedRepos) {
-		return ResolvedDockerRelease{}, errors.New("Docker release manifest must contain exactly all five services")
+	if len(manifest.Components) != len(expectedRepos)+1 {
+		return ResolvedDockerRelease{}, errors.New("Docker release manifest must contain five image services and the independent Updater")
 	}
 	components := map[string]*DockerReleaseComponent{}
 	for i := range manifest.Components {
 		component := &manifest.Components[i]
+		if !dockerSourceCommitPattern.MatchString(component.Commit) || components[component.Service] != nil {
+			return ResolvedDockerRelease{}, errors.New("Docker component commit is invalid or its service is duplicated")
+		}
+		if component.Service == "updater" {
+			if component.ProtocolMajor != manifest.ProtocolMajor {
+				return ResolvedDockerRelease{}, errors.New("independent Updater protocol is incompatible")
+			}
+			components[component.Service] = component
+			continue
+		}
 		repo, known := expectedRepos[component.Service]
 		if !known || components[component.Service] != nil {
 			return ResolvedDockerRelease{}, errors.New("Docker release manifest contains an unknown or duplicate service component")
@@ -149,6 +198,9 @@ func (d ReleaseDownloader) ResolveDockerReleaseForArch(ctx context.Context, bund
 			}
 		}
 		components[component.Service] = component
+	}
+	if components["updater"] == nil {
+		return ResolvedDockerRelease{}, errors.New("Docker release manifest is missing the independent Updater")
 	}
 	wantedService := dockerManifestService(serviceType)
 	matched := components[wantedService]

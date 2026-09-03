@@ -10,8 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	controlversion "github.com/Kome-Lab/Autostream-Updater/internal/version"
 )
 
 func TestResolveDockerReleaseAcceptsCanonicalManifest(t *testing.T) {
@@ -33,23 +31,24 @@ func TestResolveDockerReleaseAcceptsCanonicalManifest(t *testing.T) {
 	}
 }
 
-func TestResolveDockerReleaseRejectsIncompatibleMinimumAgentVersion(t *testing.T) {
-	for name, minimum := range map[string]string{
-		"missing": "",
-		"too new": "v9.0.0",
+func TestResolveDockerReleaseRejectsIncompatibleProtocolMajor(t *testing.T) {
+	for name, major := range map[string]int{
+		"missing": 0,
+		"old":     1,
+		"new":     3,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := resolveDockerReleaseForTest(t, func(manifest *DockerReleaseManifest) {
-				manifest.MinimumAgentVersion = minimum
+				manifest.ProtocolMajor = major
 			}, false)
 			if err == nil {
-				t.Fatal("expected minimum_agent_version rejection")
+				t.Fatal("expected protocol_major rejection")
 			}
 		})
 	}
 }
 
-func TestResolveDockerReleaseRequiresExactlyFiveCanonicalComponents(t *testing.T) {
+func TestResolveDockerReleaseRequiresFiveImagesAndIndependentUpdater(t *testing.T) {
 	tests := map[string]func(*DockerReleaseManifest){
 		"missing": func(manifest *DockerReleaseManifest) {
 			manifest.Components = manifest.Components[:len(manifest.Components)-1]
@@ -74,21 +73,54 @@ func TestResolveDockerReleaseRejectsMismatchedSidecar(t *testing.T) {
 	}
 }
 
-func TestResolveDockerReleaseRequiresIdenticalPublishedAndGeneratedTimestamps(t *testing.T) {
+func TestResolveDockerReleaseRequiresPublishedTimestamp(t *testing.T) {
 	_, err := resolveDockerReleaseForTest(t, func(manifest *DockerReleaseManifest) {
-		manifest.GeneratedAt = "2026-07-17T19:00:00-05:00"
+		manifest.PublishedAt = "not-a-timestamp"
 	}, false)
 	if err == nil {
-		t.Fatal("expected generated_at string identity rejection")
+		t.Fatal("expected published_at rejection")
+	}
+}
+
+func TestResolveDockerReleaseRejectsLegacyTopLevelAliases(t *testing.T) {
+	for _, field := range []string{"bundle_version", "generated_at", "minimum_agent_version"} {
+		t.Run(field, func(t *testing.T) {
+			_, err := resolveDockerReleaseForTest(t, nil, false, func(raw map[string]any) {
+				raw[field] = "v1.2.3"
+			})
+			if err == nil {
+				t.Fatalf("expected %s rejection", field)
+			}
+		})
+	}
+}
+
+func TestResolveDockerReleaseRejectsInvalidSourceCommitAndUpdaterShape(t *testing.T) {
+	tests := map[string]func(map[string]any){
+		"image commit": func(raw map[string]any) {
+			raw["components"].([]any)[0].(map[string]any)["commit"] = "main"
+		},
+		"updater commit": func(raw map[string]any) {
+			raw["components"].([]any)[5].(map[string]any)["commit"] = strings.Repeat("A", 40)
+		},
+		"updater image field": func(raw map[string]any) {
+			raw["components"].([]any)[5].(map[string]any)["image"] = "updater:latest"
+		},
+		"updater old protocol": func(raw map[string]any) {
+			raw["components"].([]any)[5].(map[string]any)["protocol_major"] = 1
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := resolveDockerReleaseForTest(t, nil, false, mutate); err == nil {
+				t.Fatal("expected manifest rejection")
+			}
+		})
 	}
 }
 
 func resolveDockerReleaseForTest(t *testing.T, mutate func(*DockerReleaseManifest), mismatchedSidecar bool, rawMutate ...func(map[string]any)) (ResolvedDockerRelease, error) {
 	t.Helper()
-
-	oldVersion := controlversion.Version
-	controlversion.Version = "v1.6.8"
-	t.Cleanup(func() { controlversion.Version = oldVersion })
 
 	const bundleVersion = "v1.2.3"
 	services := []string{"control-panel", "worker", "encoder-recorder", "discord-bot", "observability"}
@@ -100,6 +132,7 @@ func resolveDockerReleaseForTest(t *testing.T, mutate func(*DockerReleaseManifes
 		}
 		components = append(components, DockerReleaseComponent{
 			Service:        service,
+			Commit:         strings.Repeat("a", 40),
 			SourceVersion:  "v1.0.0",
 			Image:          "ghcr.io/kome-lab/autostream-docker/" + service + ":" + bundleVersion,
 			ManifestDigest: "sha256:" + strings.Repeat("b", 64),
@@ -111,15 +144,14 @@ func resolveDockerReleaseForTest(t *testing.T, mutate func(*DockerReleaseManifes
 			DatabaseSchema:     databaseSchema,
 		})
 	}
+	components = append(components, DockerReleaseComponent{Service: "updater", Commit: strings.Repeat("f", 40), ProtocolMajor: 2})
 	manifest := DockerReleaseManifest{
-		SchemaVersion:       1,
-		ReleaseID:           bundleVersion,
-		Channel:             "docker",
-		PublishedAt:         "2026-07-18T00:00:00Z",
-		BundleVersion:       bundleVersion,
-		GeneratedAt:         "2026-07-18T00:00:00Z",
-		MinimumAgentVersion: "v1.0.0",
-		Components:          components,
+		SchemaVersion: 2,
+		ReleaseID:     bundleVersion,
+		Channel:       "docker",
+		PublishedAt:   "2026-07-18T00:00:00Z",
+		ProtocolMajor: 2,
+		Components:    components,
 	}
 	if mutate != nil {
 		mutate(&manifest)

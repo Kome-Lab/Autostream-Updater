@@ -161,16 +161,16 @@ func TestRunHostAgentConfigureRejectsNonPullOrEndpointIdentityBeforeCommit(t *te
 			want: "pull_v2",
 		},
 		{
-			name: "legacy ssh transport",
+			name: "unsupported transport",
 			mutate: func(staged *hostruntime.UpdaterStagedConfiguration) {
-				staged.Config.TransportMode = "ssh_v1"
+				staged.Config.TransportMode = "unsupported"
 			},
 			want: "pull_v2",
 		},
 		{
 			name: "api endpoint",
 			mutate: func(staged *hostruntime.UpdaterStagedConfiguration) {
-				staged.Config.API = hostruntime.UpdaterConfigureAPIAssertion{Host: "127.0.0.1", Port: 8090}
+				staged.Config.API = hostruntime.UpdaterConfigureAPIAssertion{Host: "127.0.0.1", Port: 19090}
 			},
 			want: "must not contain an API endpoint",
 		},

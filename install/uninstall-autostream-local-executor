@@ -6,8 +6,8 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 
 readonly AGENT_GROUP="autostream-host-agent"
-readonly CONFIG_DIR="/etc/autostream-local-executor"
-readonly POLICY_DEST="${CONFIG_DIR}/policy.json"
+readonly CONFIG_DIR="/etc/autostream/updater"
+readonly POLICY_DEST="${CONFIG_DIR}/executor-policy.json"
 readonly BINARY_DEST="/usr/local/libexec/autostream-local-executor"
 readonly SERVICE_DEST="/etc/systemd/system/autostream-local-executor.service"
 readonly SOCKET_DEST="/etc/systemd/system/autostream-local-executor.socket"
@@ -410,7 +410,7 @@ service_backup=$(quarantine_file "${SERVICE_DEST}" /etc/systemd/system .autostre
 socket_backup=$(quarantine_file "${SOCKET_DEST}" /etc/systemd/system .autostream-local-executor.socket.uninstall)
 tmpfiles_backup=$(quarantine_file "${TMPFILES_DEST}" /etc/tmpfiles.d .autostream-local-executor.conf.uninstall)
 if [[ ${purge_policy} == true ]]; then
-  policy_backup=$(quarantine_file "${POLICY_DEST}" "${CONFIG_DIR}" .policy.json.uninstall)
+  policy_backup=$(quarantine_file "${POLICY_DEST}" "${CONFIG_DIR}" .executor-policy.json.uninstall)
 fi
 systemctl daemon-reload
 systemctl reset-failed autostream-local-executor.service autostream-local-executor.socket >/dev/null 2>&1 || true

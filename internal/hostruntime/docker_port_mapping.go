@@ -68,7 +68,7 @@ func validateDockerComposePortMappings(raw []byte, target *DockerTarget) ([]dock
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, errors.New("Docker port mapping model contains trailing JSON")
 	}
-	managed, ok := model.Services[target.Service]
+	_, ok := model.Services[target.Service]
 	if !ok {
 		return nil, errors.New("Docker port mapping model has no managed service")
 	}
@@ -133,15 +133,11 @@ func validateDockerComposePortMappings(raw []byte, target *DockerTarget) ([]dock
 	if len(managedMappings) != 1 {
 		return nil, errors.New("managed Docker service must have exactly one published API port")
 	}
-	bindVariable, ok := dockerContainerBindVariable(target.Service)
-	if !ok {
-		return nil, errors.New("managed Docker service has no fixed container bind contract")
+	listener, _, err := dockerNodeListenerFromCompose(raw, target.Service)
+	if err != nil {
+		return nil, err
 	}
-	bindAddress, ok := managed.Environment[bindVariable].(string)
-	if !ok {
-		return nil, errors.New("managed Docker service has no resolved container bind address")
-	}
-	bindPort, err := dockerListenPort(bindAddress)
+	bindPort, err := dockerListenPort(listener.BindAddress)
 	if err != nil || bindPort != managedMappings[0].ContainerPort {
 		return nil, errors.New("managed Docker container bind port differs from its published target port")
 	}
@@ -195,17 +191,6 @@ func dockerHostBindingsConflict(left, right string) bool {
 		return true
 	}
 	return false
-}
-
-func dockerContainerBindVariable(service string) (string, bool) {
-	switch service {
-	case "worker", "encoder-recorder", "discord-bot":
-		return "AUTOSTREAM_BIND_ADDR", true
-	case "observability":
-		return "OBSERVABILITY_BIND_ADDR", true
-	default:
-		return "", false
-	}
 }
 
 func isCanonicalNodeDockerPortTarget(target *DockerTarget) bool {

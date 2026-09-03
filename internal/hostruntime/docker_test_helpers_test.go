@@ -2,6 +2,7 @@ package hostruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,7 +10,76 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
+
+func mustDockerNodeListenerModel(
+	t *testing.T,
+	raw []byte,
+	service string,
+	bindAddress string,
+	configRevision int64,
+) []byte {
+	t.Helper()
+	model, err := dockerNodeListenerTestModel(
+		raw,
+		service,
+		bindAddress,
+		configRevision,
+	)
+	if err != nil {
+		t.Fatalf("build Docker Node listener fixture: %v", err)
+	}
+	return model
+}
+
+func dockerNodeListenerTestModel(
+	raw []byte,
+	service string,
+	bindAddress string,
+	configRevision int64,
+) ([]byte, error) {
+	var model map[string]any
+	if err := json.Unmarshal(raw, &model); err != nil {
+		return nil, err
+	}
+	services, ok := model["services"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("services are unavailable")
+	}
+	managed, ok := services[service].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("service %q is unavailable", service)
+	}
+	environment, _ := managed["environment"].(map[string]any)
+	if environment == nil {
+		environment = make(map[string]any)
+	}
+	environment["CREDENTIALS_DIRECTORY"] = "/run/autostream-credentials"
+	managed["environment"] = environment
+	source := service + "-node-listener"
+	managed["configs"] = []any{map[string]any{
+		"source": source,
+		"target": "/run/autostream-credentials/node-listener.json",
+	}}
+	body, err := contracts.MarshalNodeListenerConfig(contracts.NodeListenerConfig{
+		SchemaVersion:  2,
+		ServiceType:    strings.ReplaceAll(service, "-", "_"),
+		BindAddress:    bindAddress,
+		ConfigRevision: configRevision,
+	})
+	if err != nil {
+		return nil, err
+	}
+	configs, _ := model["configs"].(map[string]any)
+	if configs == nil {
+		configs = make(map[string]any)
+	}
+	configs[source] = map[string]any{"content": string(body)}
+	model["configs"] = configs
+	return json.Marshal(model)
+}
 
 type executorDockerBaselineRunner struct {
 	calls       []commandCall

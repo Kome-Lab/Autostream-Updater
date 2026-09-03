@@ -145,19 +145,22 @@ func (r *dockerPortRollbackRunner) Run(_ context.Context, dir string, env []stri
 }
 
 func dockerRollbackComposeModel(image string) string {
-	return `{"services":{"worker":{` +
+	raw := []byte(`{"services":{"worker":{` +
 		`"image":"` + image + `",` +
-		`"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},` +
 		`"ports":[{"host_ip":"127.0.0.1","target":8080,"published":"18084","protocol":"tcp","mode":"ingress"}]` +
-		`}}}`
+		`}}}`)
+	model, err := dockerNodeListenerTestModel(raw, "worker", "0.0.0.0:8080", 1)
+	if err != nil {
+		panic(err)
+	}
+	return string(model)
 }
 
 func TestValidateDockerComposePortMappingsSeparatesPublishedAndContainerPorts(t *testing.T) {
 	target := canonicalWorkerDockerPortTarget()
-	raw := []byte(`{
+	raw := mustDockerNodeListenerModel(t, []byte(`{
 		"services": {
 			"worker": {
-				"environment": {"AUTOSTREAM_BIND_ADDR": "0.0.0.0:18080"},
 				"ports": [{
 					"host_ip": "127.0.0.1",
 					"target": 18080,
@@ -167,7 +170,7 @@ func TestValidateDockerComposePortMappingsSeparatesPublishedAndContainerPorts(t 
 				}]
 			}
 		}
-	}`)
+	}`), "worker", "0.0.0.0:18080", 1)
 	mappings, err := validateDockerComposePortMappings(raw, target)
 	if err != nil {
 		t.Fatal(err)
@@ -182,10 +185,9 @@ func TestValidateDockerComposePortMappingsSeparatesPublishedAndContainerPorts(t 
 }
 
 func TestValidateDockerComposePortMappingsKeepsReverseProxyOriginSeparate(t *testing.T) {
-	raw := []byte(`{
+	raw := mustDockerNodeListenerModel(t, []byte(`{
 		"services": {
 			"worker": {
-				"environment": {"AUTOSTREAM_BIND_ADDR": "0.0.0.0:8080"},
 				"ports": [{
 					"host_ip": "127.0.0.1",
 					"target": 8080,
@@ -203,7 +205,7 @@ func TestValidateDockerComposePortMappingsKeepsReverseProxyOriginSeparate(t *tes
 				}]
 			}
 		}
-	}`)
+	}`), "worker", "0.0.0.0:8080", 1)
 	mappings, err := validateDockerComposePortMappings(raw, canonicalWorkerDockerPortTarget())
 	if err != nil {
 		t.Fatal(err)
@@ -272,55 +274,59 @@ func TestValidateDockerComposePortMappingsLeavesCustomBridgeTargetUnchanged(t *t
 }
 
 func TestValidateDockerComposePortMappingsRejectsUnsafeOrAmbiguousModels(t *testing.T) {
-	tests := map[string]string{
-		"privileged published port": `{
+	tests := map[string]struct {
+		raw         string
+		bindAddress string
+	}{
+		"privileged published port": {raw: `{
 			"services":{"worker":{
-				"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},
 				"ports":[{"target":8080,"published":"443","protocol":"tcp"}]
 			}}
-		}`,
-		"bind target mismatch": `{
+		}`, bindAddress: "0.0.0.0:8080"},
+		"bind target mismatch": {raw: `{
 			"services":{"worker":{
-				"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},
 				"ports":[{"target":18080,"published":"18084","protocol":"tcp"}]
 			}}
-		}`,
-		"container loopback bind": `{
+		}`, bindAddress: "0.0.0.0:8080"},
+		"container loopback bind": {raw: `{
 			"services":{"worker":{
-				"environment":{"AUTOSTREAM_BIND_ADDR":"127.0.0.1:8080"},
 				"ports":[{"target":8080,"published":"18084","protocol":"tcp"}]
 			}}
-		}`,
-		"duplicate project host port": `{
+		}`, bindAddress: "127.0.0.1:8080"},
+		"duplicate project host port": {raw: `{
 			"services":{
 				"worker":{
-					"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},
 					"ports":[{"host_ip":"0.0.0.0","target":8080,"published":"18084","protocol":"tcp"}]
 				},
 				"other":{
 					"ports":[{"host_ip":"127.0.0.1","target":8080,"published":"18084","protocol":"tcp"}]
 				}
 			}
-		}`,
-		"udp mapping": `{
+		}`, bindAddress: "0.0.0.0:8080"},
+		"udp mapping": {raw: `{
 			"services":{"worker":{
-				"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},
 				"ports":[{"target":8080,"published":"18084","protocol":"udp"}]
 			}}
-		}`,
-		"multiple managed mappings": `{
+		}`, bindAddress: "0.0.0.0:8080"},
+		"multiple managed mappings": {raw: `{
 			"services":{"worker":{
-				"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},
 				"ports":[
 					{"target":8080,"published":"18084","protocol":"tcp"},
 					{"target":8080,"published":"18085","protocol":"tcp"}
 				]
 			}}
-		}`,
+		}`, bindAddress: "0.0.0.0:8080"},
 	}
-	for name, raw := range tests {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := validateDockerComposePortMappings([]byte(raw), canonicalWorkerDockerPortTarget()); err == nil {
+			raw := mustDockerNodeListenerModel(
+				t,
+				[]byte(test.raw),
+				"worker",
+				test.bindAddress,
+				1,
+			)
+			if _, err := validateDockerComposePortMappings(raw, canonicalWorkerDockerPortTarget()); err == nil {
 				t.Fatal("unsafe Docker port mapping was accepted")
 			}
 		})
@@ -330,7 +336,6 @@ func TestValidateDockerComposePortMappingsRejectsUnsafeOrAmbiguousModels(t *test
 func TestValidateDockerComposePortMappingsRejectsTrailingGarbage(t *testing.T) {
 	raw := []byte(`{
 		"services":{"worker":{
-			"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},
 			"ports":[{"target":8080,"published":"18084","protocol":"tcp"}]
 		}}
 	} trailing`)
@@ -340,13 +345,12 @@ func TestValidateDockerComposePortMappingsRejectsTrailingGarbage(t *testing.T) {
 }
 
 func TestComposeModelHashBindsPublishedAndContainerPorts(t *testing.T) {
-	base := []byte(`{
+	base := mustDockerNodeListenerModel(t, []byte(`{
 		"services":{"worker":{
 			"image":"ghcr.io/kome-lab/autostream-docker/worker:v1.0.0",
-			"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},
 			"ports":[{"target":8080,"published":"8084","protocol":"tcp"}]
 		}}
-	}`)
+	}`), "worker", "0.0.0.0:8080", 1)
 	changedPublished := []byte(strings.Replace(string(base), `"published":"8084"`, `"published":"18084"`, 1))
 	changedContainer := []byte(strings.Replace(
 		strings.Replace(string(base), `"target":8080`, `"target":18080`, 1),
@@ -728,13 +732,12 @@ func TestPreflightDockerProposedPortAvailabilityBoundsContainerEnumeration(t *te
 func TestTrustedDockerApplyRejectsForeignPublishedPortOwnerBeforeCheckpoint(t *testing.T) {
 	target, plan, baselineRunner, _ := executorDockerMutationFixture(t)
 	baselineRunner.containerID = strings.Repeat("a", 64)
-	frozen := []byte(`{
+	frozen := mustDockerNodeListenerModel(t, []byte(`{
 		"services":{"worker":{
-			"image":"` + target.Docker.ImageRepo + `@` + plan.ExpectedPlatformDigest + `",
-			"environment":{"AUTOSTREAM_BIND_ADDR":"0.0.0.0:8080"},
+			"image":"`+target.Docker.ImageRepo+`@`+plan.ExpectedPlatformDigest+`",
 			"ports":[{"host_ip":"127.0.0.1","target":8080,"published":"18084","protocol":"tcp","mode":"ingress"}]
 		}}
-	}`)
+	}`), "worker", "0.0.0.0:8080", 1)
 	digest, err := composeModelHash(frozen, target.Docker.Service)
 	if err != nil {
 		t.Fatal(err)

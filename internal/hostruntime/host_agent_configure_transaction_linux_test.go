@@ -120,7 +120,7 @@ func TestHostAgentConfigurationTransactionRestoresAdoptedSidecarWhenIdentityComm
 	}
 }
 
-func TestHostAgentConfigurationTransactionRollsBackWhenLegacyIdentityAppearsBeforeIdentityCommit(
+func TestHostAgentConfigurationTransactionRollsBackWhenIdentityPermissionsChangeBeforeCommit(
 	t *testing.T,
 ) {
 	fixture := newHostAgentAdoptionTransactionFixture(t)
@@ -134,17 +134,19 @@ func TestHostAgentConfigurationTransactionRollsBackWhenLegacyIdentityAppearsBefo
 	fixture.transaction.verifyIdentityLayout = func() error {
 		checks++
 		if checks == 2 {
-			return errors.New("legacy Host Agent identity appeared during configuration")
+			if err := os.Chmod(fixture.identityPath, 0o660); err != nil {
+				t.Fatal(err)
+			}
 		}
-		return nil
+		return validateHostAgentIdentityWriteLayout(fixture.identityPath, os.Lstat)
 	}
 	err = fixture.transaction.CommitContext(
 		context.Background(),
 		fixture.identity,
 		fixture.stagedPolicy,
 	)
-	if err == nil || !strings.Contains(err.Error(), "legacy Host Agent identity appeared") {
-		t.Fatalf("legacy identity race error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "0600 or 0640") {
+		t.Fatalf("identity permission race error = %v", err)
 	}
 	if checks != 2 {
 		t.Fatalf("identity layout checks = %d", checks)
@@ -162,7 +164,7 @@ func TestHostAgentConfigurationTransactionRollsBackWhenLegacyIdentityAppearsBefo
 	}
 	identityAfter, readErr := os.ReadFile(fixture.identityPath)
 	if readErr != nil || !bytes.Equal(identityAfter, identityBefore) {
-		t.Fatalf("identity changed after legacy race: %q, %v", identityAfter, readErr)
+		t.Fatalf("identity changed after permission race: %v", readErr)
 	}
 }
 
@@ -171,7 +173,7 @@ func TestHostAgentConfigurationTransactionDoesNotOverwriteSidecarChangedAfterLiv
 ) {
 	fixture := newHostAgentAdoptionTransactionFixture(t)
 	defer fixture.transaction.Abort()
-	competitor := []byte("OBSERVABILITY_BIND_ADDR=127.0.0.1:19999\nAUTOSTREAM_CONFIG_REVISION=14\n")
+	competitor := []byte("{\"schema_version\":2,\"service_type\":\"observability\",\"bind_address\":\"127.0.0.1:19999\",\"config_revision\":14}\n")
 	fixture.transaction.sidecars.verifyLive = func(
 		context.Context,
 		LocalExecutorPolicy,
@@ -568,23 +570,27 @@ func TestHostAgentConfigurationTransactionPreservesPairWhenReverseExchangeReadFa
 	}
 }
 
-func TestSystemdEnvironmentFilesEndWithCanonicalSidecar(t *testing.T) {
-	canonical := "/opt/autostream/local-executor/ports/observability.env"
-	if !systemdEnvironmentFilesEndWith(
-		"EnvironmentFiles=/etc/autostream/observability.env (ignore_errors=no)\n"+
-			"EnvironmentFiles=/opt/autostream/local-executor/ports/observability.env (ignore_errors=yes)\n",
+func TestSystemdLoadCredentialHasExactlyOneCanonicalNodeListener(t *testing.T) {
+	canonical := "/opt/autostream/local-executor/ports/observability.json"
+	if !systemdLoadCredentialHasNodeListener(
+		"tls.key:/etc/autostream/tls.key "+
+			"node-listener.json:/opt/autostream/local-executor/ports/observability.json\n",
 		canonical,
 	) {
-		t.Fatal("production EnvironmentFiles ordering was rejected")
+		t.Fatal("canonical Node listener credential was rejected")
 	}
 	for name, value := range map[string]string{
-		"sidecar is not last": canonical + " (ignore_errors=yes) /etc/override.env (ignore_errors=no)",
-		"duplicate sidecar":   canonical + " (ignore_errors=yes) " + canonical + " (ignore_errors=yes)",
-		"different sidecar":   "/opt/autostream/local-executor/ports/worker.env (ignore_errors=yes)",
+		"missing Node listener": "tls.key:/etc/autostream/tls.key",
+		"wrong credential name": "listener.json:" + canonical,
+		"relative source":       "node-listener.json:ports/observability.json",
+		"unclean source":        "node-listener.json:/opt/autostream/local-executor/ports/../ports/observability.json",
+		"different sidecar":     "node-listener.json:/opt/autostream/local-executor/ports/worker.json",
+		"duplicate Node listener": "node-listener.json:" + canonical +
+			" node-listener.json:" + canonical,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if systemdEnvironmentFilesEndWith(value, canonical) {
-				t.Fatalf("unsafe EnvironmentFiles accepted: %q", value)
+			if systemdLoadCredentialHasNodeListener(value, canonical) {
+				t.Fatalf("unsafe LoadCredential accepted: %q", value)
 			}
 		})
 	}
@@ -644,7 +650,7 @@ func newHostAgentAdoptionTransactionFixtureWithConfigurationOptions(
 	}
 	oldProjection := mustConfigureProjection(t, current)
 	stagedProjection := mustConfigureProjection(t, staged)
-	identityPath := filepath.Join(identityDir, "identity.json")
+	identityPath := filepath.Join(identityDir, "agent.yaml")
 	policyPath := filepath.Join(policyDir, "policy.json")
 	if err := os.WriteFile(identityPath, identityBytes, 0o640); err != nil {
 		t.Fatal(err)
@@ -730,11 +736,13 @@ func newHostAgentAdoptionTransactionFixtureWithConfigurationOptions(
 		return hostAgentAdoptionTestProof(), nil
 	}
 	fixture.transaction = &PreparedHostAgentConfiguration{
-		identity:             preparedIdentity,
-		policy:               preparedPolicy,
-		sidecars:             preparedSidecars,
-		options:              configurationOptions,
-		verifyIdentityLayout: func() error { return nil },
+		identity: preparedIdentity,
+		policy:   preparedPolicy,
+		sidecars: preparedSidecars,
+		options:  configurationOptions,
+		verifyIdentityLayout: func() error {
+			return validateHostAgentIdentityWriteLayout(identityPath, os.Lstat)
+		},
 	}
 	return fixture
 }
@@ -754,7 +762,7 @@ func hostAgentAdoptionTestProof() hostAgentLiveSystemdSidecarProof {
 		MainPIDStartTime:     100,
 		ListenerPIDStartTime: 100,
 		SystemdUnitID:        "autostream-observability.service",
-		EnvironmentFiles:     "/etc/autostream/observability.env /opt/autostream/local-executor/ports/observability.env",
+		LoadCredential:       "node-listener.json:/opt/autostream/local-executor/ports/observability.json",
 	}
 }
 
@@ -783,7 +791,7 @@ func TestHostAgentConfigurationTransactionRollsBackPolicyAndNewSidecars(
 			t.Fatal(err)
 		}
 	}
-	identityPath := filepath.Join(identityDir, "host-agent.json")
+	identityPath := filepath.Join(identityDir, "agent.yaml")
 	policyPath := filepath.Join(policyDir, "policy.json")
 
 	identity, err := prepareUpdaterConfig(identityPath, 0)
@@ -805,10 +813,12 @@ func TestHostAgentConfigurationTransactionRollsBackPolicyAndNewSidecars(
 		t.Fatal(err)
 	}
 	transaction := &PreparedHostAgentConfiguration{
-		identity:             identity,
-		policy:               policy,
-		sidecars:             sidecars,
-		verifyIdentityLayout: func() error { return nil },
+		identity: identity,
+		policy:   policy,
+		sidecars: sidecars,
+		verifyIdentityLayout: func() error {
+			return validateHostAgentIdentityWriteLayout(identityPath, os.Lstat)
+		},
 	}
 	defer transaction.Abort()
 
@@ -859,7 +869,7 @@ func TestHostAgentConfigurationTransactionRollsBackPolicyAndNewSidecars(
 	if _, err := os.Lstat(policyPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("policy survived failed transaction: %v", err)
 	}
-	workerSidecar := filepath.Join(sidecarDir, "worker.env")
+	workerSidecar := filepath.Join(sidecarDir, "worker.json")
 	if _, err := os.Lstat(workerSidecar); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("new sidecar survived failed transaction: %v", err)
 	}
@@ -899,7 +909,7 @@ func TestHostAgentConfigurationTransactionPreservesPairWhenIdentityRenameReports
 			t.Fatal(err)
 		}
 	}
-	identityPath := filepath.Join(identityDir, "host-agent.json")
+	identityPath := filepath.Join(identityDir, "agent.yaml")
 	policyPath := filepath.Join(policyDir, "policy.json")
 	identity, err := prepareUpdaterConfig(identityPath, 0)
 	if err != nil {
@@ -920,10 +930,12 @@ func TestHostAgentConfigurationTransactionPreservesPairWhenIdentityRenameReports
 		t.Fatal(err)
 	}
 	transaction := &PreparedHostAgentConfiguration{
-		identity:             identity,
-		policy:               policy,
-		sidecars:             sidecars,
-		verifyIdentityLayout: func() error { return nil },
+		identity: identity,
+		policy:   policy,
+		sidecars: sidecars,
+		verifyIdentityLayout: func() error {
+			return validateHostAgentIdentityWriteLayout(identityPath, os.Lstat)
+		},
 	}
 	defer transaction.Abort()
 

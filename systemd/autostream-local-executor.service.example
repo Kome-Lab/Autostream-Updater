@@ -10,7 +10,7 @@ Type=simple
 # can remove CAP_SETUID from the effective set on systemd 255, while this
 # policy-bounded executor needs it only to run candidate smoke checks via
 # /usr/sbin/runuser.
-ExecStart=/usr/local/libexec/autostream-local-executor run --policy /etc/autostream-local-executor/policy.json
+ExecStart=/usr/local/libexec/autostream-local-executor run --policy /etc/autostream/updater/executor-policy.json
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
@@ -40,9 +40,13 @@ AmbientCapabilities=
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SocketBindDeny=any
-InaccessiblePaths=/etc/autostream
+# Hide every application secret, then expose only the canonical Updater
+# directory inside this mount namespace. A child ReadWritePaths cannot undo
+# InaccessiblePaths on its parent.
+TemporaryFileSystem=/etc/autostream:ro,mode=0755
+BindPaths=/etc/autostream/updater
 ReadOnlyPaths=/etc/autostream-local-executor
-ReadWritePaths=/etc/autostream-host-agent
+ReadWritePaths=/etc/autostream/updater
 ReadWritePaths=/var/lib/autostream-local-executor
 ReadWritePaths=-/opt/autostream/control-panel
 ReadWritePaths=-/opt/autostream/worker

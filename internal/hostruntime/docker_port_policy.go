@@ -202,28 +202,28 @@ func dockerPortComposePolicyHash(
 	}
 	port["published"] = "__AUTOSTREAM_PUBLISHED_PORT__"
 	port["target"] = "__AUTOSTREAM_CONTAINER_PORT__"
-	environment, ok := managed["environment"].(map[string]any)
+	listener, source, err := dockerNodeListenerFromCompose(raw, target.Service)
+	if err != nil {
+		return "", err
+	}
+	configs, ok := model["configs"].(map[string]any)
 	if !ok {
-		return "", errors.New("managed Docker port policy environment is invalid")
+		return "", errors.New("managed Docker listener definitions are unavailable")
 	}
-	bindVariable, ok := dockerContainerBindVariable(target.Service)
+	definition, ok := configs[source].(map[string]any)
 	if !ok {
-		return "", errors.New("managed Docker port policy bind contract is unavailable")
+		return "", errors.New("managed Docker listener definition is invalid")
 	}
-	if _, ok := environment[bindVariable].(string); !ok {
-		return "", errors.New("managed Docker port policy bind address is unavailable")
+	colon := strings.LastIndexByte(listener.BindAddress, ':')
+	content, err := json.Marshal(map[string]any{
+		"schema_version": listener.SchemaVersion, "service_type": listener.ServiceType,
+		"bind_address":    listener.BindAddress[:colon+1] + "__AUTOSTREAM_CONTAINER_PORT__",
+		"config_revision": "__AUTOSTREAM_CONFIG_REVISION__",
+	})
+	if err != nil {
+		return "", err
 	}
-	revision, ok := environment["AUTOSTREAM_CONFIG_REVISION"]
-	if !ok {
-		return "", errors.New("managed Docker port policy config revision is unavailable")
-	}
-	revisionText := fmt.Sprint(revision)
-	revisionNumber, err := strconv.ParseInt(revisionText, 10, 64)
-	if err != nil || revisionNumber < 1 || strconv.FormatInt(revisionNumber, 10) != revisionText {
-		return "", errors.New("managed Docker port policy config revision is invalid")
-	}
-	environment[bindVariable] = "0.0.0.0:__AUTOSTREAM_CONTAINER_PORT__"
-	environment["AUTOSTREAM_CONFIG_REVISION"] = "__AUTOSTREAM_CONFIG_REVISION__"
+	definition["content"] = string(content) + "\n"
 	canonical, err := json.Marshal(model)
 	if err != nil {
 		return "", err

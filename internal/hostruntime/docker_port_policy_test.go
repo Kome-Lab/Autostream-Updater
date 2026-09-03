@@ -1,22 +1,54 @@
 package hostruntime
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestDockerNodeListenerRejectsRemovedEnvironmentInputs(t *testing.T) {
+	base := mustDockerNodeListenerModel(
+		t,
+		[]byte(`{"services":{"worker":{"ports":[{"target":8080,"published":"8084","protocol":"tcp"}]}}}`),
+		"worker",
+		"0.0.0.0:8080",
+		1,
+	)
+	for _, name := range []string{
+		"AUTOSTREAM_BIND_ADDR",
+		"OBSERVABILITY_BIND_ADDR",
+		"AUTOSTREAM_CONFIG_REVISION",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var model map[string]any
+			if err := json.Unmarshal(base, &model); err != nil {
+				t.Fatal(err)
+			}
+			services := model["services"].(map[string]any)
+			worker := services["worker"].(map[string]any)
+			environment := worker["environment"].(map[string]any)
+			environment[name] = "removed-input"
+			raw, err := json.Marshal(model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := dockerNodeListenerFromCompose(raw, "worker"); err == nil {
+				t.Fatal("removed listener environment input was accepted")
+			}
+		})
+	}
+}
 
 func TestDockerPortComposePolicyHashAllowsOnlyManagedMappingValues(t *testing.T) {
 	target := &DockerTarget{
 		Service:   "worker",
 		ImageRepo: "ghcr.io/kome-lab/autostream-docker/worker",
 	}
-	first := []byte(`{
+	first := mustDockerNodeListenerModel(t, []byte(`{
 	  "services": {
 	    "worker": {
 	      "image": "ghcr.io/kome-lab/autostream-docker/worker:v1.0.0",
 	      "environment": {
-	        "AUTOSTREAM_BIND_ADDR": "0.0.0.0:8080",
-	        "AUTOSTREAM_CONFIG_REVISION": "7",
 	        "UNCHANGED": "yes"
 	      },
 	      "ports": [{
@@ -27,14 +59,12 @@ func TestDockerPortComposePolicyHashAllowsOnlyManagedMappingValues(t *testing.T)
 	      }]
 	    }
 	  }
-	}`)
-	second := []byte(`{
+	}`), "worker", "0.0.0.0:8080", 7)
+	second := mustDockerNodeListenerModel(t, []byte(`{
 	  "services": {
 	    "worker": {
 	      "image": "ghcr.io/kome-lab/autostream-docker/worker:v2.0.0",
 	      "environment": {
-	        "AUTOSTREAM_BIND_ADDR": "0.0.0.0:18080",
-	        "AUTOSTREAM_CONFIG_REVISION": "8",
 	        "UNCHANGED": "yes"
 	      },
 	      "ports": [{
@@ -45,7 +75,7 @@ func TestDockerPortComposePolicyHashAllowsOnlyManagedMappingValues(t *testing.T)
 	      }]
 	    }
 	  }
-	}`)
+	}`), "worker", "0.0.0.0:18080", 8)
 	firstHash, err := dockerPortComposePolicyHash(first, target)
 	if err != nil {
 		t.Fatal(err)
@@ -60,8 +90,8 @@ func TestDockerPortComposePolicyHashAllowsOnlyManagedMappingValues(t *testing.T)
 
 	unsafe := []byte(strings.Replace(
 		string(second),
-		`"host_ip": "127.0.0.1"`,
-		`"host_ip": "0.0.0.0"`,
+		`"host_ip":"127.0.0.1"`,
+		`"host_ip":"0.0.0.0"`,
 		1,
 	))
 	unsafeHash, err := dockerPortComposePolicyHash(unsafe, target)
@@ -73,7 +103,7 @@ func TestDockerPortComposePolicyHashAllowsOnlyManagedMappingValues(t *testing.T)
 	}
 }
 
-func TestDockerPortComposePolicyHashRequiresRuntimeConfigRevision(t *testing.T) {
+func TestDockerPortComposePolicyHashRequiresNodeListenerConfigRevision(t *testing.T) {
 	target := &DockerTarget{
 		Service:   "worker",
 		ImageRepo: "ghcr.io/kome-lab/autostream-docker/worker",
@@ -82,7 +112,11 @@ func TestDockerPortComposePolicyHashRequiresRuntimeConfigRevision(t *testing.T) 
 	  "services": {
 	    "worker": {
 	      "image": "ghcr.io/kome-lab/autostream-docker/worker:v1.0.0",
-	      "environment": {"AUTOSTREAM_BIND_ADDR": "0.0.0.0:8080"},
+	      "environment": {"CREDENTIALS_DIRECTORY": "/run/autostream-credentials"},
+	      "configs": [{
+	        "source": "worker-node-listener",
+	        "target": "/run/autostream-credentials/node-listener.json"
+	      }],
 	      "ports": [{
 	        "host_ip": "127.0.0.1",
 	        "published": "8084",
@@ -90,10 +124,15 @@ func TestDockerPortComposePolicyHashRequiresRuntimeConfigRevision(t *testing.T) 
 	        "protocol": "tcp"
 	      }]
 	    }
+	  },
+	  "configs": {
+	    "worker-node-listener": {
+	      "content": "{\"schema_version\":2,\"service_type\":\"worker\",\"bind_address\":\"0.0.0.0:8080\"}\n"
+	    }
 	  }
 	}`)
 	if _, err := dockerPortComposePolicyHash(raw, target); err == nil {
-		t.Fatal("Compose model without AUTOSTREAM_CONFIG_REVISION was approved")
+		t.Fatal("Compose model without listener config_revision was approved")
 	}
 }
 

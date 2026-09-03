@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const (
@@ -399,9 +401,9 @@ func (r SystemdPortReconfigureResult) Validate() error {
 }
 
 type systemdPortAdapter struct {
-	Unit         string
-	SidecarPath  string
-	BindVariable string
+	Unit        string
+	SidecarPath string
+	ServiceType string
 }
 
 func systemdPortAdapterFor(serviceType, policyUnit string) (systemdPortAdapter, error) {
@@ -409,23 +411,23 @@ func systemdPortAdapterFor(serviceType, policyUnit string) (systemdPortAdapter, 
 	switch serviceType {
 	case "worker":
 		adapter = systemdPortAdapter{
-			Unit: "autostream-worker.service", SidecarPath: "/opt/autostream/local-executor/ports/worker.env",
-			BindVariable: "AUTOSTREAM_BIND_ADDR",
+			Unit: "autostream-worker.service", SidecarPath: "/opt/autostream/local-executor/ports/worker.json",
+			ServiceType: "worker",
 		}
 	case "encoder_recorder":
 		adapter = systemdPortAdapter{
-			Unit: "autostream-encoder-recorder.service", SidecarPath: "/opt/autostream/local-executor/ports/encoder-recorder.env",
-			BindVariable: "AUTOSTREAM_BIND_ADDR",
+			Unit: "autostream-encoder-recorder.service", SidecarPath: "/opt/autostream/local-executor/ports/encoder-recorder.json",
+			ServiceType: "encoder_recorder",
 		}
 	case "discord_bot":
 		adapter = systemdPortAdapter{
-			Unit: "autostream-discord-bot.service", SidecarPath: "/opt/autostream/local-executor/ports/discord-bot.env",
-			BindVariable: "AUTOSTREAM_BIND_ADDR",
+			Unit: "autostream-discord-bot.service", SidecarPath: "/opt/autostream/local-executor/ports/discord-bot.json",
+			ServiceType: "discord_bot",
 		}
 	case "observability":
 		adapter = systemdPortAdapter{
-			Unit: "autostream-observability.service", SidecarPath: "/opt/autostream/local-executor/ports/observability.env",
-			BindVariable: "OBSERVABILITY_BIND_ADDR",
+			Unit: "autostream-observability.service", SidecarPath: "/opt/autostream/local-executor/ports/observability.json",
+			ServiceType: "observability",
 		}
 	default:
 		return systemdPortAdapter{}, errors.New("service type does not support systemd port reconfiguration")
@@ -449,9 +451,18 @@ func validSystemdPort(value int) bool {
 	return value >= 1024 && value <= 65535
 }
 
-func systemdPortSidecarBytes(bindVariable, host string, port int, configRevision int64) []byte {
-	return []byte(fmt.Sprintf("%s=%s\nAUTOSTREAM_CONFIG_REVISION=%d\n",
-		bindVariable, net.JoinHostPort(host, fmt.Sprintf("%d", port)), configRevision))
+func systemdPortSidecarBytes(serviceType, host string, port int, configRevision int64) []byte {
+	address := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	if serviceType == "control_panel" {
+		return []byte(fmt.Sprintf("AUTOSTREAM_BIND_ADDR=%s\nAUTOSTREAM_CONFIG_REVISION=%d\n", address, configRevision))
+	}
+	body, err := contracts.MarshalNodeListenerConfig(contracts.NodeListenerConfig{
+		SchemaVersion: 2, ServiceType: serviceType, BindAddress: address, ConfigRevision: configRevision,
+	})
+	if err != nil {
+		return nil
+	}
+	return body
 }
 
 func systemdPortSidecarSHA256(body []byte) string {
@@ -541,7 +552,7 @@ func (s systemdPortAppliedState) validateRecord(target LocalExecutorTarget) erro
 		return errors.New("systemd applied port state adapter is invalid")
 	}
 	expectedDigest := systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		target.LocalListen.Host,
 		s.Port,
 		s.ConfigRevision,
@@ -835,7 +846,7 @@ func executeSystemdPortRequest(
 			return failure("mutation_precondition_failed")
 		}
 		expectedOldBytes := systemdPortSidecarBytes(
-			adapter.BindVariable, target.LocalListen.Host, plan.OldPort, plan.ExpectedConfigRevision,
+			adapter.ServiceType, target.LocalListen.Host, plan.OldPort, plan.ExpectedConfigRevision,
 		)
 		if checkpoint.Existed && string(checkpoint.Bytes) != string(expectedOldBytes) {
 			return failure("mutation_precondition_failed")
@@ -853,7 +864,7 @@ func executeSystemdPortRequest(
 			return failure("mutation_precondition_failed")
 		}
 		targetBytes := systemdPortSidecarBytes(
-			adapter.BindVariable, target.LocalListen.Host, plan.NewPort, plan.TargetConfigRevision,
+			adapter.ServiceType, target.LocalListen.Host, plan.NewPort, plan.TargetConfigRevision,
 		)
 		if systemdPortSidecarSHA256(targetBytes) != plan.TargetConfigSHA256 {
 			return failure("config_mismatch")
@@ -971,7 +982,7 @@ func validateSystemdPortPolicyBinding(
 		return LocalExecutorTarget{}, systemdPortAdapter{}, err
 	}
 	expectedTarget := systemdPortSidecarBytes(
-		adapter.BindVariable, target.LocalListen.Host, plan.NewPort, plan.TargetConfigRevision,
+		adapter.ServiceType, target.LocalListen.Host, plan.NewPort, plan.TargetConfigRevision,
 	)
 	if systemdPortSidecarSHA256(expectedTarget) != plan.TargetConfigSHA256 {
 		return LocalExecutorTarget{}, systemdPortAdapter{}, errors.New("target sidecar digest does not match the fixed adapter")
@@ -1043,7 +1054,7 @@ func reconcileUnstartedSystemdPortRequest(
 	plan := *request.PortPlan
 	checkpoint, err := runtime.Checkpoint(adapter)
 	expectedOldBytes := systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		target.LocalListen.Host,
 		plan.OldPort,
 		plan.ExpectedConfigRevision,
@@ -1065,7 +1076,7 @@ func reconcileUnstartedSystemdPortRequest(
 		)
 	}
 	targetBytes := systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		target.LocalListen.Host,
 		plan.NewPort,
 		plan.TargetConfigRevision,
@@ -1199,7 +1210,7 @@ func repairSystemdPortCommit(
 	effective.ConfigRevision = result.ConfigRevision
 	effective.ConfigSHA256 = result.ConfigSHA256
 	expectedBytes := systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		effective.LocalListen.Host,
 		effective.LocalListen.Port,
 		effective.ConfigRevision,

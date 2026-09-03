@@ -607,7 +607,7 @@ func TestLocalExecutorProbeUsesDurableAppliedSystemdPortState(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy.Targets[0].ConfigSHA256 = systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		policy.Targets[0].LocalListen.Host,
 		policy.Targets[0].LocalListen.Port,
 		policy.Targets[0].ConfigRevision,
@@ -629,7 +629,7 @@ func TestLocalExecutorProbeUsesDurableAppliedSystemdPortState(t *testing.T) {
 	defer server.Close()
 	effectiveTarget.LocalListen = endpointFromServer(t, server)
 	effectiveTarget.ConfigSHA256 = systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		effectiveTarget.LocalListen.Host,
 		effectiveTarget.LocalListen.Port,
 		effectiveTarget.ConfigRevision,
@@ -660,9 +660,9 @@ func TestLocalExecutorProbeUsesDurableAppliedSystemdPortState(t *testing.T) {
 	if err := os.Mkdir(sidecarDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sidecarPath := filepath.Join(sidecarDir, "worker.env")
+	sidecarPath := filepath.Join(sidecarDir, "worker.json")
 	writeTestFile(t, sidecarPath, string(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		effectiveTarget.LocalListen.Host,
 		effectiveTarget.LocalListen.Port,
 		effectiveTarget.ConfigRevision,
@@ -716,7 +716,7 @@ func TestLocalExecutorProbeUsesDurableAppliedSystemdPortState(t *testing.T) {
 	}
 
 	writeTestFile(t, sidecarPath, strings.Repeat("x", len(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		effectiveTarget.LocalListen.Host,
 		effectiveTarget.LocalListen.Port,
 		effectiveTarget.ConfigRevision,
@@ -912,7 +912,7 @@ func TestLocalExecutorProbeRejectsUnboundAppliedSystemdPortState(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy.Targets[0].ConfigSHA256 = systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		policy.Targets[0].LocalListen.Host,
 		policy.Targets[0].LocalListen.Port,
 		policy.Targets[0].ConfigRevision,
@@ -930,7 +930,7 @@ func TestLocalExecutorProbeRejectsUnboundAppliedSystemdPortState(t *testing.T) {
 			EndpointRevision: endpointRevision,
 			ConfigRevision:   configRevision,
 			ConfigSHA256: systemdPortSidecarSHA256(systemdPortSidecarBytes(
-				adapter.BindVariable,
+				adapter.ServiceType,
 				policy.Targets[0].LocalListen.Host,
 				port,
 				configRevision,
@@ -1022,7 +1022,7 @@ func TestSystemdAppliedStateAllowsOnlyExactRootPolicyLineageMigration(t *testing
 		t.Fatal(err)
 	}
 	policy.Targets[0].ConfigSHA256 = systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		policy.Targets[0].LocalListen.Host,
 		policy.Targets[0].LocalListen.Port,
 		policy.Targets[0].ConfigRevision,
@@ -1057,7 +1057,7 @@ func TestSystemdAppliedStateAllowsOnlyExactRootPolicyLineageMigration(t *testing
 
 	applied.Port++
 	applied.ConfigSHA256 = systemdPortSidecarSHA256(systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		policy.Targets[0].LocalListen.Host,
 		applied.Port,
 		applied.ConfigRevision,
@@ -1089,7 +1089,7 @@ func TestFileSystemdAppliedStateVerifierRejectsModeAndSymlinkDrift(t *testing.T)
 		t.Fatal(err)
 	}
 	body := systemdPortSidecarBytes(
-		adapter.BindVariable,
+		adapter.ServiceType,
 		policy.Targets[0].LocalListen.Host,
 		policy.Targets[0].LocalListen.Port,
 		policy.Targets[0].ConfigRevision,
@@ -1121,7 +1121,7 @@ func TestFileSystemdAppliedStateVerifierRejectsModeAndSymlinkDrift(t *testing.T)
 	if err := os.Mkdir(sidecarDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sidecarPath := filepath.Join(sidecarDir, "worker.env")
+	sidecarPath := filepath.Join(sidecarDir, "worker.json")
 	writeTestFile(t, sidecarPath, string(body), 0o600)
 	state.sidecarPathForTestOnly = sidecarPath
 	if err := state.VerifyAppliedSidecar(policy.Targets[0], applied); err != nil {
@@ -1139,7 +1139,7 @@ func TestFileSystemdAppliedStateVerifierRejectsModeAndSymlinkDrift(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	linkTarget := filepath.Join(sidecarDir, "target.env")
+	linkTarget := filepath.Join(sidecarDir, "target.json")
 	writeTestFile(t, linkTarget, string(body), 0o600)
 	if err := os.Remove(sidecarPath); err != nil {
 		t.Fatal(err)

@@ -249,7 +249,7 @@ if [[ ${invalid_manifest_output} == *'required command is unavailable'* ]]; then
     "${invalid_manifest_output}" >&2
   exit 1
 fi
-test ! -e /etc/autostream-host-agent
+test ! -e /etc/autostream/updater
 test ! -e /var/lib/autostream-host-agent
 test ! -e /opt/autostream/host-agent
 test ! -e /usr/local/bin/autostream-host-agent
@@ -288,7 +288,7 @@ if [[ ${duplicate_path_output} == *'required command is unavailable'* ]]; then
     "${duplicate_path_output}" >&2
   exit 1
 fi
-test ! -e /etc/autostream-host-agent
+test ! -e /etc/autostream/updater
 test ! -e /var/lib/autostream-host-agent
 test ! -e /opt/autostream/host-agent
 test ! -e /usr/local/bin/autostream-host-agent
@@ -508,7 +508,7 @@ if id autostream-host-agent >/dev/null 2>&1 ||
   printf '%s\n' 'late destination preflight failure left a fresh Host Agent account or group' >&2
   exit 1
 fi
-if [[ -e /etc/autostream-host-agent ||
+if [[ -e /etc/autostream/updater ||
   -e /var/lib/autostream-host-agent ||
   -e /etc/autostream-local-executor ||
   -e /opt/autostream/host-agent ||
@@ -579,7 +579,8 @@ groupadd --system autostream-host-agent
 useradd --system --gid autostream-host-agent \
   --home-dir /var/lib/autostream-host-agent --shell /usr/sbin/nologin \
   autostream-host-agent
-install -d -o root -g autostream-host-agent -m 0750 /etc/autostream-host-agent
+install -d -o root -g root -m 0750 /etc/autostream
+install -d -o root -g autostream-host-agent -m 0750 /etc/autostream/updater
 install -d -o autostream-host-agent -g autostream-host-agent -m 0700 \
   /var/lib/autostream-host-agent
 printf '%s\n' preserved > /var/lib/autostream-host-agent/sentinel
@@ -588,12 +589,38 @@ chown autostream-host-agent:autostream-host-agent \
 chmod 0600 /var/lib/autostream-host-agent/sentinel
 existing_state_identity=$(stat -c '%d:%i:%u:%g:%a' /var/lib/autostream-host-agent)
 existing_state_sha=$(sha256sum /var/lib/autostream-host-agent/sentinel | awk 'NR == 1 { print $1 }')
+existing_parent_acl=$(getfacl --absolute-names --numeric /etc/autostream)
+install -o root -g root -m 0640 /dev/null /etc/autostream/private-service.env
+existing_service_metadata=$(stat -c '%d:%i:%u:%g:%a' /etc/autostream/private-service.env)
+setfacl -m u:nobody:r-x /etc/autostream/updater
+if unsafe_acl_output="$("${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare 2>&1)"; then
+  printf '%s\n' 'prepare accepted an identity directory ACL for another account' >&2
+  exit 1
+fi
+[[ ${unsafe_acl_output} == *'must not grant named or inherited ACL access'* ]]
+[[ $(getfacl --absolute-names --numeric /etc/autostream) == "${existing_parent_acl}" ]]
+setfacl --remove-all /etc/autostream/updater
+setfacl --no-mask -m "u:$(id -u autostream-host-agent):r-x" /etc/autostream
+excessive_parent_acl=$(getfacl --absolute-names --numeric /etc/autostream)
+if excessive_parent_output="$("${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare 2>&1)"; then
+  printf '%s\n' 'prepare accepted identity-parent listing access' >&2
+  exit 1
+fi
+[[ ${excessive_parent_output} == *'excessive identity parent access'* ]]
+[[ $(getfacl --absolute-names --numeric /etc/autostream) == "${excessive_parent_acl}" ]]
+printf '%s\n' "${existing_parent_acl}" | setfacl --restore=-
 ln -s /root /etc/systemd/system/autostream-local-executor.service
 if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   printf '%s\n' 'prepare mode survived failure with existing Host Agent state' >&2
   exit 1
 fi
 rm -f -- /etc/systemd/system/autostream-local-executor.service
+if [[ $(getfacl --absolute-names --numeric /etc/autostream) != "${existing_parent_acl}" ||
+  $(stat -c '%d:%i:%u:%g:%a' /etc/autostream/private-service.env) != "${existing_service_metadata}" ]]; then
+  printf '%s\n' 'failed prepare changed the shared parent ACL or a sibling service secret' >&2
+  exit 1
+fi
+rm -f -- /etc/autostream/private-service.env
 if [[ $(stat -c '%d:%i:%u:%g:%a' /var/lib/autostream-host-agent) != \
     "${existing_state_identity}" ||
   $(sha256sum /var/lib/autostream-host-agent/sentinel | awk 'NR == 1 { print $1 }') != \
@@ -602,7 +629,7 @@ if [[ $(stat -c '%d:%i:%u:%g:%a' /var/lib/autostream-host-agent) != \
   exit 1
 fi
 rm -f -- /var/lib/autostream-host-agent/sentinel
-rmdir -- /var/lib/autostream-host-agent /etc/autostream-host-agent
+rmdir -- /var/lib/autostream-host-agent /etc/autostream/updater /etc/autostream
 userdel autostream-host-agent
 if getent group autostream-host-agent >/dev/null 2>&1; then
   groupdel autostream-host-agent
@@ -630,7 +657,7 @@ if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   exit 1
 fi
 if id autostream-host-agent >/dev/null 2>&1 ||
-  [[ -e /etc/autostream-host-agent || -e /var/lib/autostream-host-agent ]]; then
+  [[ -e /etc/autostream/updater || -e /var/lib/autostream-host-agent ]]; then
   printf '%s\n' 'gid 0 rejection mutated the Host Agent account or paths' >&2
   exit 1
 fi
@@ -683,10 +710,9 @@ if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   printf '%s\n' 'prepare mode survived an injected post-commit daemon-reload failure' >&2
   exit 1
 fi
-test ! -e /etc/autostream-host-agent
+test ! -e /etc/autostream/updater
 test ! -e /var/lib/autostream-host-agent
-test ! -e /etc/autostream/host-agent.json
-test ! -e /etc/autostream-local-executor/policy.json
+test ! -e /etc/autostream/updater/executor-policy.json
 test ! -e /etc/autostream-local-executor
 test ! -e /opt/autostream/local-executor
 test ! -e /usr/local/bin/autostream-host-agent
@@ -704,35 +730,36 @@ if id autostream-host-agent >/dev/null 2>&1 ||
   exit 1
 fi
 
-ln -s /root /etc/autostream-local-executor
+install -d -o root -g root -m 0750 /etc/autostream
+ln -s /root /etc/autostream/updater
 if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   printf '%s\n' 'prepare mode accepted a symlink policy directory' >&2
   exit 1
 fi
-rm -f -- /etc/autostream-local-executor
+rm -f -- /etc/autostream/updater
 
-install -o root -g root -m 0600 /dev/null /etc/autostream-local-executor
+install -o root -g root -m 0600 /dev/null /etc/autostream/updater
 if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   printf '%s\n' 'prepare mode accepted a non-directory policy path' >&2
   exit 1
 fi
-rm -f -- /etc/autostream-local-executor
+rm -f -- /etc/autostream/updater
 
-install -d -o root -g root -m 0755 /etc/autostream-local-executor
+install -d -o root -g root -m 0755 /etc/autostream/updater
 if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   printf '%s\n' 'prepare mode accepted an over-permissive policy directory' >&2
   exit 1
 fi
-rmdir -- /etc/autostream-local-executor
+rmdir -- /etc/autostream/updater
 
-install -d -o root -g root -m 0700 /etc/autostream-local-executor
-chown 1:1 /etc/autostream-local-executor
+install -d -o root -g root -m 0750 /etc/autostream/updater
+chown 1:1 /etc/autostream/updater
 if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   printf '%s\n' 'prepare mode accepted a non-root-owned policy directory' >&2
   exit 1
 fi
-chown root:root /etc/autostream-local-executor
-rmdir -- /etc/autostream-local-executor
+chown root:root /etc/autostream/updater
+rmdir -- /etc/autostream/updater
 
 install -d -o root -g root -m 0700 /opt/autostream/local-executor
 ln -s /root /opt/autostream/local-executor/ports
@@ -750,7 +777,6 @@ rmdir -- /opt/autostream/local-executor/ports
 rmdir -- /opt/autostream/local-executor
 
 install -d -o root -g root -m 0700 \
-  /etc/autostream-local-executor \
   /opt/autostream/local-executor \
   /opt/autostream/local-executor/ports
 if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
@@ -758,7 +784,6 @@ if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
   exit 1
 fi
 for private_dir in \
-  /etc/autostream-local-executor \
   /opt/autostream/local-executor \
   /opt/autostream/local-executor/ports; do
   test "$(stat -c '%U:%G:%a' "${private_dir}")" = "root:root:700"
@@ -766,7 +791,6 @@ done
 rm -f -- /tmp/autostream-host-agent-fail-daemon-reload
 rmdir -- /opt/autostream/local-executor/ports
 rmdir -- /opt/autostream/local-executor
-rmdir -- /etc/autostream-local-executor
 
 install -d -o root -g root -m 0700 /run/autostream-updater
 exec 8<>/run/autostream-updater/.autostream-runtime-host-setup.lock
@@ -804,11 +828,17 @@ test "$(stat -c '%U:%G:%a:%h' \
 
 "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare
 
-test "$(stat -c '%U:%G:%a' /etc/autostream-host-agent)" = "root:autostream-host-agent:750"
-test ! -e /etc/autostream-host-agent/identity.json
-test ! -e /etc/autostream/host-agent.json
-test ! -e /etc/autostream-local-executor/policy.json
-test "$(stat -c '%U:%G:%a' /etc/autostream-local-executor)" = "root:root:700"
+test "$(stat -c '%U:%G:%a' /etc/autostream)" = "root:root:750"
+runuser -u autostream-host-agent -- test -x /etc/autostream
+if runuser -u autostream-host-agent -- test -r /etc/autostream ||
+  runuser -u autostream-host-agent -- test -w /etc/autostream; then
+  printf '%s\n' 'prepare widened the Agent shared directory access beyond traversal' >&2
+  exit 1
+fi
+test "$(stat -c '%U:%G:%a' /etc/autostream/updater)" = "root:autostream-host-agent:750"
+test ! -e /etc/autostream/updater/agent.yaml
+test ! -e /etc/autostream/updater/executor-policy.json
+test ! -e /etc/autostream-local-executor
 test "$(stat -c '%U:%G:%a' /opt/autostream/local-executor)" = "root:root:700"
 test "$(stat -c '%U:%G:%a' /opt/autostream/local-executor/ports)" = "root:root:700"
 test -L /usr/local/bin/autostream-host-agent
@@ -832,9 +862,7 @@ test -e /tmp/autostream-host-self-update-recovery@b.timer.enabled
 test -e /tmp/autostream-host-self-update-recovery@b.timer.active
 test ! -e /run/autostream-local-executor
 test ! -e /var/lib/autostream-local-executor
-grep -qx -- 'ConditionPathExists=|/etc/autostream-host-agent/identity.json' \
-  /etc/systemd/system/autostream-host-agent.service
-grep -qx -- 'ConditionPathExists=|/etc/autostream/host-agent.json' \
+grep -qx -- 'ConditionPathExists=/etc/autostream/updater/agent.yaml' \
   /etc/systemd/system/autostream-host-agent.service
 test "$(stat -c '%U:%G:%a' /var/lib/autostream-host-agent)" = "autostream-host-agent:autostream-host-agent:700"
 test "$(id -u autostream-host-agent)" -ne 0
@@ -872,7 +900,7 @@ if [[ ${local_setup_lock_status} -eq 0 ||
   printf '%s\n' "${local_setup_lock_output}" >&2
   exit 1
 fi
-test ! -e /etc/autostream-local-executor/policy.json
+test ! -e /etc/autostream/updater/executor-policy.json
 exec 9<>/run/autostream-updater/.autostream-host-lifecycle.lock
 flock -n 9
 set +e
@@ -889,7 +917,7 @@ if [[ ${local_lifecycle_lock_status} -eq 0 ||
   printf '%s\n' "${local_lifecycle_lock_output}" >&2
   exit 1
 fi
-test ! -e /etc/autostream-local-executor/policy.json
+test ! -e /etc/autostream/updater/executor-policy.json
 touch /tmp/autostream-host-agent-fail-daemon-reload
 if "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   --policy /root/autostream-local-executor-policy.json; then
@@ -902,7 +930,7 @@ test "$(readlink /usr/local/libexec/autostream-local-executor)" = \
   "/opt/autostream/host-agent/current/bin/autostream-local-executor"
 test "$(sha256sum /opt/autostream/host-agent/slots/a/bin/autostream-local-executor |
   awk '{print $1}')" = "${prepared_executor_sha}"
-test ! -e /etc/autostream-local-executor/policy.json
+test ! -e /etc/autostream/updater/executor-policy.json
 "${PACKAGE_ROOT}/install/install-autostream-local-executor" \
   --policy /root/autostream-local-executor-policy.json
 for uninstaller in \
@@ -953,7 +981,7 @@ test "$(readlink /usr/local/libexec/autostream-local-executor)" = \
   "/opt/autostream/host-agent/current/bin/autostream-local-executor"
 test "$(sha256sum /opt/autostream/host-agent/slots/a/bin/autostream-local-executor |
   awk '{print $1}')" = "${prepared_executor_sha}"
-test "$(stat -c '%U:%G:%a' /etc/autostream-local-executor/policy.json)" = \
+test "$(stat -c '%U:%G:%a' /etc/autostream/updater/executor-policy.json)" = \
   "root:root:600"
 test -e /tmp/autostream-local-executor.socket.enabled
 test -e /tmp/autostream-local-executor.socket.active
@@ -962,156 +990,29 @@ test -e /tmp/autostream-local-executor.service.active
 
 binary_sha=$(sha256sum /usr/local/bin/autostream-host-agent | awk '{print $1}')
 install -o root -g autostream-host-agent -m 0640 \
-  "${REPOSITORY_ROOT}/release/autostream-host-agent.json.example" \
-  /etc/autostream-host-agent/identity.json
+  "${REPOSITORY_ROOT}/release/agent.yaml.example" \
+  /etc/autostream/updater/agent.yaml
 if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
-  printf '%s\n' 'prepare mode accepted an existing current identity' >&2
+  printf '%s\n' 'prepare mode accepted an existing canonical identity' >&2
   exit 1
 fi
 test "$(sha256sum /usr/local/bin/autostream-host-agent | awk '{print $1}')" = "${binary_sha}"
-rm -f -- /etc/autostream-host-agent/identity.json
+test "$(stat -c '%U:%G:%a' /etc/autostream/updater/agent.yaml)" = \
+  "root:autostream-host-agent:640"
+test "$(stat -c '%U:%G:%a' /etc/autostream/updater/executor-policy.json)" = \
+  "root:root:600"
 
-touch /tmp/autostream-host-agent-enabled
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare; then
-  printf '%s\n' 'prepare mode accepted an enabled Host Agent service' >&2
-  exit 1
-fi
-rm -f -- /tmp/autostream-host-agent-enabled
-test ! -e /etc/autostream-host-agent/identity.json
-
-if grep -Eq '^(enable|start)( |$).*(autostream-host-agent\.service|autostream-local-executor\.(service|socket))' "${SYSTEMCTL_LOG}"; then
-  printf '%s\n' 'a failed prepare path enabled or started a runtime unit' >&2
-  exit 1
-fi
-
-touch /tmp/autostream-host-agent-allow-enable
-install -o root -g root -m 0600 \
-  "${REPOSITORY_ROOT}/release/autostream-host-agent.json.example" \
-  /root/autostream-host-agent.json
-
-managed_runtime_before=$(managed_runtime_fingerprint)
-touch \
-  /tmp/autostream-host-agent-active \
-  /tmp/autostream-host-agent-is-active-query-error
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" \
-  --config /root/autostream-host-agent.json; then
-  printf '%s\n' 'configured install accepted an indeterminate Host Agent active state' >&2
-  exit 1
-fi
-rm -f -- \
-  /tmp/autostream-host-agent-is-active-query-error \
-  /tmp/autostream-host-agent-active
-test ! -e /etc/autostream-host-agent/identity.json
-if [[ $(managed_runtime_fingerprint) != "${managed_runtime_before}" ]]; then
-  printf '%s\n' 'failed configured install changed the pre-existing managed A/B runtime' >&2
-  exit 1
-fi
-
-chmod 0777 /opt/autostream/host-agent/slots/a/bin
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" \
-  --config /root/autostream-host-agent.json; then
-  printf '%s\n' 'configured install accepted a writable managed A/B parent directory' >&2
-  exit 1
-fi
-chmod 0755 /opt/autostream/host-agent/slots/a/bin
-test ! -e /etc/autostream-host-agent/identity.json
-
-printf '%s\n' durable > /var/lib/autostream-host-agent/sentinel
-chown autostream-host-agent:autostream-host-agent \
-  /var/lib/autostream-host-agent/sentinel
-chmod 0600 /var/lib/autostream-host-agent/sentinel
-host_state_identity=$(stat -c '%d:%i:%u:%g:%a' /var/lib/autostream-host-agent)
-host_state_sha=$(sha256sum /var/lib/autostream-host-agent/sentinel | awk 'NR == 1 { print $1 }')
-touch \
-  /tmp/autostream-host-agent-active \
-  /tmp/autostream-host-agent-stop-keeps-active
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" \
-  --config /root/autostream-host-agent.json; then
-  printf '%s\n' 'configured install accepted a stop command that left the Host Agent active' >&2
-  exit 1
-fi
-rm -f -- \
-  /tmp/autostream-host-agent-stop-keeps-active \
-  /tmp/autostream-host-agent-active
-test ! -e /etc/autostream-host-agent/identity.json
-if [[ $(stat -c '%d:%i:%u:%g:%a' /var/lib/autostream-host-agent) != \
-    "${host_state_identity}" ||
-  $(sha256sum /var/lib/autostream-host-agent/sentinel | awk 'NR == 1 { print $1 }') != \
-    "${host_state_sha}" ]]; then
-  printf '%s\n' 'failed Host Agent quiesce changed existing state' >&2
-  exit 1
-fi
-
-touch /tmp/autostream-host-agent-fail-final-active-check
-if "${PACKAGE_ROOT}/install/install-autostream-host-agent" \
-  --config /root/autostream-host-agent.json; then
-  printf '%s\n' 'configured install survived a post-start active-state failure' >&2
-  exit 1
-fi
-rm -f -- /tmp/autostream-host-agent-fail-final-active-check
-test ! -e /etc/autostream-host-agent/identity.json
-test ! -e /var/lib/autostream-host-agent/runtime-created
-test ! -e /tmp/autostream-host-agent-active
-test ! -e /tmp/autostream-host-agent-enabled
-if [[ $(stat -c '%d:%i:%u:%g:%a' /var/lib/autostream-host-agent) != \
-    "${host_state_identity}" ||
-  $(sha256sum /var/lib/autostream-host-agent/sentinel | awk 'NR == 1 { print $1 }') != \
-    "${host_state_sha}" ]]; then
-  printf '%s\n' 'post-start failure changed existing Host Agent state' >&2
-  exit 1
-fi
-
-dd if=/dev/zero of=/etc/autostream/host-agent.json \
-  bs=65537 count=1 status=none
-chown root:autostream-host-agent /etc/autostream/host-agent.json
-chmod 0640 /etc/autostream/host-agent.json
-unsafe_legacy_identity=$(stat -c '%d:%i:%s:%Y:%f:%u:%g' \
-  /etc/autostream/host-agent.json)
-unsafe_legacy_sha=$(sha256sum /etc/autostream/host-agent.json |
-  awk 'NR == 1 { print $1 }')
-set +e
-unsafe_legacy_output="$(${PACKAGE_ROOT}/install/install-autostream-host-agent \
-  --config /root/autostream-host-agent.json 2>&1)"
-unsafe_legacy_status=$?
-set -e
-if [[ ${unsafe_legacy_status} -eq 0 ||
-  ${unsafe_legacy_output} != *'legacy Host Agent identity has an unsafe size'* ]]; then
-  printf '%s\n' 'configured install did not reject an oversized legacy identity before retirement' >&2
-  printf '%s\n' "${unsafe_legacy_output}" >&2
-  exit 1
-fi
-test ! -e /etc/autostream-host-agent/identity.json
-test -e /etc/autostream/host-agent.json
-if [[ $(stat -c '%d:%i:%s:%Y:%f:%u:%g' /etc/autostream/host-agent.json) != \
-    "${unsafe_legacy_identity}" ||
-  $(sha256sum /etc/autostream/host-agent.json | awk 'NR == 1 { print $1 }') != \
-    "${unsafe_legacy_sha}" ||
-  $(managed_runtime_fingerprint) != "${managed_runtime_before}" ||
-  -e /tmp/autostream-host-agent-active ||
-  -e /tmp/autostream-host-agent-enabled ]]; then
-  printf '%s\n' 'pre-retirement legacy validation failure was not rolled back exactly' >&2
-  exit 1
-fi
-rm -f -- /etc/autostream/host-agent.json
-
-install -o root -g autostream-host-agent -m 0640 \
-  "${REPOSITORY_ROOT}/release/autostream-host-agent.json.example" \
-  /etc/autostream/host-agent.json
-"${PACKAGE_ROOT}/install/install-autostream-host-agent" \
-  --config /root/autostream-host-agent.json
-test "$(stat -c '%U:%G:%a' /etc/autostream-host-agent)" = "root:autostream-host-agent:750"
-test "$(stat -c '%U:%G:%a' /etc/autostream-host-agent/identity.json)" = "root:autostream-host-agent:640"
-test ! -e /etc/autostream/host-agent.json
-test -e /tmp/autostream-host-agent-enabled
-test -e /tmp/autostream-host-agent-active
-grep -Eq '^validate-config --config /etc/autostream-host-agent/\.identity\.json\.new\.' "${BINARY_LOG}"
-grep -qx -- 'validate-config --config /etc/autostream-host-agent/identity.json' "${BINARY_LOG}"
-grep -Eq '^enable --now autostream-host-agent\.service$' "${SYSTEMCTL_LOG}"
-
+# An unrelated named traversal grant is operator-owned and must survive both
+# normal uninstall and the later explicit purge of the dedicated Agent.
+setfacl --no-mask -m "u:$(id -u nobody):--x" -- /etc/autostream
+retained_parent_acl=$(getfacl --absolute-names --numeric -- /etc/autostream)
+purged_agent_uid=$(id -u autostream-host-agent)
+printf '%s\n' "${retained_parent_acl}" | grep -Fx -- "user:${purged_agent_uid}:--x" >/dev/null
 "${PACKAGE_ROOT}/install/uninstall-autostream-host-agent"
+test "$(getfacl --absolute-names --numeric -- /etc/autostream)" = "${retained_parent_acl}"
 test ! -e /usr/local/bin/autostream-host-agent
 test ! -e /etc/systemd/system/autostream-host-agent.service
-test -e /etc/autostream-host-agent/identity.json
+test -e /etc/autostream/updater/agent.yaml
 test -d /var/lib/autostream-host-agent
 test -e /usr/local/libexec/autostream-local-executor
 test -e /etc/systemd/system/autostream-local-executor.service
@@ -1123,41 +1024,29 @@ test ! -e /usr/local/libexec/autostream-local-executor
 test ! -e /etc/systemd/system/autostream-local-executor.service
 test ! -e /etc/systemd/system/autostream-local-executor.socket
 test ! -e /etc/tmpfiles.d/autostream-local-executor.conf
+test ! -e /etc/autostream/updater/executor-policy.json
+test "$(getfacl --absolute-names --numeric -- /etc/autostream)" = "${retained_parent_acl}"
+
+setfacl --no-mask -m "u:${purged_agent_uid}:r-x" -- /etc/autostream
+if "${PACKAGE_ROOT}/install/uninstall-autostream-host-agent" --purge; then
+  printf '%s\n' 'Host Agent purge accepted a customized parent ACL' >&2
+  exit 1
+fi
+test -e /etc/autostream/updater/agent.yaml
+id autostream-host-agent >/dev/null
+setfacl --no-mask -m "u:${purged_agent_uid}:--x" -- /etc/autostream
+test "$(getfacl --absolute-names --numeric -- /etc/autostream)" = "${retained_parent_acl}"
 
 install -o root -g autostream-host-agent -m 0640 \
-  /etc/autostream-host-agent/identity.json \
-  /etc/autostream-host-agent/.identity.staged.wipe
+  /etc/autostream/updater/agent.yaml \
+  /etc/autostream/updater/.agent.staged.wipe
 "${PACKAGE_ROOT}/install/uninstall-autostream-host-agent" --purge
-test ! -e /etc/autostream-host-agent/.identity.staged.wipe
-test ! -e /etc/autostream-host-agent
-test ! -e /etc/autostream/host-agent.json
+expected_purged_acl=$(printf '%s\n' "${retained_parent_acl}" | grep -vFx -- "user:${purged_agent_uid}:--x")
+test "$(getfacl --absolute-names --numeric -- /etc/autostream)" = "${expected_purged_acl}"
+test ! -e /etc/autostream/updater/.agent.staged.wipe
+test ! -e /etc/autostream/updater
 test ! -e /var/lib/autostream-host-agent
 if id autostream-host-agent >/dev/null 2>&1 || getent group autostream-host-agent >/dev/null; then
   printf '%s\n' 'Host Agent purge preserved its dedicated account or group' >&2
   exit 1
 fi
-
-"${PACKAGE_ROOT}/install/install-autostream-host-agent" --prepare
-"${PACKAGE_ROOT}/install/install-autostream-host-agent" \
-  --config /root/autostream-host-agent.json
-systemctl disable --now autostream-host-agent.service
-test ! -e /tmp/autostream-host-agent-active
-test ! -e /tmp/autostream-host-agent-enabled
-"${PACKAGE_ROOT}/install/install-autostream-local-executor" \
-  --policy /root/autostream-local-executor-policy.json
-"${PACKAGE_ROOT}/install/uninstall-autostream-local-executor" --purge
-install -o root -g autostream-host-agent -m 0640 /dev/null \
-  /etc/autostream-host-agent/.identity.staged.wipe
-test "$(stat -c '%s:%U:%G:%a' \
-  /etc/autostream-host-agent/.identity.staged.wipe)" = \
-  "0:root:autostream-host-agent:640"
-"${PACKAGE_ROOT}/install/uninstall-autostream-host-agent" --purge
-test ! -e /etc/autostream-host-agent/.identity.staged.wipe
-test ! -e /etc/autostream-host-agent
-test ! -e /var/lib/autostream-host-agent
-if id autostream-host-agent >/dev/null 2>&1 || getent group autostream-host-agent >/dev/null; then
-  printf '%s\n' 'second Host Agent purge preserved its dedicated account or group' >&2
-  exit 1
-fi
-
-

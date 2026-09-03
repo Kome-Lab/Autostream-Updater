@@ -18,11 +18,11 @@ const (
 	testNewRuntimeToken = "new-runtime-token-secret"
 )
 
-func TestRuntimeCredentialExecutorRejectsLegacyIdentityBeforeMutation(t *testing.T) {
+func TestRuntimeCredentialExecutorRejectsUnsafeIdentityLayoutBeforeMutation(t *testing.T) {
 	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
 	policy, rt, request, activeBefore := newRuntimeCredentialExecutorFixture(t, now)
 	rt.verifyIdentityLayout = func() error {
-		return errors.New("legacy Host Agent identity already exists")
+		return errors.New("Host Agent identity layout ownership drifted")
 	}
 
 	response := handleLocalExecutorRuntimeCredential(
@@ -33,7 +33,7 @@ func TestRuntimeCredentialExecutorRejectsLegacyIdentityBeforeMutation(t *testing
 	}
 	activeAfter, err := os.ReadFile(rt.activeIdentity)
 	if err != nil || !bytes.Equal(activeAfter, activeBefore) {
-		t.Fatalf("active identity changed: %q, %v", activeAfter, err)
+		t.Fatalf("active identity changed: read error=%v", err)
 	}
 	if _, err := os.Lstat(rt.stagedIdentity); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("staged identity appeared: %v", err)
@@ -43,7 +43,7 @@ func TestRuntimeCredentialExecutorRejectsLegacyIdentityBeforeMutation(t *testing
 	}
 }
 
-func TestRuntimeCredentialExecutorRechecksLegacyIdentityAfterPanelActivationBeforeActiveWrite(
+func TestRuntimeCredentialExecutorRechecksIdentityLayoutAfterPanelActivationBeforeActiveWrite(
 	t *testing.T,
 ) {
 	now := time.Date(2026, 8, 4, 8, 15, 0, 0, time.UTC)
@@ -79,17 +79,17 @@ func TestRuntimeCredentialExecutorRechecksLegacyIdentityAfterPanelActivationBefo
 		4,
 	)
 
-	legacyAppeared := false
+	identityLayoutDrifted := false
 	rt.verifyIdentityLayout = func() error {
-		if legacyAppeared {
-			return errors.New("legacy Host Agent identity appeared")
+		if identityLayoutDrifted {
+			return errors.New("Host Agent identity layout permissions drifted")
 		}
 		return nil
 	}
 	rt.activate = func(
 		context.Context, string, string, int64, string, *http.Client,
 	) (HostAgentRuntimeTokenRotation, error) {
-		legacyAppeared = true
+		identityLayoutDrifted = true
 		return testRuntimeTokenRotation(
 			"activated", 5, now, now.Add(time.Second),
 		), nil
@@ -104,21 +104,21 @@ func TestRuntimeCredentialExecutorRechecksLegacyIdentityAfterPanelActivationBefo
 	}
 	activeAfter, err := os.ReadFile(rt.activeIdentity)
 	if err != nil || !bytes.Equal(activeAfter, activeBefore) {
-		t.Fatalf("active identity changed after legacy race: %q, %v", activeAfter, err)
+		t.Fatalf("active identity changed after layout race: read error=%v", err)
 	}
 }
 
-func TestEmergencyRuntimeCredentialRecoveryRejectsLegacyIdentityBeforeMutation(t *testing.T) {
+func TestEmergencyRuntimeCredentialRecoveryRejectsUnsafeIdentityLayoutBeforeMutation(t *testing.T) {
 	now := time.Date(2026, 8, 4, 8, 30, 0, 0, time.UTC)
 	policy, rt, _, activeBefore := newRuntimeCredentialExecutorFixture(t, now)
 	checks := 0
 	rt.verifyIdentityLayout = func() error {
 		checks++
-		return errors.New("legacy Host Agent identity already exists")
+		return errors.New("Host Agent identity layout ownership drifted")
 	}
 
 	_, err := rt.recoverAfterEmergencyManualReconfigure(policy, "rotation-a")
-	if err == nil || !strings.Contains(err.Error(), "legacy Host Agent identity") {
+	if err == nil || !strings.Contains(err.Error(), "identity layout ownership") {
 		t.Fatalf("emergency recovery error = %v", err)
 	}
 	if checks != 1 {
@@ -126,7 +126,7 @@ func TestEmergencyRuntimeCredentialRecoveryRejectsLegacyIdentityBeforeMutation(t
 	}
 	activeAfter, readErr := os.ReadFile(rt.activeIdentity)
 	if readErr != nil || !bytes.Equal(activeAfter, activeBefore) {
-		t.Fatalf("active identity changed: %q, %v", activeAfter, readErr)
+		t.Fatalf("active identity changed: read error=%v", readErr)
 	}
 	if _, exists, loadErr := rt.loadStatus(); loadErr != nil || exists {
 		t.Fatalf("runtime credential state changed: exists=%v err=%v", exists, loadErr)
@@ -897,7 +897,7 @@ func newRuntimeCredentialExecutorFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	activePath := filepath.Join(identityDir, "identity.json")
+	activePath := filepath.Join(identityDir, "agent.yaml")
 	if err := os.WriteFile(activePath, activeBytes, 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -917,8 +917,8 @@ func newRuntimeCredentialExecutorFixture(
 	rt := runtimeCredentialExecutorRuntime{
 		identityDir:     identityDir,
 		activeIdentity:  activePath,
-		stagedIdentity:  filepath.Join(identityDir, "identity.staged.json"),
-		wipingIdentity:  filepath.Join(identityDir, ".identity.staged.wipe"),
+		stagedIdentity:  filepath.Join(identityDir, "agent.staged.yaml"),
+		wipingIdentity:  filepath.Join(identityDir, ".agent.staged.wipe"),
 		statePath:       filepath.Join(stateDir, "runtime-credential.json"),
 		allowTestPaths:  true,
 		executorVersion: "v1.0.0",
@@ -1654,7 +1654,7 @@ func TestEmergencyManualReconfigureRecoveryRejectsRevokedOrInvalidReplacement(
 		mutate func(t *testing.T, rt runtimeCredentialExecutorRuntime, policy LocalExecutorPolicy)
 	}{
 		{
-			name: "same-token-with-different-json-formatting",
+			name: "same-token-with-different-yaml-formatting",
 			mutate: func(
 				t *testing.T,
 				rt runtimeCredentialExecutorRuntime,
@@ -1668,11 +1668,11 @@ func TestEmergencyManualReconfigureRecoveryRejectsRevokedOrInvalidReplacement(
 				if err != nil {
 					t.Fatal(err)
 				}
-				reformatted, err := json.MarshalIndent(active, "", "  ")
+				reformatted, err := marshalManagedBootstrapConfig(active)
 				if err != nil {
 					t.Fatal(err)
 				}
-				reformatted = append(reformatted, '\n')
+				reformatted = append([]byte("# Same identity, different YAML bytes.\n"), reformatted...)
 				if err := rt.writeIdentityAtomic(
 					rt.activeIdentity,
 					reformatted,

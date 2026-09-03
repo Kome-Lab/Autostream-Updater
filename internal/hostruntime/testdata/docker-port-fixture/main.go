@@ -2,15 +2,18 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 type fixtureConfig struct {
+	listenAddress  string
 	port           int
 	advertisedPort int
 	configRevision int64
@@ -19,13 +22,17 @@ type fixtureConfig struct {
 }
 
 func main() {
+	listener := requiredFixtureNodeListener()
+	address, err := netip.ParseAddrPort(listener.BindAddress)
+	if err != nil || !address.Addr().IsUnspecified() || address.Port() < 1024 {
+		panic("Node listener bind_address is invalid")
+	}
 	config := fixtureConfig{
-		port:           requiredFixtureListenPort(),
+		listenAddress:  listener.BindAddress,
+		port:           int(address.Port()),
 		advertisedPort: requiredInt("AUTOSTREAM_FIXTURE_ADVERTISED_PORT", 1, 65535),
-		configRevision: int64(requiredInt(
-			"AUTOSTREAM_CONFIG_REVISION", 1, int(^uint(0)>>1),
-		)),
-		version: os.Getenv("AUTOSTREAM_FIXTURE_VERSION"),
+		configRevision: listener.ConfigRevision,
+		version:        os.Getenv("AUTOSTREAM_FIXTURE_VERSION"),
 	}
 	if unhealthyPort := os.Getenv("AUTOSTREAM_FIXTURE_UNHEALTHY_PORT"); unhealthyPort != "" {
 		config.unhealthy = config.port == requiredInt(
@@ -67,7 +74,7 @@ func main() {
 		})
 	})
 	server := &http.Server{
-		Addr:              fmt.Sprintf("0.0.0.0:%d", config.port),
+		Addr:              config.listenAddress,
 		Handler:           mux,
 		ReadHeaderTimeout: 2 * time.Second,
 	}
@@ -76,15 +83,20 @@ func main() {
 	}
 }
 
-func requiredFixtureListenPort() int {
-	if os.Getenv("AUTOSTREAM_FIXTURE_PORT") != "" {
-		return requiredInt("AUTOSTREAM_FIXTURE_PORT", 1024, 65535)
+func requiredFixtureNodeListener() contracts.NodeListenerConfig {
+	directory := os.Getenv("CREDENTIALS_DIRECTORY")
+	if directory != "/run/autostream-credentials" {
+		panic("CREDENTIALS_DIRECTORY is invalid")
 	}
-	address, err := netip.ParseAddrPort(os.Getenv("AUTOSTREAM_BIND_ADDR"))
-	if err != nil || !address.Addr().IsUnspecified() || address.Port() < 1024 {
-		panic("AUTOSTREAM_BIND_ADDR is invalid")
+	body, err := os.ReadFile(filepath.Join(directory, "node-listener.json"))
+	if err != nil {
+		panic("Node listener credential is unavailable")
 	}
-	return int(address.Port())
+	listener, err := contracts.ParseNodeListenerConfig(body)
+	if err != nil || listener.ServiceType != "worker" {
+		panic("Node listener credential is invalid")
+	}
+	return listener
 }
 
 func requiredInt(name string, minimum, maximum int) int {

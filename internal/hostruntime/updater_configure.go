@@ -143,7 +143,7 @@ func stageUpdaterConfiguration(
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, panelURL+"/api/node-agent/configure/stage", bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, panelURL+"/services/host-agent/runtime-identity/stage", bytes.NewReader(payload))
 	if err != nil {
 		return UpdaterStagedConfiguration{}, errors.New("create updater stage request")
 	}
@@ -251,7 +251,7 @@ func ActivateUpdaterConfiguration(ctx context.Context, client *http.Client, pane
 			return UpdaterActivationResult{}, err
 		}
 		attemptCtx, attemptCancel := context.WithTimeout(requestCtx, perAttemptTimeout)
-		request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, panelURL+"/api/node-agent/configure/activate", bytes.NewReader(payload))
+		request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, panelURL+"/services/host-agent/runtime-identity/activate", bytes.NewReader(payload))
 		if err != nil {
 			attemptCancel()
 			return UpdaterActivationResult{}, errors.New("create updater activation request")
@@ -453,52 +453,26 @@ func mergeUpdaterConfiguredIdentity(existing []byte, identity UpdaterConfigureId
 }
 
 type updaterConfigTemplate struct {
-	fields map[string]json.RawMessage
 }
 
 func prepareUpdaterConfigTemplate(existing []byte) (updaterConfigTemplate, error) {
 	if len(bytes.TrimSpace(existing)) == 0 {
-		return updaterConfigTemplate{fields: map[string]json.RawMessage{}}, nil
+		return updaterConfigTemplate{}, nil
 	}
-	var fields map[string]json.RawMessage
-	decoder := json.NewDecoder(bytes.NewReader(existing))
-	decoder.DisallowUnknownFields()
-	var cfg Config
-	if err := decoder.Decode(&cfg); err != nil {
+	if _, err := decodeManagedBootstrapConfig(existing); err != nil {
 		return updaterConfigTemplate{}, fmt.Errorf("decode existing updater config: %w", err)
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return updaterConfigTemplate{}, errors.New("existing updater config contains trailing data")
-	}
-	if err := json.Unmarshal(existing, &fields); err != nil {
-		return updaterConfigTemplate{}, errors.New("decode existing updater config fields")
-	}
-	return updaterConfigTemplate{fields: fields}, nil
+	return updaterConfigTemplate{}, nil
 }
 
 func (t updaterConfigTemplate) merge(identity UpdaterConfigureIdentity) ([]byte, error) {
 	if err := validateUpdaterConfigureIdentity(identity, identity.NodeID, ""); err != nil {
 		return nil, err
 	}
-	fields := make(map[string]json.RawMessage, 4)
-	for name, value := range map[string]string{
-		"panel_url":     strings.TrimSpace(identity.PanelURL),
-		"node_id":       strings.TrimSpace(identity.NodeID),
-		"runtime_token": strings.TrimSpace(identity.RuntimeToken),
-		"service_name":  strings.TrimSpace(identity.ServiceName),
-	} {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return nil, errors.New("encode updater identity")
-		}
-		fields[name] = encoded
-	}
-	merged, err := json.MarshalIndent(fields, "", "  ")
-	if err != nil {
-		return nil, errors.New("format updater config")
-	}
-	return append(merged, '\n'), nil
+	return marshalManagedBootstrapConfig(Config{
+		PanelURL: strings.TrimSpace(identity.PanelURL), NodeID: strings.TrimSpace(identity.NodeID),
+		RuntimeToken: strings.TrimSpace(identity.RuntimeToken), ServiceName: strings.TrimSpace(identity.ServiceName),
+	})
 }
 
 func updaterConfigureRuntimeReport(version, commit, buildDate, hostname string) UpdaterRuntimeReport {
