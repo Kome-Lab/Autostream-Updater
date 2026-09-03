@@ -43,17 +43,17 @@ func TestManagedBootstrapConfigYAMLPreservesExactlyFourStringFields(t *testing.T
 func TestManagedBootstrapConfigYAMLRejectsOtherShapesWithoutSecretEcho(t *testing.T) {
 	const valid = "panel_url: https://panel.example.com\nnode_id: host-agent-a\nruntime_token: runtime-test-marker\nservice_name: Host Agent A\n"
 	for name, data := range map[string]string{
-		"legacy-json": `{"panel_url":"https://panel.example.com","node_id":"host-agent-a","runtime_token":"runtime-test-marker","service_name":"Host Agent A"}`,
+		"legacy-json":           `{"panel_url":"https://panel.example.com","node_id":"host-agent-a","runtime_token":"runtime-test-marker","service_name":"Host Agent A"}`,
 		"document-wrapped-json": "---\n" + `{"panel_url":"https://panel.example.com","node_id":"host-agent-a","runtime_token":"runtime-test-marker","service_name":"Host Agent A"}`,
-		"flow-mapping": "{panel_url: https://panel.example.com, node_id: host-agent-a, runtime_token: runtime-test-marker, service_name: Host Agent A}",
-		"extra-field": valid + "local_listen_port: 8080\n",
-		"missing-field": strings.ReplaceAll(valid, "service_name: Host Agent A\n", ""),
-		"duplicate-field": strings.ReplaceAll(valid, "service_name: Host Agent A", "runtime_token: second-runtime-test-marker"),
-		"non-string-token": strings.ReplaceAll(valid, "runtime_token: runtime-test-marker", "runtime_token: 12345"),
-		"null-token": strings.ReplaceAll(valid, "runtime_token: runtime-test-marker", "runtime_token: null"),
-		"nested-token": strings.ReplaceAll(valid, "runtime_token: runtime-test-marker", "runtime_token:\n  value: runtime-test-marker"),
-		"alias-token": strings.ReplaceAll(strings.ReplaceAll(valid, "node_id: host-agent-a", "node_id: &node host-agent-a"), "runtime_token: runtime-test-marker", "runtime_token: *node"),
-		"second-document": valid + "---\n" + valid,
+		"flow-mapping":          "{panel_url: https://panel.example.com, node_id: host-agent-a, runtime_token: runtime-test-marker, service_name: Host Agent A}",
+		"extra-field":           valid + "local_listen_port: 8080\n",
+		"missing-field":         strings.ReplaceAll(valid, "service_name: Host Agent A\n", ""),
+		"duplicate-field":       strings.ReplaceAll(valid, "service_name: Host Agent A", "runtime_token: second-runtime-test-marker"),
+		"non-string-token":      strings.ReplaceAll(valid, "runtime_token: runtime-test-marker", "runtime_token: 12345"),
+		"null-token":            strings.ReplaceAll(valid, "runtime_token: runtime-test-marker", "runtime_token: null"),
+		"nested-token":          strings.ReplaceAll(valid, "runtime_token: runtime-test-marker", "runtime_token:\n  value: runtime-test-marker"),
+		"alias-token":           strings.ReplaceAll(strings.ReplaceAll(valid, "node_id: host-agent-a", "node_id: &node host-agent-a"), "runtime_token: runtime-test-marker", "runtime_token: *node"),
+		"second-document":       valid + "---\n" + valid,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := decodeManagedBootstrapConfig([]byte(data))
