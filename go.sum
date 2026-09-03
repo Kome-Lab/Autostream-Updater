@@ -30,8 +30,8 @@ github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 h1:nCYfg
 github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0/go.mod h1:ucUjca2JtSZboY8IoUqyQyuuXvwbMBVwFOm0vdQPNhA=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.7.0 h1:4iB+IesclUXdP0ICgAabvq2FYLXrJWKx1fJQ+GxSo3Y=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.7.0/go.mod h1:HKpQxkWaGLJ+D/5H8QRpyQXA1eKjxkFlOMwck5+33Jk=
-github.com/Kome-Lab/Autostream-Contracts v0.0.0-20260901201426-181825ab7dab h1:pMgIxqr+RsZTpud/7RCkZfkFKDmxTsNmjCcwk6Hc92U=
-github.com/Kome-Lab/Autostream-Contracts v0.0.0-20260901201426-181825ab7dab/go.mod h1:sJPMVofBZcO4uZd1T/y/VkN6/pwN0PJNAQGzlXI+GN4=
+github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260903195800-89c280936013 h1:OWGtXNvMPO0Sv0+nMCd8/Nk4hSZC8sIlUc9jJ/KKkz0=
+github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260903195800-89c280936013/go.mod h1:sJPMVofBZcO4uZd1T/y/VkN6/pwN0PJNAQGzlXI+GN4=
 github.com/alessio/shellescape v1.4.1 h1:V7yhSDDn8LP4lc4jS8pFkt0zCnzVJlG5JXy9BVKJUX0=
 github.com/alessio/shellescape v1.4.1/go.mod h1:PZAiSCk0LJaZkiCSkPv8qIobYglO3FPpyFjDCtHLS30=
 github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 h1:DklsrG3dyBCFEj5IhUbnKptjxatkF07cF2ak3yi77so=

@@ -14,7 +14,7 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
-replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v0.0.0-20260901201426-181825ab7dab
+replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260903195800-89c280936013
 
 require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
