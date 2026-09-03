@@ -15,20 +15,16 @@ import (
 )
 
 const (
-	manualHostRecoveryUnitControlPanelLegacyDigest    = "751c69c970407b4873d403971a192b33320d44b352aba58a9ab56c2fa1e1309c"
-	manualHostRecoveryUnitControlPanelCorrectedDigest = "d0a994dc4a0dc5dd27131f3878de4e9652d5679a4681174660249b66eb1813fd"
-	manualHostRecoveryUnitUpdaterLegacyDigest         = "92e4a01f8d56a65104a3eb02dfc09232eced767e05087c4bc4a2ffc16d15d563"
-	manualHostRecoveryUnitUpdaterCorrectedDigest      = "562108006e7c18430cb00b5622bfe7ee3a590e2773d50ac8cf16cac788d963b0"
+	manualHostRecoveryUnitUpdaterLegacyDigest    = "8b787e1bdce889d73ba046929bd3c671e19c72f37df6fdc67f47b8fa09a618a4"
+	manualHostRecoveryUnitUpdaterCorrectedDigest = "049557efca6b9eb7c2df4665c6896284ebcdd8645f0bfa3cd3ea57cc09d7ee3f"
 )
 
 func manualHostRecoveryUnitDigestIsLegacy(digest string) bool {
-	return digest == manualHostRecoveryUnitControlPanelLegacyDigest ||
-		digest == manualHostRecoveryUnitUpdaterLegacyDigest
+	return digest == manualHostRecoveryUnitUpdaterLegacyDigest
 }
 
 func manualHostRecoveryUnitDigestIsCorrected(digest string) bool {
-	return digest == manualHostRecoveryUnitControlPanelCorrectedDigest ||
-		digest == manualHostRecoveryUnitUpdaterCorrectedDigest
+	return digest == manualHostRecoveryUnitUpdaterCorrectedDigest
 }
 
 var manualHostRecoveryUnitKnownDropIns = map[string]string{

@@ -69,60 +69,6 @@ func TestMigrateManualHostRecoveryUnitCorrectedNoOp(t *testing.T) {
 	}
 }
 
-func TestMigrateManualHostRecoveryUnitControlPanelLegacy(t *testing.T) {
-	fixture := newManualHostRecoveryUnitFixture(
-		t, controlPanelLegacyManualHostRecoveryUnitBytes(t),
-	)
-	if err := migrateManualHostRecoveryUnitForward(
-		context.Background(), fixture.config(),
-	); err != nil {
-		t.Fatalf("migrateManualHostRecoveryUnitForward: %v", err)
-	}
-	assertManualHostRecoveryUnitConverged(t, fixture)
-	if fixture.runner.reloads != 2 {
-		t.Fatalf("daemon-reload calls=%d, want 2", fixture.runner.reloads)
-	}
-}
-
-func TestMigrateManualHostRecoveryUnitControlPanelCorrectedNoOp(t *testing.T) {
-	corrected := controlPanelCorrectedManualHostRecoveryUnitBytes(t)
-	fixture := newManualHostRecoveryUnitFixture(t, corrected)
-	if err := migrateManualHostRecoveryUnitForward(
-		context.Background(), fixture.config(),
-	); err != nil {
-		t.Fatalf("migrateManualHostRecoveryUnitForward: %v", err)
-	}
-	installed, err := os.ReadFile(fixture.installedPath)
-	if err != nil || string(installed) != string(corrected) {
-		t.Fatalf("Control Panel corrected recovery unit changed: err=%v", err)
-	}
-	if fixture.runner.reloads != 0 {
-		t.Fatalf("daemon-reload calls=%d, want 0", fixture.runner.reloads)
-	}
-}
-
-func TestMigrateManualHostRecoveryUnitControlPanelCandidate(t *testing.T) {
-	corrected := controlPanelCorrectedManualHostRecoveryUnitBytes(t)
-	fixture := newManualHostRecoveryUnitFixture(
-		t, controlPanelLegacyManualHostRecoveryUnitBytes(t),
-	)
-	if err := os.WriteFile(fixture.candidatePath, corrected, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrateManualHostRecoveryUnitForward(
-		context.Background(), fixture.config(),
-	); err != nil {
-		t.Fatalf("migrateManualHostRecoveryUnitForward: %v", err)
-	}
-	installed, err := os.ReadFile(fixture.installedPath)
-	if err != nil || string(installed) != string(corrected) {
-		t.Fatalf("Control Panel recovery candidate was not retained: err=%v", err)
-	}
-	if fixture.runner.reloads != 2 {
-		t.Fatalf("daemon-reload calls=%d, want 2", fixture.runner.reloads)
-	}
-}
-
 func TestMigrateManualHostRecoveryUnitRemovesEmptyKnownDropInDirectory(
 	t *testing.T,
 ) {
@@ -608,38 +554,6 @@ func legacyManualHostRecoveryUnitBytes(t *testing.T) []byte {
 	if got := manualHostRecoveryUnitDigest(data); got !=
 		manualHostRecoveryUnitUpdaterLegacyDigest {
 		t.Fatalf("Updater legacy recovery unit digest=%s", got)
-	}
-	return data
-}
-
-func controlPanelCorrectedManualHostRecoveryUnitBytes(t *testing.T) []byte {
-	t.Helper()
-	updater := string(correctedManualHostRecoveryUnitBytes(t))
-	corrected := strings.Replace(
-		updater,
-		"Documentation=https://github.com/Kome-Lab/Autostream-Updater\n",
-		"Documentation=https://github.com/Kome-Lab/Autostream-ControlPanel\n",
-		1,
-	)
-	if corrected == updater {
-		t.Fatal("failed to construct Control Panel recovery unit")
-	}
-	data := []byte(corrected)
-	if got := manualHostRecoveryUnitDigest(data); got !=
-		manualHostRecoveryUnitControlPanelCorrectedDigest {
-		t.Fatalf("Control Panel corrected recovery unit digest=%s", got)
-	}
-	return data
-}
-
-func controlPanelLegacyManualHostRecoveryUnitBytes(t *testing.T) []byte {
-	t.Helper()
-	data := legacyManualHostRecoveryUnitBytesFromCorrected(
-		t, controlPanelCorrectedManualHostRecoveryUnitBytes(t),
-	)
-	if got := manualHostRecoveryUnitDigest(data); got !=
-		manualHostRecoveryUnitControlPanelLegacyDigest {
-		t.Fatalf("Control Panel legacy recovery unit digest=%s", got)
 	}
 	return data
 }

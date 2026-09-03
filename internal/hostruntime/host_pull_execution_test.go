@@ -445,7 +445,7 @@ func TestHostPullExecutionClaimsServerOwnedHostAndCompletesThroughLocalExecutor(
 		t.Fatalf("executeOnce: %v", err)
 	}
 	if len(panel.claims) != 1 || panel.claims[0] != (HostPullClaimRequest{
-		UpdaterID: "updater-01", HostID: binding.ExecutionHostID,
+		UpdaterID: binding.ServiceID, HostID: binding.ExecutionHostID,
 		LeaseGeneration: 1, Fence: binding.OwnershipEpoch,
 	}) {
 		t.Fatalf("claims=%+v", panel.claims)

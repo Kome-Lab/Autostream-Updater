@@ -1157,6 +1157,16 @@ func validateComposeModelSecurity(raw []byte, d *DockerTarget) error {
 			ref, _ := item.(map[string]any)
 			source, _ := ref["source"].(string)
 			definition, _ := definitions[source].(map[string]any)
+			if kind == "configs" && ref["target"] == "/run/autostream-credentials/node-listener.json" {
+				content, _ := definition["content"].(string)
+				_, hasFile := definition["file"]
+				_, hasEnvironment := definition["environment"]
+				_, hasExternal := definition["external"]
+				if content == "" || len(content) > 64<<10 || hasFile || hasEnvironment || hasExternal {
+					return errors.New("compose Node listener must be a bounded inline configuration")
+				}
+				continue
+			}
 			path, _ := definition["file"].(string)
 			if err := validateComposeHostReference(path, false, &pathCount); err != nil {
 				return fmt.Errorf("compose %s reference: %w", kind, err)

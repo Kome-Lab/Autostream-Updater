@@ -16,23 +16,19 @@ import (
 // v1.9.16 installed an explicit User=root/Group=root. On systemd 255 that form
 // can remove CAP_SETUID from the service's effective set, which prevents the
 // root executor from running its candidate smoke check through runuser. The
-// Control Panel and independent Updater templates differ only in their exact
-// Documentation URL, so both byte-exact generations remain recognized.
+// The immediately preceding independent Updater template remains recognized
+// so the current rollback candidate can converge to the hardened unit.
 const (
-	manualHostExecutorUnitControlPanelLegacyDigest    = "3d2e6157df4c99d0feb6a3567ae6b7bb54bab2e37bd7adaa8de5a1b00ec4f4b5"
-	manualHostExecutorUnitControlPanelCorrectedDigest = "eab31390eacea5f8d0cc5da2666142df4322e50863cba01fb3127bea64362dac"
-	manualHostExecutorUnitUpdaterLegacyDigest         = "4650220b10a21063e15f9a0a121bc0cd078f5d2f684c601fa50a95b04ae88225"
-	manualHostExecutorUnitUpdaterCorrectedDigest      = "548db8de58ecfddc59f64abd408fe1bae3cfd8e35c2a664c0a81038debfac8c5"
+	manualHostExecutorUnitUpdaterLegacyDigest    = "86c8552486a5982b3c6d84aa3129ff8009b3ab69fe3e49c55a1690fd38fcbb9a"
+	manualHostExecutorUnitUpdaterCorrectedDigest = "25bf5ad5c41da5b9dcb2d3817a82b5b84e1593d6051e43c0aa4601f26561513e"
 )
 
 func manualHostExecutorUnitDigestIsLegacy(digest string) bool {
-	return digest == manualHostExecutorUnitControlPanelLegacyDigest ||
-		digest == manualHostExecutorUnitUpdaterLegacyDigest
+	return digest == manualHostExecutorUnitUpdaterLegacyDigest
 }
 
 func manualHostExecutorUnitDigestIsCorrected(digest string) bool {
-	return digest == manualHostExecutorUnitControlPanelCorrectedDigest ||
-		digest == manualHostExecutorUnitUpdaterCorrectedDigest
+	return digest == manualHostExecutorUnitUpdaterCorrectedDigest
 }
 
 type manualHostExecutorUnitMigrationConfig struct {
