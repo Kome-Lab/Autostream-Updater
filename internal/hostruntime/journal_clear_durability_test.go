@@ -293,7 +293,7 @@ type clearThenErrorRecoveryPanel struct {
 }
 
 func (p *clearThenErrorRecoveryPanel) ClaimHost(
-	context.Context, string, string, string,
+	context.Context, HostPullClaimRequest,
 ) (*UpdateJob, bool, error) {
 	if err := p.journal.ClearActive(); err != nil {
 		return nil, false, err

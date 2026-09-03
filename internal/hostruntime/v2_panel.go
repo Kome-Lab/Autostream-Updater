@@ -54,43 +54,61 @@ func NewV2PanelClient(panel PanelClient) *V2PanelClient {
 
 func (c *V2PanelClient) ClaimHost(
 	ctx context.Context,
-	serviceID, hostID, activeJobID string,
+	request HostPullClaimRequest,
 ) (*UpdateJob, bool, error) {
-	if c == nil || serviceID != strings.TrimSpace(serviceID) ||
-		!identifierPattern.MatchString(serviceID) || hostID != "" ||
-		(activeJobID != "" && (activeJobID != strings.TrimSpace(activeJobID) ||
-			!identifierPattern.MatchString(activeJobID))) {
+	if c == nil || request.UpdaterID != strings.TrimSpace(request.UpdaterID) ||
+		!identifierPattern.MatchString(request.UpdaterID) ||
+		request.HostID != strings.TrimSpace(request.HostID) ||
+		!identifierPattern.MatchString(request.HostID) ||
+		request.LeaseGeneration < 1 || request.Fence < 1 ||
+		(request.ActiveJobID != "" &&
+			(request.ActiveJobID != strings.TrimSpace(request.ActiveJobID) ||
+				!identifierPattern.MatchString(request.ActiveJobID))) {
 		return nil, false, errors.New("v2 updater claim identity is invalid")
 	}
 
 	lease, clear, err := c.v2ControlPlane().Claim(ctx, contracts.UpdateAgentClaimRequest{
-		ServiceID:   serviceID,
-		ActiveJobID: activeJobID,
+		UpdaterID:       request.UpdaterID,
+		HostID:          request.HostID,
+		LeaseGeneration: request.LeaseGeneration,
+		Fence:           request.Fence,
+		ActiveJobID:     request.ActiveJobID,
 	})
 	if err != nil {
 		return nil, false, v2PanelControlPlaneError("claim", err)
 	}
 	if clear {
-		job, err := c.v2ClearJob(serviceID, activeJobID)
+		job, err := c.v2ClearJob(request.UpdaterID, request.ActiveJobID)
 		if err != nil {
 			return nil, false, err
 		}
 		return job, true, nil
 	}
 	if lease == nil {
-		if activeJobID == "" {
+		if request.ActiveJobID == "" {
 			c.leaseMu.Lock()
 			c.lease = nil
 			c.leaseMu.Unlock()
 		}
 		return nil, false, nil
 	}
+	expectedGeneration := request.LeaseGeneration
+	if request.ActiveJobID != "" {
+		if expectedGeneration == math.MaxInt64 {
+			return nil, false, errors.New("v2 updater claim lease generation is exhausted")
+		}
+		expectedGeneration++
+	}
+	authorization := lease.Command.MutationAuthorization
 	if contracts.ValidateUpdaterLease(c.now(), *lease) != nil ||
-		lease.Command.MutationAuthorization.UpdaterID != serviceID {
+		lease.LeaseGeneration != expectedGeneration ||
+		authorization.UpdaterID != request.UpdaterID ||
+		authorization.HostID != request.HostID ||
+		authorization.Fence != request.Fence {
 		return nil, false, errors.New("v2 updater lease does not match the claiming service")
 	}
 
-	job, err := mapV2LeaseToUpdateJob(*lease, activeJobID)
+	job, err := mapV2LeaseToUpdateJob(*lease, request.ActiveJobID)
 	if err != nil {
 		return nil, false, err
 	}

@@ -16,7 +16,7 @@ import (
 type hostPullExecutionTestPanel struct {
 	job          *UpdateJob
 	clearActive  bool
-	claimHostIDs []string
+	claims       []HostPullClaimRequest
 	reports      []JobReport
 	reportErrors []error
 	grants       []MutationGrantRequest
@@ -33,8 +33,8 @@ func (*hostPullExecutionTestPanel) HeartbeatHostAgent(context.Context, Config, s
 func (*hostPullExecutionTestPanel) FetchHostAgentPolicy(context.Context, string, int64) (*HostAgentPolicy, bool, error) {
 	return nil, false, errors.New("not used")
 }
-func (p *hostPullExecutionTestPanel) ClaimHost(_ context.Context, _, hostID, _ string) (*UpdateJob, bool, error) {
-	p.claimHostIDs = append(p.claimHostIDs, hostID)
+func (p *hostPullExecutionTestPanel) ClaimHost(_ context.Context, request HostPullClaimRequest) (*UpdateJob, bool, error) {
+	p.claims = append(p.claims, request)
 	if p.job == nil {
 		return nil, false, nil
 	}
@@ -444,8 +444,11 @@ func TestHostPullExecutionClaimsServerOwnedHostAndCompletesThroughLocalExecutor(
 	if err := agent.executeOnce(context.Background(), binding, policy); err != nil {
 		t.Fatalf("executeOnce: %v", err)
 	}
-	if len(panel.claimHostIDs) != 1 || panel.claimHostIDs[0] != "" {
-		t.Fatalf("claim host ids=%v", panel.claimHostIDs)
+	if len(panel.claims) != 1 || panel.claims[0] != (HostPullClaimRequest{
+		UpdaterID: "updater-01", HostID: binding.ExecutionHostID,
+		LeaseGeneration: 1, Fence: binding.OwnershipEpoch,
+	}) {
+		t.Fatalf("claims=%+v", panel.claims)
 	}
 	if executor.stageCalls != 1 || executor.applyCalls != 1 || executor.reconcileCalls != 0 {
 		t.Fatalf("executor calls stage=%d apply=%d reconcile=%d", executor.stageCalls, executor.applyCalls, executor.reconcileCalls)

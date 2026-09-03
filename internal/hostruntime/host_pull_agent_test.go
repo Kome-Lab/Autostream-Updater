@@ -1055,10 +1055,10 @@ func (p *hostPullRecoveryLoopPanel) FetchHostAgentPolicy(context.Context, string
 	return &copy, true, nil
 }
 
-func (p *hostPullRecoveryLoopPanel) ClaimHost(_ context.Context, _, _, activeJobID string) (*UpdateJob, bool, error) {
+func (p *hostPullRecoveryLoopPanel) ClaimHost(_ context.Context, request HostPullClaimRequest) (*UpdateJob, bool, error) {
 	p.mu.Lock()
 	p.events = append(p.events, "claim")
-	p.claimActive = append(p.claimActive, activeJobID)
+	p.claimActive = append(p.claimActive, request.ActiveJobID)
 	if p.requireHeartbeatBeforeClaim && !p.heartbeatFresh {
 		p.mu.Unlock()
 		return nil, false, errors.New("updater_offline")

@@ -45,7 +45,10 @@ func TestClaimRequiresConfirmedNonCacheableContractV2(t *testing.T) {
 			}
 			lease, clear, err := client.Claim(
 				context.Background(),
-				contracts.UpdateAgentClaimRequest{ServiceID: "updater-01"},
+				contracts.UpdateAgentClaimRequest{
+					UpdaterID: "updater-01", HostID: "host-01",
+					LeaseGeneration: 1, Fence: 1,
+				},
 			)
 			if test.ok {
 				if err != nil || lease != nil || clear {
@@ -68,7 +71,11 @@ func TestClaimRejectsLegacyBodyAndRedirect(t *testing.T) {
 	}))
 	defer legacy.Close()
 	client := Client{BaseURL: legacy.URL, HTTP: legacy.Client(), TokenProvider: func() string { return "runtime-token" }}
-	if _, _, err := client.Claim(context.Background(), contracts.UpdateAgentClaimRequest{ServiceID: "updater-01"}); err == nil {
+	claim := contracts.UpdateAgentClaimRequest{
+		UpdaterID: "updater-01", HostID: "host-01",
+		LeaseGeneration: 1, Fence: 1,
+	}
+	if _, _, err := client.Claim(context.Background(), claim); err == nil {
 		t.Fatal("legacy claim body was accepted as v2")
 	}
 
@@ -84,7 +91,7 @@ func TestClaimRejectsLegacyBodyAndRedirect(t *testing.T) {
 	}))
 	defer redirect.Close()
 	client = Client{BaseURL: redirect.URL, HTTP: redirect.Client(), TokenProvider: func() string { return "runtime-token" }}
-	if _, _, err := client.Claim(context.Background(), contracts.UpdateAgentClaimRequest{ServiceID: "updater-01"}); err == nil || followed {
+	if _, _, err := client.Claim(context.Background(), claim); err == nil || followed {
 		t.Fatalf("redirect result err=%v followed=%v", err, followed)
 	}
 }

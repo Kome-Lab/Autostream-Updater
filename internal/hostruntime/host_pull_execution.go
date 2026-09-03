@@ -17,9 +17,17 @@ import (
 )
 
 type HostPullExecutionControlPlane interface {
-	ClaimHost(context.Context, string, string, string) (*UpdateJob, bool, error)
+	ClaimHost(context.Context, HostPullClaimRequest) (*UpdateJob, bool, error)
 	Report(context.Context, string, JobReport) error
 	IssueMutationGrant(context.Context, string, MutationGrantRequest) (MutationGrant, error)
+}
+
+type HostPullClaimRequest struct {
+	UpdaterID       string
+	HostID          string
+	LeaseGeneration int64
+	Fence           int64
+	ActiveJobID     string
 }
 
 func newHostPullSessionID() (string, error) {
@@ -129,12 +137,21 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 	}
 	active := a.Journal.Active()
 	activeID := ""
+	leaseGeneration := int64(1)
 	if active != nil {
 		activeID = active.ID
+		if active.LeaseGeneration == 0 || active.LeaseGeneration > math.MaxInt64 {
+			return errors.New("active pull_v2 lease generation is invalid")
+		}
+		leaseGeneration = int64(active.LeaseGeneration)
 	}
-	// pull_v2 never submits a client-selected host. The authenticated service
-	// identity is resolved to the active execution-host owner by the server.
-	job, clearActive, err := panel.ClaimHost(ctx, a.Bootstrap.NodeID, "", activeID)
+	job, clearActive, err := panel.ClaimHost(ctx, HostPullClaimRequest{
+		UpdaterID:       a.Bootstrap.NodeID,
+		HostID:          binding.ExecutionHostID,
+		LeaseGeneration: leaseGeneration,
+		Fence:           binding.OwnershipEpoch,
+		ActiveJobID:     activeID,
+	})
 	if err != nil {
 		return err
 	}

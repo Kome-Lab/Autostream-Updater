@@ -30,8 +30,10 @@ func TestV2PanelClientMapsLeaseReportsAndMutationGrant(t *testing.T) {
 		case "/services/update-jobs/claim":
 			var claim contracts.UpdateAgentClaimRequest
 			if err := json.NewDecoder(request.Body).Decode(&claim); err != nil ||
-				claim.ServiceID != lease.Command.MutationAuthorization.UpdaterID ||
-				claim.HostID != "" {
+				claim.UpdaterID != lease.Command.MutationAuthorization.UpdaterID ||
+				claim.HostID != lease.Command.MutationAuthorization.HostID ||
+				claim.LeaseGeneration != lease.LeaseGeneration ||
+				claim.Fence != lease.Command.MutationAuthorization.Fence {
 				t.Errorf("claim=%+v err=%v", claim, err)
 			}
 			writeV2PanelJSON(t, w, http.StatusOK, lease)
@@ -96,7 +98,7 @@ func TestV2PanelClientMapsLeaseReportsAndMutationGrant(t *testing.T) {
 		HTTP:    server.Client(),
 	})
 	client.Now = func() time.Time { return now }
-	job, clear, err := client.ClaimHost(context.Background(), "updater-01", "", "")
+	job, clear, err := client.ClaimHost(context.Background(), v2PanelClaimRequest(""))
 	if err != nil || clear || job == nil {
 		t.Fatalf("job=%+v clear=%v err=%v", job, clear, err)
 	}
@@ -169,7 +171,8 @@ func TestV2PanelClientClearSurvivesRestartWithoutLeaseCredential(t *testing.T) {
 		claims++
 		var claim contracts.UpdateAgentClaimRequest
 		if err := json.NewDecoder(request.Body).Decode(&claim); err != nil ||
-			claim.ServiceID != "updater-01" ||
+			claim.UpdaterID != "updater-01" || claim.HostID != "host-01" ||
+			claim.LeaseGeneration != 3 || claim.Fence != 9 ||
 			(claims == 1 && claim.ActiveJobID != "") ||
 			(claims > 1 && claim.ActiveJobID != "job-01") {
 			t.Errorf("claim=%+v err=%v", claim, err)
@@ -185,11 +188,11 @@ func TestV2PanelClientClearSurvivesRestartWithoutLeaseCredential(t *testing.T) {
 	defer server.Close()
 	client := NewV2PanelClient(PanelClient{BaseURL: server.URL, Token: "runtime-token", HTTP: server.Client()})
 	client.Now = func() time.Time { return now }
-	job, _, err := client.ClaimHost(context.Background(), "updater-01", "", "")
+	job, _, err := client.ClaimHost(context.Background(), v2PanelClaimRequest(""))
 	if err != nil || job == nil {
 		t.Fatalf("initial claim job=%+v err=%v", job, err)
 	}
-	cleared, clear, err := client.ClaimHost(context.Background(), "updater-01", "", job.ID)
+	cleared, clear, err := client.ClaimHost(context.Background(), v2PanelClaimRequest(job.ID))
 	if err != nil || !clear || cleared == nil || cleared.ID != job.ID ||
 		cleared.Status != "canceled" || !cleared.RecoveryClear || cleared.LeaseToken != "" {
 		t.Fatalf("clear job=%+v clear=%v err=%v", cleared, clear, err)
@@ -197,7 +200,7 @@ func TestV2PanelClientClearSurvivesRestartWithoutLeaseCredential(t *testing.T) {
 
 	fresh := NewV2PanelClient(PanelClient{BaseURL: server.URL, Token: "runtime-token", HTTP: server.Client()})
 	fresh.Now = func() time.Time { return now }
-	restarted, clear, err := fresh.ClaimHost(context.Background(), "updater-01", "", job.ID)
+	restarted, clear, err := fresh.ClaimHost(context.Background(), v2PanelClaimRequest(job.ID))
 	if err != nil || !clear || restarted == nil || restarted.ID != job.ID ||
 		restarted.AgentServiceID != "updater-01" || !restarted.RecoveryClear ||
 		restarted.LeaseToken != "" {
@@ -229,7 +232,7 @@ func TestV2PanelClientRejectsLegacyAndMalformedClaimsWithoutFallback(t *testing.
 			defer server.Close()
 			client := NewV2PanelClient(PanelClient{BaseURL: server.URL, Token: "runtime-token", HTTP: server.Client()})
 			if job, clear, err := client.ClaimHost(
-				context.Background(), "updater-01", "", test.activeJobID,
+				context.Background(), v2PanelClaimRequest(test.activeJobID),
 			); err == nil || job != nil || clear {
 				t.Fatalf("unsafe response job=%+v clear=%v err=%v", job, clear, err)
 			}
@@ -248,7 +251,7 @@ func TestV2PanelClientConvertsOnlySafeHTTPErrorFields(t *testing.T) {
 	}))
 	defer server.Close()
 	client := NewV2PanelClient(PanelClient{BaseURL: server.URL, Token: "runtime-token", HTTP: server.Client()})
-	_, _, err := client.ClaimHost(context.Background(), "updater-01", "", "")
+	_, _, err := client.ClaimHost(context.Background(), v2PanelClaimRequest(""))
 	var responseError *PanelHTTPError
 	if !errors.As(err, &responseError) || responseError.Status != http.StatusConflict ||
 		responseError.Code != "stale_fence" || strings.Contains(err.Error(), "secret-marker") {
@@ -344,7 +347,7 @@ func TestV2PanelClientRejectsChangedReportAndGrantBinding(t *testing.T) {
 	defer server.Close()
 	client := NewV2PanelClient(PanelClient{BaseURL: server.URL, Token: "runtime-token", HTTP: server.Client()})
 	client.Now = func() time.Time { return now }
-	job, _, err := client.ClaimHost(context.Background(), "updater-01", "", "")
+	job, _, err := client.ClaimHost(context.Background(), v2PanelClaimRequest(""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,6 +388,16 @@ func TestV2PanelClientRejectsChangedReportAndGrantBinding(t *testing.T) {
 		},
 	}); err == nil {
 		t.Fatal("mutation grant with a changed lease binding was accepted")
+	}
+}
+
+func v2PanelClaimRequest(activeJobID string) HostPullClaimRequest {
+	return HostPullClaimRequest{
+		UpdaterID:       "updater-01",
+		HostID:          "host-01",
+		LeaseGeneration: 3,
+		Fence:           9,
+		ActiveJobID:     activeJobID,
 	}
 }
 

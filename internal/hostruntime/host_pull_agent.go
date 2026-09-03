@@ -291,20 +291,16 @@ type recoveryOnlyHostPullControlPlane struct {
 
 func (c recoveryOnlyHostPullControlPlane) ClaimHost(
 	ctx context.Context,
-	serviceID string,
-	hostID string,
-	activeJobID string,
+	request HostPullClaimRequest,
 ) (*UpdateJob, bool, error) {
-	if strings.TrimSpace(activeJobID) == "" {
+	if strings.TrimSpace(request.ActiveJobID) == "" {
 		return nil, false, errors.New("recovery-only claim requires an active job cursor")
 	}
-	job, clearActive, err := c.execution.ClaimHost(
-		ctx, serviceID, hostID, activeJobID,
-	)
+	job, clearActive, err := c.execution.ClaimHost(ctx, request)
 	if err != nil {
 		return nil, false, err
 	}
-	if clearActive && (job == nil || job.ID != strings.TrimSpace(activeJobID) ||
+	if clearActive && (job == nil || job.ID != strings.TrimSpace(request.ActiveJobID) ||
 		(!isTerminalUpdateStatus(job.Status) &&
 			!(job.RecoveryClear && job.ProtocolVersion == 2 &&
 				isV2RecoveryClearStatus(job.Status)))) {
