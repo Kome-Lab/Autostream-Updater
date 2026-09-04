@@ -702,26 +702,26 @@ remove_fresh_empty_directory() {
 
 prepare_identity_parent_traversal() {
   local acl_entry
-  local agent_gid
-  local agent_uid
+  local traversal_agent_gid
+  local traversal_agent_uid
   local managed_acl_entry=""
-  agent_uid=$(id -u "${AGENT_USER}")
-  agent_gid=$(id -g "${AGENT_USER}")
+  traversal_agent_uid=$(id -u "${AGENT_USER}")
+  traversal_agent_gid=$(id -g "${AGENT_USER}")
   identity_parent_acl_before=$(getfacl --absolute-names --numeric -- /etc/autostream) || \
     die "could not snapshot the identity parent ACL"
   while IFS= read -r acl_entry; do
     case "${acl_entry}" in
-      "user:${agent_uid}:"*)
+      "user:${traversal_agent_uid}:"*)
         [[ -z ${managed_acl_entry} ]] || \
           die "the identity parent contains duplicate Agent ACL entries"
         managed_acl_entry=${acl_entry}
         ;;
-      "group:${agent_gid}:"*)
+      "group:${traversal_agent_gid}:"*)
         die "the identity parent must not grant access through the dedicated Agent group"
         ;;
     esac
   done <<<"${identity_parent_acl_before}"
-  if [[ -n ${managed_acl_entry} && ${managed_acl_entry} != "user:${agent_uid}:--x" ]]; then
+  if [[ -n ${managed_acl_entry} && ${managed_acl_entry} != "user:${traversal_agent_uid}:--x" ]]; then
     die "the dedicated Agent has a customized identity parent ACL"
   fi
   # Preserve the shared directory mode and all sibling permissions. The
@@ -731,13 +731,13 @@ prepare_identity_parent_traversal() {
       runuser --user "${AGENT_USER}" -- test -w /etc/autostream; then
       die "the dedicated Agent has excessive identity parent access"
     fi
-    [[ ${managed_acl_entry} == "user:${agent_uid}:--x" ]] && return
+    [[ ${managed_acl_entry} == "user:${traversal_agent_uid}:--x" ]] && return
   fi
   identity_parent_acl_path_identity=$(stat -c '%d:%i:%u:%g:%a' -- /etc/autostream) || \
     die "could not record the identity parent directory"
   defer_cleanup_signals
   identity_parent_acl_changed=true
-  if ! setfacl --no-mask -m "u:${agent_uid}:--x" -- /etc/autostream; then
+  if ! setfacl --no-mask -m "u:${traversal_agent_uid}:--x" -- /etc/autostream; then
     identity_parent_acl_after=$(getfacl --absolute-names --numeric -- /etc/autostream) || true
     die "could not grant the dedicated Agent identity traversal"
   fi

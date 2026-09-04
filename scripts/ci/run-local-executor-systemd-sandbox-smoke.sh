@@ -17,7 +17,7 @@ getent passwd nobody >/dev/null 2>&1 || die "the nobody account is required"
 # the same inheritance contract.
 readonly smoke_command="$(cat <<'EOF'
 set -euo pipefail
-/usr/bin/grep -E '^(CapEff|CapPrm|CapBnd|NoNewPrivs):' "/proc/$$/status" >&2 || true
+/usr/bin/grep -E '^(CapEff|CapPrm|CapBnd|NoNewPrivs):' /proc/self/status >&2 || true
 # This is the actual capability test: runuser must complete its setgid/setuid
 # transition under the same root sandbox used by the Local Executor.
 exec /usr/sbin/runuser -u nobody -- /usr/bin/true
@@ -51,7 +51,7 @@ readonly -a sandbox_properties=(
 )
 readonly root_capabilities='CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SETUID CAP_SETGID'
 
-systemd-run --quiet --wait --pipe --collect \
+systemd-run --quiet --wait --pipe --collect --expand-environment=no \
   --unit="autostream-local-executor-capability-smoke-$$" \
   "${sandbox_properties[@]}" --property="${root_capabilities}" \
   /usr/bin/bash -c "${smoke_command}"
@@ -114,7 +114,7 @@ if cat "${identity_dir}/executor-policy.json" >/dev/null 2>&1 ||
 fi
 EOF
 )"
-systemd-run --quiet --wait --pipe --collect \
+systemd-run --quiet --wait --pipe --collect --expand-environment=no \
   --unit="autostream-agent-identity-namespace-smoke-$$" \
   "${sandbox_properties[@]}" --property=CapabilityBoundingSet= \
   --property=User=nobody --property="Group=$(id -gn nobody)" \
@@ -141,7 +141,7 @@ fi
 /usr/sbin/runuser -u nobody -- test -r "${identity_dir}/agent.yaml"
 EOF
 )"
-systemd-run --quiet --wait --pipe --collect \
+systemd-run --quiet --wait --pipe --collect --expand-environment=no \
   --unit="autostream-executor-identity-namespace-smoke-$$" \
   "${sandbox_properties[@]}" --property="${root_capabilities}" \
   --property="TemporaryFileSystem=${namespace_root}/shared:ro,mode=0755" \
