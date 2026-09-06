@@ -15,7 +15,7 @@ concurrency:
 env:
   GOMAXPROCS: "2"
   GOTOOLCHAIN: local
-  UPDATER_APPLICATION_SHA: bb2fae807f634c2c4e6a9746612100cccab4639b
+  UPDATER_APPLICATION_SHA: ae9ae60d97a5c7e5ece9ee884e83a0a2cbdb48c7
 
 jobs:
   go:
@@ -183,7 +183,7 @@ jobs:
         include:
           - service: control-panel
             repository: Kome-Lab/Autostream-ControlPanel
-            sha: ae726c5eb0261196d105d5a476a8dd03f90a3394
+            sha: d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee
             required: scripts/ci/application-probes/control-panel.txt
           - service: worker
             repository: Kome-Lab/Autostream-Worker
@@ -353,7 +353,7 @@ jobs:
       - go
       - application-probe-denominator
     env:
-      CONTROL_PANEL_SHA: ae726c5eb0261196d105d5a476a8dd03f90a3394
+      CONTROL_PANEL_SHA: d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee
     steps:
       - name: Check out exact Updater source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -520,6 +520,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/required-linux-evidence"
           go test -c -p 1 ./internal/hostruntime \
             -o "${RUNNER_TEMP}/hostruntime-required.test"
+          sudo install -d -o root -g root -m 0755 /usr/local/libexec
           sudo install -m 0755 "${RUNNER_TEMP}/hostruntime-required.test" \
             /usr/local/libexec/autostream-hostruntime-required.test
           getent group autostream-host-agent >/dev/null 2>&1 ||
@@ -769,6 +770,7 @@ jobs:
               ./internal/hostruntime/testdata/docker-port-fixture
           go test -c -p 1 ./internal/hostruntime \
             -o "${RUNNER_TEMP}/hostruntime-docker.test"
+          sudo install -d -o root -g root -m 0755 /usr/local/libexec
           sudo install -m 0755 "${RUNNER_TEMP}/docker-port-fixture" \
             /usr/local/libexec/autostream-docker-port-fixture-ci
           sudo install -m 0755 "${RUNNER_TEMP}/hostruntime-docker.test" \
@@ -834,7 +836,7 @@ jobs:
       - installers
       - docker-fixture
     env:
-      CONTROL_PANEL_SHA: ae726c5eb0261196d105d5a476a8dd03f90a3394
+      CONTROL_PANEL_SHA: d9b7b98959abd87aa6a9f5a15b4beb388d5b56ee
       PRE_REMOVAL_UPDATER_SHA: ce27d4b7c849b75735cbbdb7720bea71b70e4bc1
       PRE_REMOVAL_CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
       PRE_REMOVAL_WORKFLOW_RUN_ID: "33576522166"
