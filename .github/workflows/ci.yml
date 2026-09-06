@@ -15,6 +15,7 @@ concurrency:
 env:
   GOMAXPROCS: "2"
   GOTOOLCHAIN: local
+  UPDATER_APPLICATION_SHA: bb2fae807f634c2c4e6a9746612100cccab4639b
 
 jobs:
   go:
@@ -23,6 +24,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -33,6 +36,8 @@ jobs:
           set -euo pipefail
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+      - name: Test required evidence failure detection
+        run: python3 -m unittest discover -s scripts/ci -p 'test_verify_go_test_evidence.py' -v
       - name: Verify formatting
         shell: bash
         run: |
@@ -127,6 +132,8 @@ jobs:
     needs: go
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -176,27 +183,29 @@ jobs:
         include:
           - service: control-panel
             repository: Kome-Lab/Autostream-ControlPanel
-            sha: 9fa0bca7048334495c5d7afae956e9658f051603
+            sha: ae726c5eb0261196d105d5a476a8dd03f90a3394
             required: scripts/ci/application-probes/control-panel.txt
           - service: worker
             repository: Kome-Lab/Autostream-Worker
-            sha: eca6d9db189209eddc6c92e6cf0f7c529124e911
+            sha: ba226489b037d5d29e47b72ab054484a57dea3ac
             required: scripts/ci/application-probes/worker.txt
           - service: encoder-recorder
             repository: Kome-Lab/Autostream-Encoder-Recorder
-            sha: 7626d6824b3b21a85df7f60e4b4d33399a942b7a
+            sha: 9459967f7d98b3d40916b455a041612f96e91409
             required: scripts/ci/application-probes/encoder-recorder.txt
           - service: discord-bot
             repository: Kome-Lab/Autostream-DiscordBot
-            sha: b13fe6bf0f08250338a6eead6a1e9bcba0949c30
+            sha: bb297aac5a44865bd7d5f92dbd4b268d5b8e53f8
             required: scripts/ci/application-probes/discord-bot.txt
           - service: observability
             repository: Kome-Lab/Autostream-Observability
-            sha: 2cbaccd05854a9ff2db9a8f5af6904be6be45494
+            sha: f483d8426393778387923b529fb66924f487085d
             required: scripts/ci/application-probes/observability.txt
     steps:
       - name: Check out Updater evidence verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - name: Check out exact application source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -323,6 +332,8 @@ jobs:
       - cross-service-probes
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - name: Require exactly five independently pinned services
         shell: bash
         run: |
@@ -342,10 +353,12 @@ jobs:
       - go
       - application-probe-denominator
     env:
-      CONTROL_PANEL_SHA: 9fa0bca7048334495c5d7afae956e9658f051603
+      CONTROL_PANEL_SHA: ae726c5eb0261196d105d5a476a8dd03f90a3394
     steps:
       - name: Check out exact Updater source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - name: Check out exact Control Panel adapter source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -363,7 +376,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${UPDATER_APPLICATION_SHA}"
           test "$(git -C control-panel rev-parse HEAD)" = "${CONTROL_PANEL_SHA}"
       - name: Verify embedded Control Panel Updater runtime is absent
         shell: bash
@@ -420,7 +433,7 @@ jobs:
         run: |
           set -euo pipefail
           jq -n \
-            --arg updater_sha "${GITHUB_SHA}" \
+            --arg updater_sha "${UPDATER_APPLICATION_SHA}" \
             --arg control_panel_sha "${CONTROL_PANEL_SHA}" \
             '{
               schema_version: 1,
@@ -461,6 +474,8 @@ jobs:
     needs: replacement-integration
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -469,14 +484,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          commit_epoch="$(git show -s --format=%ct "${GITHUB_SHA}")"
+          test "$(git rev-parse HEAD)" = "${UPDATER_APPLICATION_SHA}"
+          commit_epoch="$(git show -s --format=%ct "${UPDATER_APPLICATION_SHA}")"
           build_date="$(date -u -d "@${commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')"
           bash scripts/ci/build-release-bundles.sh \
-            v0.0.0 "${GITHUB_SHA}" "${build_date}" \
+            v0.0.0 "${UPDATER_APPLICATION_SHA}" "${build_date}" \
             "${RUNNER_TEMP}/rollback-candidate"
           bash scripts/ci/verify-release-bundles.sh \
-            "${RUNNER_TEMP}/rollback-candidate" v0.0.0 "${GITHUB_SHA}"
+            "${RUNNER_TEMP}/rollback-candidate" v0.0.0 "${UPDATER_APPLICATION_SHA}"
       - name: Upload verified rollback candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -492,6 +507,8 @@ jobs:
     needs: go
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -595,6 +612,8 @@ jobs:
     needs: go
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -733,6 +752,8 @@ jobs:
     needs: go
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -813,20 +834,22 @@ jobs:
       - installers
       - docker-fixture
     env:
-      CONTROL_PANEL_SHA: 9fa0bca7048334495c5d7afae956e9658f051603
+      CONTROL_PANEL_SHA: ae726c5eb0261196d105d5a476a8dd03f90a3394
       PRE_REMOVAL_UPDATER_SHA: ce27d4b7c849b75735cbbdb7720bea71b70e4bc1
       PRE_REMOVAL_CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
       PRE_REMOVAL_WORKFLOW_RUN_ID: "33576522166"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
       - name: Record exact pre-removal authority and post-removal success
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${UPDATER_APPLICATION_SHA}"
           mkdir -p "${RUNNER_TEMP}/final-integration-gate"
           jq -n \
-            --arg updater_sha "${GITHUB_SHA}" \
+            --arg updater_sha "${UPDATER_APPLICATION_SHA}" \
             --arg control_panel_sha "${CONTROL_PANEL_SHA}" \
             --arg pre_removal_updater_sha "${PRE_REMOVAL_UPDATER_SHA}" \
             --arg pre_removal_control_panel_sha "${PRE_REMOVAL_CONTROL_PANEL_SHA}" \
