@@ -324,6 +324,12 @@ func (h *stPortChainHarness) start(t *testing.T, role, binary, test string, uid,
 
 func (h *stPortChainHarness) installWorker(t *testing.T) {
 	t.Helper()
+	listenerReady := false
+	defer func() {
+		if !listenerReady {
+			h.diagnoseWorkerStartup(t)
+		}
+	}()
 	target, ok := h.rootPolicy.Target("worker-smoke")
 	if !ok || target.Systemd == nil || target.LocalListen.Port != 18084 {
 		t.Fatal("canonical Worker profile unavailable")
@@ -368,6 +374,62 @@ func (h *stPortChainHarness) installWorker(t *testing.T) {
 		_ = conn.Close()
 		return true
 	})
+	listenerReady = true
+}
+
+func (h *stPortChainHarness) diagnoseWorkerStartup(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(h.ctx, 3*time.Second)
+	defer cancel()
+	runner := OSCommandRunner{NewProcessGroup: true}
+	state, err := runner.Run(ctx, "", nil, "/usr/bin/systemctl", "show", "autostream-worker.service",
+		"--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,MainPID")
+	t.Logf("ST-PORT Worker listener readiness: unit_observation_available=%t", err == nil)
+	if err == nil {
+		for _, line := range strings.Split(state, "\n") {
+			key, value, found := strings.Cut(line, "=")
+			if !found {
+				continue
+			}
+			switch key {
+			case "ExecMainCode", "ExecMainStatus", "MainPID":
+				if number, parseErr := strconv.ParseUint(value, 10, 32); parseErr == nil {
+					t.Logf("ST-PORT Worker unit: %s=%d", key, number)
+				}
+			case "ActiveState", "SubState", "Result":
+				switch value {
+				case "active", "inactive", "failed", "activating", "deactivating", "running", "dead", "exited", "start-pre", "start", "success", "exit-code", "signal", "timeout", "resources", "start-limit-hit", "oom-kill":
+					t.Logf("ST-PORT Worker unit: %s=%s", key, value)
+				default:
+					t.Logf("ST-PORT Worker unit: %s=other", key)
+				}
+			}
+		}
+	}
+	// Read only this fixture's bounded startup tail in memory. Publish fixed
+	// classes, never a journal line, credential, environment or command argv.
+	journal, journalErr := runner.Run(ctx, "", nil, "/usr/bin/journalctl", "--unit=autostream-worker.service", "--no-pager", "--lines=32", "--output=cat")
+	t.Logf("ST-PORT Worker startup: journal_observation_available=%t", journalErr == nil)
+	if journalErr == nil {
+		for _, class := range []struct{ text, name string }{
+			{"invalid node listener credential bind_address:", "listener_config_invalid"},
+			{"invalid updater identity:", "updater_identity_invalid"},
+			{"load stopped target receipts:", "receipt_state_unavailable"},
+			{"initialize worker scene renderer:", "scene_renderer_unavailable"},
+			{"control panel registration is required in this environment:", "registration_failed"},
+			{"control panel runtime config is required in this environment", "runtime_config_unavailable"},
+			{"node config invalid:", "node_config_invalid"},
+			{"panel-managed node config is required in this environment", "node_config_missing"},
+			{"error while loading shared libraries:", "shared_library_missing"},
+			{"Permission denied", "permission_denied"},
+			{"permission denied", "permission_denied"},
+			{"autostream-worker listening on", "listener_started"},
+		} {
+			if strings.Contains(journal, class.text) {
+				t.Logf("ST-PORT Worker startup: class=%s", class.name)
+			}
+		}
+	}
 }
 
 func stPortChainRun(t *testing.T, command string, args ...string) {

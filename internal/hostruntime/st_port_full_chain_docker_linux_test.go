@@ -8,10 +8,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -123,9 +125,9 @@ func (f *stPortChainDockerFixture) prepare(t *testing.T, h *stPortChainHarness) 
 	}
 	stPortChainFileInfo(t, os.Getenv(dockerPortDaemonSmokeFixtureEnv))
 	stPortChainDockerRegistry(t)
-	stPortChainDockerRun(t, h.ctx, "", "version", "--format", "{{.Server.Version}}")
-	stPortChainDockerRun(t, h.ctx, "", "compose", "version")
-	if strings.TrimSpace(stPortChainDockerRun(t, h.ctx, "", "ps", "-aq", "--filter", "label=com.docker.compose.project=autostream")) != "" {
+	stPortChainDockerRun(t, h.ctx, "daemon_version", "", "version", "--format", "{{.Server.Version}}")
+	stPortChainDockerRun(t, h.ctx, "compose_version", "", "compose", "version")
+	if strings.TrimSpace(stPortChainDockerRun(t, h.ctx, "empty_project", "", "ps", "-aq", "--filter", "label=com.docker.compose.project=autostream")) != "" {
 		t.Fatal("Docker integration refuses a pre-existing managed container")
 	}
 	for _, port := range []int{18081, 18083, 18084, 18086} {
@@ -135,13 +137,13 @@ func (f *stPortChainDockerFixture) prepare(t *testing.T, h *stPortChainHarness) 
 	buildDockerPortFixtureImage(t, f.image)
 	// ghcr.io resolves only to this network-none container's TLS registry.
 	// No external registry is contacted and this is not a release publication.
-	stPortChainDockerRun(t, h.ctx, "", "push", f.image)
-	stPortChainDockerRun(t, h.ctx, "", "pull", f.image)
-	f.imageID = strings.TrimSpace(stPortChainDockerRun(t, h.ctx, "", "image", "inspect", "--format={{.Id}}", f.image))
+	stPortChainDockerRun(t, h.ctx, "fixture_push", "", "push", f.image)
+	stPortChainDockerRun(t, h.ctx, "fixture_pull", "", "pull", f.image)
+	f.imageID = strings.TrimSpace(stPortChainDockerRun(t, h.ctx, "image_identity", "", "image", "inspect", "--format={{.Id}}", f.image))
 	if !digestPattern.MatchString(f.imageID) {
 		t.Fatal("real Docker fixture image identity is unavailable")
 	}
-	rawDigests := stPortChainDockerRun(t, h.ctx, "", "image", "inspect", "--format={{json .RepoDigests}}", f.imageID)
+	rawDigests := stPortChainDockerRun(t, h.ctx, "repository_identity", "", "image", "inspect", "--format={{json .RepoDigests}}", f.imageID)
 	var err error
 	f.repositoryDigest, err = repositoryDigest(rawDigests, dockerPortSmokeImageRepo)
 	if err != nil {
@@ -201,7 +203,7 @@ configs:
 		writeDockerPortSmokeFile(t, path, body)
 	}
 	writeDockerPortSmokeFile(t, f.target.PortEnvFile, mapping)
-	f.canonical = []byte(stPortChainDockerRun(t, h.ctx, f.target.ProjectDir, append(composeArgs(&f.target, ""), "config", "--format", "json", "--no-env-resolution")...))
+	f.canonical = []byte(stPortChainDockerRun(t, h.ctx, "compose_config", f.target.ProjectDir, append(composeArgs(&f.target, ""), "config", "--format", "json", "--no-env-resolution")...))
 	f.target.PortComposePolicySHA256, err = dockerPortComposePolicyHash(f.canonical, &f.target)
 	if err != nil {
 		t.Fatal("observe initial full non-port Compose projection")
@@ -247,7 +249,7 @@ func (f *stPortChainDockerFixture) startInitialNode(t *testing.T, h *stPortChain
 	if err != nil || listener.validateFrozen(execution, &f.target) != nil {
 		t.Fatal("freeze verified initial Node listener projection")
 	}
-	stPortChainDockerRun(t, h.ctx, f.target.ProjectDir, append(composeFrozenArgs(&f.target, execution.path), "up", "-d", "--no-deps", "--no-build", "--pull", "never", f.target.Service)...)
+	stPortChainDockerRun(t, h.ctx, "initial_up", f.target.ProjectDir, append(composeFrozenArgs(&f.target, execution.path), "up", "-d", "--no-deps", "--no-build", "--pull", "never", f.target.Service)...)
 	if secureRemoveDockerPortTransient(localExecutorDockerWorkDir, work, true) != nil {
 		t.Fatal("remove initial transient Compose input")
 	}
@@ -367,7 +369,7 @@ func (f *stPortChainDockerFixture) observe(t *testing.T, h *stPortChainHarness, 
 	if !stPortChainDockerNodeHealthy(h.workerVersion, observation.PublishedPort, observation.ContainerPort, observation.ConfigRevision) {
 		t.Fatal("actual Docker Node listener identity/configuration did not match")
 	}
-	inspect := stPortChainDockerRun(t, h.ctx, "", "inspect", "--format={{json .}}", observation.Runtime.ContainerID)
+	inspect := stPortChainDockerRun(t, h.ctx, "runtime_inspect", "", "inspect", "--format={{json .}}", observation.Runtime.ContainerID)
 	var running stPortChainDockerInspect
 	if json.Unmarshal([]byte(inspect), &running) != nil || len(running.Mounts) != 1 {
 		t.Fatal("actual Docker inspection is incomplete")
@@ -526,13 +528,46 @@ func stPortChainDockerRegistry(t *testing.T) {
 	}
 }
 
-func stPortChainDockerRun(t *testing.T, parent context.Context, directory string, args ...string) string {
+func stPortChainDockerRun(t *testing.T, parent context.Context, stage, directory string, args ...string) string {
 	t.Helper()
+	switch stage {
+	case "daemon_version", "compose_version", "empty_project", "fixture_push", "fixture_pull", "image_identity", "repository_identity", "compose_config", "initial_up", "runtime_inspect":
+	default:
+		t.Fatal("unlisted isolated Docker observation stage")
+	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
+	started := time.Now()
 	output, err := (OSCommandRunner{NewProcessGroup: true}).Run(ctx, directory, dockerCommandEnv(), "/usr/bin/docker", args...)
+	exitStatus := 0
 	if err != nil {
-		t.Fatal("isolated real Docker command failed")
+		exitStatus = -1
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			exitStatus = exitError.ExitCode()
+		}
+	}
+	// One bounded, allowlisted record per command. Raw command output may
+	// contain credentials and is never copied into public test diagnostics.
+	t.Logf("ST-PORT Docker command: stage=%s exit=%d elapsed_ms=%d deadline_exceeded=%t", stage, exitStatus, time.Since(started).Milliseconds(), errors.Is(ctx.Err(), context.DeadlineExceeded))
+	if err != nil {
+		for _, class := range []struct{ text, name string }{
+			{"connection refused", "connection_refused"},
+			{"x509:", "tls_validation_failed"},
+			{"unauthorized", "authorization_failed"},
+			{"unknown flag:", "unsupported_flag"},
+			{"client version", "api_version_mismatch"},
+			{"no such host", "dns_failed"},
+			{"network is unreachable", "network_unreachable"},
+			{"permission denied", "permission_denied"},
+			{"no such file or directory", "file_missing"},
+			{"read-only file system", "read_only_filesystem"},
+		} {
+			if strings.Contains(strings.ToLower(output), class.text) {
+				t.Logf("ST-PORT Docker failure: class=%s", class.name)
+			}
+		}
+		t.Fatal("isolated real Docker command failed at the recorded stage")
 	}
 	return output
 }
