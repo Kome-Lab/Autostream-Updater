@@ -684,6 +684,10 @@ func applyDockerWithGateAndBaseline(ctx context.Context, target Target, plan App
 }
 
 func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Target, plan ApplyPlan, runner CommandRunner, mutationGate func(context.Context) error, trustedImageStaged bool, stagedBaseline *dockerMutationBaseline, expectedStagedImageID string, trustedOwner func(os.FileInfo) bool) (ApplyResult, error) {
+	return applyDockerWithListenerStore(ctx, target, plan, runner, mutationGate, trustedImageStaged, stagedBaseline, expectedStagedImageID, trustedOwner, defaultDockerNodeListenerStore())
+}
+
+func applyDockerWithListenerStore(ctx context.Context, target Target, plan ApplyPlan, runner CommandRunner, mutationGate func(context.Context) error, trustedImageStaged bool, stagedBaseline *dockerMutationBaseline, expectedStagedImageID string, trustedOwner func(os.FileInfo) bool, listenerStore dockerNodeListenerStore) (ApplyResult, error) {
 	if trustedOwner == nil {
 		return ApplyResult{}, errors.New("trusted Docker owner policy is missing")
 	}
@@ -731,6 +735,7 @@ func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Ta
 	}
 	base := composeArgs(d, overridePath)
 	newID := ""
+	var execution dockerFrozenExecution
 	if trustedImageStaged {
 		if !digestPattern.MatchString(expectedStagedImageID) {
 			return ApplyResult{}, errors.New("staged Docker image binding is missing")
@@ -766,6 +771,13 @@ func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Ta
 		if err := preflightTrustedDockerComposePorts(ctx, runner, d, frozenPath, baseline.ContainerID); err != nil {
 			return ApplyResult{}, err
 		}
+		// Preparation/staging stays inline. Materialize only after the grant,
+		// baseline and port preconditions, before changing the live target.
+		execution, err = listenerStore.freeze(frozenPath, d)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		base = composeFrozenArgs(d, execution.path)
 	} else if mutationGate != nil {
 		return ApplyResult{}, errors.New("a mutation gate requires a pre-staged Docker image")
 	}
@@ -815,10 +827,18 @@ func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Ta
 		if inspectErr != nil || !repositoryHasDigest(repoDigests, d.ImageRepo, plan.ExpectedPlatformDigest) {
 			return ApplyResult{}, errors.New("pulled Docker image RepoDigest does not match trusted release manifest")
 		}
+		execution, err = listenerStore.freeze(frozenPath, d)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		base = composeFrozenArgs(d, execution.path)
 	}
 	checkpoint.Phase = "starting"
 	if err := saveCheckpoint(target, checkpoint); err != nil {
 		return ApplyResult{}, fmt.Errorf("persist Docker starting checkpoint: %w", err)
+	}
+	if err := listenerStore.validateFrozen(execution, d); err != nil {
+		return ApplyResult{}, err
 	}
 	serviceMayHaveMutated = true
 	_, upErr := runner.Run(ctx, d.ProjectDir, dockerCommandEnv(), d.DockerPath, append(base, "up", "-d", "--no-deps", "--no-build", "--pull", "never", d.Service)...)
@@ -862,10 +882,14 @@ func applyDockerWithGateAndBaselineWithOwnerCheck(ctx context.Context, target Ta
 		frozenRollback := filepath.Join(plan.StageDir, "compose-frozen-rollback.json")
 		configErr = verifyComposeConfig(rollbackCtx, runner, d, rollbackSource, previousID, frozenRollback)
 		if configErr == nil {
-			base = composeFrozenArgs(d, frozenRollback)
+			execution, configErr = listenerStore.freeze(frozenRollback, d)
+			base = composeFrozenArgs(d, execution.path)
 		}
 	}
 	rollbackErr := firstError(restoreErr, overrideErr, configErr)
+	if rollbackErr == nil {
+		rollbackErr = listenerStore.validateFrozen(execution, d)
+	}
 	if rollbackErr == nil {
 		_, rollbackErr = runner.Run(rollbackCtx, d.ProjectDir, dockerCommandEnv(), d.DockerPath, append(base, "up", "-d", "--no-deps", "--no-build", "--pull", "never", d.Service)...)
 	}
@@ -1458,6 +1482,10 @@ func reconcileDocker(ctx context.Context, target Target, plan ApplyPlan, runner 
 }
 
 func reconcileDockerWithGate(ctx context.Context, target Target, plan ApplyPlan, runner CommandRunner, mutationGate func(context.Context) error) (ApplyResult, error) {
+	return reconcileDockerWithListenerStore(ctx, target, plan, runner, mutationGate, defaultDockerNodeListenerStore())
+}
+
+func reconcileDockerWithListenerStore(ctx context.Context, target Target, plan ApplyPlan, runner CommandRunner, mutationGate func(context.Context) error, listenerStore dockerNodeListenerStore) (ApplyResult, error) {
 	d := target.Docker
 	checkpoint, err := loadCheckpoint(target)
 	if err != nil {
@@ -1558,7 +1586,14 @@ func reconcileDockerWithGate(ctx context.Context, target Target, plan ApplyPlan,
 	if err := verifyComposeConfig(rollbackCtx, runner, d, base, checkpoint.PreviousImageID, frozenPath); err != nil {
 		return ApplyResult{Status: "failed", PreviousDigest: checkpoint.PreviousImageID}, err
 	}
-	base = composeFrozenArgs(d, frozenPath)
+	execution, err := listenerStore.freeze(frozenPath, d)
+	if err != nil {
+		return ApplyResult{Status: "failed", PreviousDigest: checkpoint.PreviousImageID}, err
+	}
+	base = composeFrozenArgs(d, execution.path)
+	if err := listenerStore.validateFrozen(execution, d); err != nil {
+		return ApplyResult{Status: "failed", PreviousDigest: checkpoint.PreviousImageID}, err
+	}
 	if _, err := runner.Run(rollbackCtx, d.ProjectDir, dockerCommandEnv(), d.DockerPath, append(base, "up", "-d", "--no-deps", "--no-build", "--pull", "never", d.Service)...); err != nil {
 		return ApplyResult{Status: "failed", PreviousDigest: checkpoint.PreviousImageID}, err
 	}

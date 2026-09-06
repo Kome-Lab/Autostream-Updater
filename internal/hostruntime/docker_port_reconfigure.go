@@ -139,9 +139,13 @@ type dockerPortLedger struct {
 	OldComposeSHA256    string                        `json:"old_compose_sha256"`
 	TargetComposeSHA256 string                        `json:"target_compose_sha256"`
 	Result              *SystemdPortReconfigureResult `json:"result,omitempty"`
+	PolicyTransition    *portPolicyTransitionState    `json:"policy_transition,omitempty"`
 }
 
 func (l dockerPortLedger) validate(targetID string) error {
+	if l.Plan.PortContractVersion == 2 {
+		return l.validatePortV2(targetID)
+	}
 	if l.SchemaVersion != 1 ||
 		l.Plan.TargetID != targetID ||
 		l.Plan.effectiveDeploymentMode() != ModeDocker ||
@@ -177,6 +181,8 @@ func (l dockerPortLedger) validate(targetID string) error {
 }
 
 type dockerPortAppliedState struct {
+	PortContractVersion    int    `json:"port_contract_version,omitempty"`
+	PortJobID              string `json:"port_job_id,omitempty"`
 	SchemaVersion          int    `json:"schema_version"`
 	TargetID               string `json:"target_id"`
 	ServiceType            string `json:"service_type"`
@@ -203,6 +209,9 @@ type dockerPortAppliedSidecarVerifier interface {
 }
 
 func (a dockerPortAppliedState) validate(targetID string) error {
+	if a.PortContractVersion != 0 && (a.PortContractVersion != 2 || !identifierPattern.MatchString(a.PortJobID)) || a.PortContractVersion == 0 && a.PortJobID != "" {
+		return errors.New("Docker applied port transaction reference is invalid")
+	}
 	if a.SchemaVersion != 1 ||
 		a.TargetID != targetID ||
 		!identifierPattern.MatchString(a.TargetID) ||
@@ -408,11 +417,17 @@ func (s *memoryDockerPortStateStore) SaveApplied(applied dockerPortAppliedState)
 
 func cloneDockerPortLedger(ledger dockerPortLedger) dockerPortLedger {
 	copy := ledger
+	copy.Plan.Before = clonePortSnapshotRef(ledger.Plan.Before)
+	copy.Plan.Target = clonePortSnapshotRef(ledger.Plan.Target)
+	copy.Plan.Rollback = clonePortSnapshotRef(ledger.Plan.Rollback)
+	copy.Plan.DockerBaseline = clonePortDockerBaseline(ledger.Plan.DockerBaseline)
+	copy.PolicyTransition = clonePortPolicyTransition(ledger.PolicyTransition)
 	copy.Plan.Docker = cloneDockerPortMutationGrantBinding(ledger.Plan.Docker)
 	copy.Checkpoint.Bytes = append([]byte(nil), ledger.Checkpoint.Bytes...)
 	copy.TargetBytes = append([]byte(nil), ledger.TargetBytes...)
 	if ledger.Result != nil {
 		result := *ledger.Result
+		result.PortResult = clonePortResult(ledger.Result.PortResult)
 		if ledger.Result.Docker != nil {
 			docker := *ledger.Result.Docker
 			result.Docker = &docker
@@ -440,6 +455,9 @@ func executeDockerPortRequest(
 	runtime dockerPortRuntime,
 	state dockerPortStateStore,
 ) LocalExecutorResponse {
+	if request.PortPlan != nil && request.PortPlan.PortContractVersion == 2 {
+		return executeDockerPortV2Request(ctx, policy, request, runtime, state)
+	}
 	failure := func(code string) LocalExecutorResponse {
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, code)
 	}
@@ -678,7 +696,12 @@ func resolveDockerPortAppliedTargetBound(
 	if applied == nil {
 		return policyTarget, nil
 	}
-	useOverlay, err := applied.validateForPolicy(policy, policyTarget)
+	var useOverlay bool
+	if applied.PortContractVersion == 2 {
+		useOverlay, err = validateDockerPortV2AppliedAuthority(policy, policyTarget, *applied, state)
+	} else {
+		useOverlay, err = applied.validateForPolicy(policy, policyTarget)
+	}
 	if err != nil {
 		return LocalExecutorTarget{}, err
 	}

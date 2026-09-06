@@ -44,33 +44,46 @@ var errSystemdPortSimulatedCrash = errors.New("simulated systemd port transactio
 // address. Those privileged values are resolved from the root policy and the
 // fixed service adapter.
 type SystemdPortReconfigurePlan struct {
-	DeploymentMode                 string                          `json:"deployment_mode,omitempty"`
-	JobID                          string                          `json:"job_id"`
-	HostID                         string                          `json:"host_id"`
-	TargetID                       string                          `json:"target_id"`
-	ServiceType                    string                          `json:"service_type"`
-	NetworkNamespace               string                          `json:"network_namespace"`
-	Protocol                       string                          `json:"protocol"`
-	OldPort                        int                             `json:"old_port"`
-	NewPort                        int                             `json:"new_port"`
-	ExpectedEndpointRevision       int64                           `json:"expected_endpoint_revision"`
-	TargetEndpointRevision         int64                           `json:"target_endpoint_revision"`
-	ExpectedConfigRevision         int64                           `json:"expected_config_revision"`
-	TargetConfigRevision           int64                           `json:"target_config_revision"`
-	ExpectedConfigSHA256           string                          `json:"expected_config_sha256"`
-	TargetConfigSHA256             string                          `json:"target_config_sha256"`
-	ExpectedSourcePolicyRevision   int64                           `json:"expected_source_policy_revision"`
-	ExpectedUpdaterPolicyRevision  int64                           `json:"expected_updater_policy_revision"`
-	ExpectedExecutorPolicyRevision int64                           `json:"expected_executor_policy_revision"`
-	ExpectedExecutorPolicySHA256   string                          `json:"expected_executor_policy_sha256"`
-	OwnershipEpoch                 int64                           `json:"ownership_epoch"`
-	LeaseGeneration                uint64                          `json:"lease_generation"`
-	SessionID                      string                          `json:"session_id"`
-	PortPlanSHA256                 string                          `json:"port_plan_sha256"`
-	Docker                         *DockerPortMutationGrantBinding `json:"docker,omitempty"`
+	PortContractVersion            int                                       `json:"port_contract_version,omitempty"`
+	Mode                           contracts.SystemUpdatePortMode            `json:"mode,omitempty"`
+	Before                         *contracts.SystemUpdatePortSnapshotRef    `json:"before,omitempty"`
+	Target                         *contracts.SystemUpdatePortSnapshotRef    `json:"target,omitempty"`
+	Rollback                       *contracts.SystemUpdatePortSnapshotRef    `json:"rollback,omitempty"`
+	DockerBaseline                 *contracts.SystemUpdatePortDockerBaseline `json:"docker_baseline,omitempty"`
+	PortIntentSHA256               string                                    `json:"port_intent_sha256,omitempty"`
+	DeploymentMode                 string                                    `json:"deployment_mode,omitempty"`
+	JobID                          string                                    `json:"job_id"`
+	HostID                         string                                    `json:"host_id"`
+	TargetID                       string                                    `json:"target_id"`
+	ServiceType                    string                                    `json:"service_type"`
+	NetworkNamespace               string                                    `json:"network_namespace"`
+	Protocol                       string                                    `json:"protocol"`
+	OldPort                        int                                       `json:"old_port,omitempty"`
+	NewPort                        int                                       `json:"new_port,omitempty"`
+	ExpectedEndpointRevision       int64                                     `json:"expected_endpoint_revision,omitempty"`
+	TargetEndpointRevision         int64                                     `json:"target_endpoint_revision,omitempty"`
+	ExpectedConfigRevision         int64                                     `json:"expected_config_revision,omitempty"`
+	TargetConfigRevision           int64                                     `json:"target_config_revision,omitempty"`
+	ExpectedConfigSHA256           string                                    `json:"expected_config_sha256,omitempty"`
+	TargetConfigSHA256             string                                    `json:"target_config_sha256,omitempty"`
+	ExpectedSourcePolicyRevision   int64                                     `json:"expected_source_policy_revision,omitempty"`
+	ExpectedUpdaterPolicyRevision  int64                                     `json:"expected_updater_policy_revision,omitempty"`
+	ExpectedExecutorPolicyRevision int64                                     `json:"expected_executor_policy_revision,omitempty"`
+	ExpectedExecutorPolicySHA256   string                                    `json:"expected_executor_policy_sha256,omitempty"`
+	OwnershipEpoch                 int64                                     `json:"ownership_epoch"`
+	LeaseGeneration                uint64                                    `json:"lease_generation"`
+	SessionID                      string                                    `json:"session_id"`
+	PortPlanSHA256                 string                                    `json:"port_plan_sha256"`
+	Docker                         *DockerPortMutationGrantBinding           `json:"docker,omitempty"`
 }
 
 func (p SystemdPortReconfigurePlan) Validate() error {
+	if p.PortContractVersion != 0 {
+		return p.validatePortV2()
+	}
+	if p.Before != nil || p.Target != nil || p.Rollback != nil || p.DockerBaseline != nil || p.Mode != "" || p.PortIntentSHA256 != "" {
+		return errors.New("legacy port plan contains versioned fields")
+	}
 	if !identifierPattern.MatchString(p.JobID) ||
 		!validExecutionHostID(p.HostID) ||
 		!identifierPattern.MatchString(p.TargetID) ||
@@ -145,6 +158,9 @@ func (p SystemdPortReconfigurePlan) effectiveDeploymentMode() string {
 }
 
 func (p SystemdPortReconfigurePlan) ComputePortPlanSHA256() (string, error) {
+	if p.PortContractVersion == 2 {
+		return contracts.ComputeSystemUpdatePortRuntimePlanSHA256(p.SharedPortPlan(), p.JobID, p.HostID, p.TargetID, p.ServiceType, p.OwnershipEpoch, p.LeaseGeneration, p.SessionID)
+	}
 	if !identifierPattern.MatchString(p.JobID) ||
 		!validExecutionHostID(p.HostID) ||
 		!identifierPattern.MatchString(p.TargetID) ||
@@ -310,18 +326,21 @@ func (p SystemdPortReconfigurePlan) ComputePortPlanSHA256() (string, error) {
 }
 
 type SystemdPortReconfigureResult struct {
-	DeploymentMode   string                            `json:"deployment_mode,omitempty"`
-	Status           string                            `json:"status"`
-	Result           string                            `json:"result"`
-	StateKnown       bool                              `json:"state_known"`
-	OldPort          int                               `json:"old_port"`
-	NewPort          int                               `json:"new_port"`
-	AppliedPort      int                               `json:"applied_port"`
-	EndpointRevision int64                             `json:"endpoint_revision"`
-	ConfigRevision   int64                             `json:"config_revision"`
-	ConfigSHA256     string                            `json:"config_sha256"`
-	Message          string                            `json:"message"`
-	Docker           *DockerPortReconfigureResultState `json:"docker,omitempty"`
+	PortContractVersion int                                 `json:"port_contract_version,omitempty"`
+	PortResult          *contracts.SystemUpdatePortResultV2 `json:"port_result,omitempty"`
+	RecoveryRequired    bool                                `json:"recovery_required,omitempty"`
+	DeploymentMode      string                              `json:"deployment_mode,omitempty"`
+	Status              string                              `json:"status"`
+	Result              string                              `json:"result"`
+	StateKnown          bool                                `json:"state_known"`
+	OldPort             int                                 `json:"old_port"`
+	NewPort             int                                 `json:"new_port"`
+	AppliedPort         int                                 `json:"applied_port"`
+	EndpointRevision    int64                               `json:"endpoint_revision"`
+	ConfigRevision      int64                               `json:"config_revision"`
+	ConfigSHA256        string                              `json:"config_sha256"`
+	Message             string                              `json:"message"`
+	Docker              *DockerPortReconfigureResultState   `json:"docker,omitempty"`
 }
 
 type DockerPortReconfigureResultState struct {
@@ -332,6 +351,12 @@ type DockerPortReconfigureResultState struct {
 }
 
 func (r SystemdPortReconfigureResult) Validate() error {
+	if r.PortContractVersion != 0 {
+		return r.validatePortV2()
+	}
+	if r.PortResult != nil || r.RecoveryRequired {
+		return errors.New("legacy port result contains versioned fields")
+	}
 	mode := strings.TrimSpace(r.DeploymentMode)
 	if mode == "" {
 		mode = ModeSystemd
@@ -505,13 +530,14 @@ func (c systemdPortSidecarCheckpoint) validate() error {
 }
 
 type systemdPortLedger struct {
-	SchemaVersion  int                           `json:"schema_version"`
-	Plan           SystemdPortReconfigurePlan    `json:"plan"`
-	State          string                        `json:"state"`
-	Checkpoint     systemdPortSidecarCheckpoint  `json:"checkpoint"`
-	TargetBytes    []byte                        `json:"target_bytes"`
-	CurrentVersion string                        `json:"current_version"`
-	Result         *SystemdPortReconfigureResult `json:"result,omitempty"`
+	SchemaVersion    int                           `json:"schema_version"`
+	Plan             SystemdPortReconfigurePlan    `json:"plan"`
+	State            string                        `json:"state"`
+	Checkpoint       systemdPortSidecarCheckpoint  `json:"checkpoint"`
+	TargetBytes      []byte                        `json:"target_bytes"`
+	CurrentVersion   string                        `json:"current_version"`
+	Result           *SystemdPortReconfigureResult `json:"result,omitempty"`
+	PolicyTransition *portPolicyTransitionState    `json:"policy_transition,omitempty"`
 }
 
 type systemdPortAppliedState struct {
@@ -615,6 +641,9 @@ func (s systemdPortAppliedState) matchesTarget(target LocalExecutorTarget) bool 
 }
 
 func (l systemdPortLedger) validate(targetID string) error {
+	if l.Plan.PortContractVersion == 2 {
+		return l.validatePortV2(targetID)
+	}
 	if l.SchemaVersion != systemdPortPlanSchemaVersion ||
 		l.Plan.TargetID != targetID ||
 		l.Plan.Validate() != nil ||
@@ -751,10 +780,16 @@ func (s *memorySystemdPortStateStore) SaveApplied(applied systemdPortAppliedStat
 
 func cloneSystemdPortLedger(ledger systemdPortLedger) systemdPortLedger {
 	copy := ledger
+	copy.Plan.Before = clonePortSnapshotRef(ledger.Plan.Before)
+	copy.Plan.Target = clonePortSnapshotRef(ledger.Plan.Target)
+	copy.Plan.Rollback = clonePortSnapshotRef(ledger.Plan.Rollback)
+	copy.Plan.DockerBaseline = clonePortDockerBaseline(ledger.Plan.DockerBaseline)
 	copy.Checkpoint.Bytes = append([]byte(nil), ledger.Checkpoint.Bytes...)
 	copy.TargetBytes = append([]byte(nil), ledger.TargetBytes...)
+	copy.PolicyTransition = clonePortPolicyTransition(ledger.PolicyTransition)
 	if ledger.Result != nil {
 		result := *ledger.Result
+		result.PortResult = clonePortResult(ledger.Result.PortResult)
 		copy.Result = &result
 	}
 	return copy
@@ -778,6 +813,9 @@ func executeSystemdPortRequest(
 	runtime systemdPortRuntime,
 	state systemdPortStateStore,
 ) LocalExecutorResponse {
+	if request.PortPlan != nil && request.PortPlan.PortContractVersion == 2 {
+		return executeSystemdPortV2Request(ctx, policy, request, runtime, state)
+	}
 	failure := func(code string) LocalExecutorResponse {
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, code)
 	}
@@ -1360,6 +1398,16 @@ func systemdPortAppliedStateForResult(
 	plan SystemdPortReconfigurePlan,
 	result SystemdPortReconfigureResult,
 ) systemdPortAppliedState {
+	if plan.PortContractVersion == 2 {
+		ref := portV2ResultSnapshot(plan, result.Result)
+		if ref == nil {
+			return systemdPortAppliedState{}
+		}
+		return systemdPortAppliedState{SchemaVersion: systemdPortPlanSchemaVersion, TargetID: plan.TargetID, ServiceType: plan.ServiceType,
+			Port: ref.LocalListenPort, EndpointRevision: ref.AppliedEndpointRevision, ConfigRevision: ref.ConfigRevision, ConfigSHA256: ref.ConfigSHA256,
+			SourcePolicyRevision: ref.SourcePolicyRevision, UpdaterPolicyRevision: ref.ProjectionRevision, ExecutorPolicyRevision: ref.ExecutorPolicyRevision,
+			ExecutorPolicySHA256: ref.ExecutorPolicySHA256, OwnershipEpoch: plan.OwnershipEpoch}
+	}
 	return systemdPortAppliedState{
 		SchemaVersion: systemdPortPlanSchemaVersion,
 		TargetID:      plan.TargetID, ServiceType: plan.ServiceType,
@@ -1411,10 +1459,19 @@ func sameSystemdPortIntent(left, right SystemdPortReconfigurePlan) bool {
 	left.PortPlanSHA256 = ""
 	right.LeaseGeneration = 0
 	right.PortPlanSHA256 = ""
+	if left.PortContractVersion == 2 && right.PortContractVersion == 2 {
+		left.SessionID, right.SessionID = "", ""
+	}
 	return reflect.DeepEqual(left, right)
 }
 
 func (p SystemdPortReconfigurePlan) mutationGrantBinding() *SystemdPortMutationGrantBinding {
+	if p.PortContractVersion == 2 {
+		return &SystemdPortMutationGrantBinding{PortContractVersion: 2, Mode: p.Mode,
+			Before: clonePortSnapshotRef(p.Before), Target: clonePortSnapshotRef(p.Target), Rollback: clonePortSnapshotRef(p.Rollback),
+			DockerBaseline: clonePortDockerBaseline(p.DockerBaseline), NetworkNamespace: p.NetworkNamespace,
+			Protocol: p.Protocol, PortPlanSHA256: p.PortIntentSHA256}
+	}
 	return &SystemdPortMutationGrantBinding{
 		NetworkNamespace: p.NetworkNamespace, Protocol: p.Protocol,
 		OldPort: p.OldPort, NewPort: p.NewPort,

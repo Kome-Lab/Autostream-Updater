@@ -33,6 +33,7 @@ type executorMutationRuntime struct {
 	consumeGrant                func(context.Context, string, string, string, MutationGrantBinding, *http.Client) error
 	consumeV2Grant              func(context.Context, string, string, string, contracts.UpdaterMutationGrantConsumeRequest, *http.Client, time.Time) error
 	v2GrantBinding              *contracts.UpdaterMutationGrantBinding
+	portPolicyStore             portPolicyStore
 	now                         func() time.Time
 	dockerPortCrashPointForTest func(string) error
 }

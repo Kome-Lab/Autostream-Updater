@@ -10,12 +10,15 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const (
-	journalActiveClearMarkerName    = "journal.clear-active.pending.json"
-	journalActiveClearMarkerVersion = 1
-	journalActiveClearMarkerMaxSize = 1 << 20
+	journalActiveClearMarkerName        = "journal.clear-active.pending.json"
+	journalActiveClearMarkerVersion     = 1
+	journalActiveClearMarkerMaxSize     = 1 << 20
+	journalPortActiveClearMarkerMaxSize = 4 << 20
 )
 
 type PendingReport struct {
@@ -27,6 +30,7 @@ type journalData struct {
 	ActiveJob          *UpdateJob                  `json:"active_job,omitempty"`
 	ActivePlan         *MutationPlan               `json:"active_plan,omitempty"`
 	ActivePortPlan     *SystemdPortReconfigurePlan `json:"active_port_plan,omitempty"`
+	ActivePortPolicy   *portAgentPolicyState       `json:"active_port_policy,omitempty"`
 	ActiveStageFailure *stageFailureRecord         `json:"active_stage_failure,omitempty"`
 	NextSeq            uint64                      `json:"next_sequence"`
 	Pending            []PendingReport             `json:"pending_reports,omitempty"`
@@ -133,6 +137,17 @@ func validateJournalData(data journalData) error {
 	if data.ActiveJob != nil && data.ActiveJob.validateOperationUnion() != nil {
 		return errors.New("update journal active job operation is invalid")
 	}
+	if data.ActiveJob != nil && isPortContractV2(*data.ActiveJob) {
+		job := data.ActiveJob
+		if job.PortResult != nil && (!contracts.IsAcceptedSystemUpdatePortResult(*job.PortResult) ||
+			contracts.ValidateSystemUpdatePortResult(job.PortReconfigure.sharedPortPlan(), *job.PortResult) != nil) {
+			return errors.New("update journal accepted port result is invalid")
+		}
+		if job.LastRecoveryObservation != nil && (job.LastRecoveryObservation.Result != contracts.SystemUpdatePortReconfigurationRollbackFailed ||
+			contracts.ValidateSystemUpdatePortResult(job.PortReconfigure.sharedPortPlan(), *job.LastRecoveryObservation) != nil) {
+			return errors.New("update journal port recovery observation is invalid")
+		}
+	}
 	if data.ActivePlan != nil || data.ActivePortPlan != nil {
 		if data.ActiveJob == nil ||
 			(data.ActivePlan != nil && data.ActivePortPlan != nil) ||
@@ -153,6 +168,11 @@ func validateJournalData(data journalData) error {
 		}
 		if err := data.ActiveStageFailure.validate(); err != nil {
 			return fmt.Errorf("update journal active stage failure is invalid: %w", err)
+		}
+	}
+	if data.ActivePortPolicy != nil {
+		if err := data.ActivePortPolicy.validate(data.ActiveJob, data.ActivePortPlan); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -190,11 +210,20 @@ func (j *Journal) SetActive(job *UpdateJob) error {
 	if job == nil || job.validateOperationUnion() != nil {
 		return errors.New("active update job operation is invalid")
 	}
-	copy := *job
-	if job.PortReconfigure != nil {
-		portCopy := *job.PortReconfigure
-		portCopy.Docker = cloneDockerPortMutationGrantBinding(job.PortReconfigure.Docker)
-		copy.PortReconfigure = &portCopy
+	copy := cloneV2PanelJob(*job)
+	if j.data.ActiveJob != nil && j.data.ActiveJob.ID == copy.ID && isPortContractV2(copy) {
+		if !sameRecoveredJobIntent(*j.data.ActiveJob, copy) {
+			return errors.New("active port job intent cannot be replaced")
+		}
+		if j.data.ActiveJob.PortResult != nil {
+			if copy.PortResult != nil && !contracts.EqualSystemUpdatePortResults(*j.data.ActiveJob.PortResult, *copy.PortResult) {
+				return errors.New("active port job accepted result cannot be replaced")
+			}
+			copy.PortResult = clonePortResult(j.data.ActiveJob.PortResult)
+		}
+		if copy.LastRecoveryObservation == nil {
+			copy.LastRecoveryObservation = clonePortResult(j.data.ActiveJob.LastRecoveryObservation)
+		}
 	}
 	copy.LeaseToken = ""
 	copy.ReleaseToken = ""
@@ -203,6 +232,7 @@ func (j *Journal) SetActive(job *UpdateJob) error {
 		j.data.ActiveJob.EffectiveOperation() != copy.EffectiveOperation() {
 		j.data.ActivePlan = nil
 		j.data.ActivePortPlan = nil
+		j.data.ActivePortPolicy = nil
 		j.data.ActiveStageFailure = nil
 	}
 	j.data.ActiveJob = &copy
@@ -245,8 +275,7 @@ func (j *Journal) SetActivePortPlan(plan SystemdPortReconfigurePlan) error {
 		plan.Validate() != nil {
 		return errors.New("active port reconfiguration plan does not match the journal job")
 	}
-	copy := plan
-	copy.Docker = cloneDockerPortMutationGrantBinding(plan.Docker)
+	copy := clonePortExecutionPlan(plan)
 	j.data.ActivePortPlan = &copy
 	return j.saveLocked()
 }
@@ -267,8 +296,7 @@ func (j *Journal) ActivePortPlan() *SystemdPortReconfigurePlan {
 	if j.data.ActivePortPlan == nil {
 		return nil
 	}
-	copy := *j.data.ActivePortPlan
-	copy.Docker = cloneDockerPortMutationGrantBinding(j.data.ActivePortPlan.Docker)
+	copy := clonePortExecutionPlan(*j.data.ActivePortPlan)
 	return &copy
 }
 
@@ -278,12 +306,7 @@ func (j *Journal) Active() *UpdateJob {
 	if j.data.ActiveJob == nil {
 		return nil
 	}
-	copy := *j.data.ActiveJob
-	if j.data.ActiveJob.PortReconfigure != nil {
-		portCopy := *j.data.ActiveJob.PortReconfigure
-		portCopy.Docker = cloneDockerPortMutationGrantBinding(j.data.ActiveJob.PortReconfigure.Docker)
-		copy.PortReconfigure = &portCopy
-	}
+	copy := cloneV2PanelJob(*j.data.ActiveJob)
 	return &copy
 }
 
@@ -343,11 +366,35 @@ func (j *Journal) queue(
 	}
 	var resultCopy *PortReconfigurationJobReport
 	if portResult != nil {
-		resultCopy = &PortReconfigurationJobReport{Result: portResult.Result}
+		resultCopy = &PortReconfigurationJobReport{Result: contracts.SystemUpdatePortReconfigurationResult(portResult.Result)}
+		if portResult.PortContractVersion == 2 {
+			if j.data.ActiveJob == nil || !isPortContractV2(*j.data.ActiveJob) ||
+				j.data.ActiveJob.ID != jobID || j.data.ActiveJob.AgentServiceID != serviceID ||
+				j.data.ActiveJob.LeaseGeneration != leaseGeneration || portResult.PortResult == nil ||
+				portResult.Validate() != nil || portResult.Status != status ||
+				contracts.ValidateSystemUpdatePortResult(j.data.ActiveJob.PortReconfigure.sharedPortPlan(), *portResult.PortResult) != nil {
+				return JobReport{}, errors.New("port result does not match the active journal intent")
+			}
+			if contracts.IsAcceptedSystemUpdatePortResult(*portResult.PortResult) {
+				if j.data.ActiveJob.PortResult != nil && !contracts.EqualSystemUpdatePortResults(*j.data.ActiveJob.PortResult, *portResult.PortResult) {
+					return JobReport{}, errors.New("accepted port result cannot be replaced")
+				}
+				j.data.ActiveJob.PortResult = clonePortResult(portResult.PortResult)
+				j.data.ActiveJob.RecoveryRequired = false
+			} else {
+				if j.data.ActiveJob.PortResult != nil || !portResult.RecoveryRequired {
+					return JobReport{}, errors.New("late or incomplete port recovery observation")
+				}
+				j.data.ActiveJob.LastRecoveryObservation = clonePortResult(portResult.PortResult)
+				j.data.ActiveJob.RecoveryRequired = true
+			}
+			typed := PortReconfigurationJobReport(*clonePortResult(portResult.PortResult))
+			resultCopy = &typed
+		}
 	}
 	report := JobReport{ServiceID: serviceID, LeaseToken: leaseToken, LeaseGeneration: leaseGeneration, Sequence: j.data.NextSeq, Status: status, Progress: progress, Code: code, Message: message, ArtifactDigest: artifact, PreviousDigest: previous, PortReconfigure: resultCopy}
 	j.data.NextSeq++
-	stored := report
+	stored := cloneV2PanelReport(report)
 	stored.LeaseToken = ""
 	j.data.Pending = append(j.data.Pending, PendingReport{JobID: jobID, Report: stored})
 	j.leaseTokens[pendingLeaseKey(jobID, report.Sequence)] = leaseToken
@@ -378,6 +425,7 @@ func (j *Journal) Pending() []PendingReport {
 	result := append([]PendingReport(nil), j.data.Pending...)
 	for index := range result {
 		pending := &result[index]
+		pending.Report = cloneV2PanelReport(pending.Report)
 		pending.Report.LeaseToken = j.leaseTokens[pendingLeaseKey(pending.JobID, pending.Report.Sequence)]
 	}
 	return result
@@ -424,6 +472,7 @@ func (j *Journal) ClearActive() error {
 	next.ActiveJob = nil
 	next.ActivePlan = nil
 	next.ActivePortPlan = nil
+	next.ActivePortPolicy = nil
 	next.ActiveStageFailure = nil
 	if err := j.saveDataLocked(next); err != nil {
 		// Keep the exact previous state in memory. The durable marker makes a
@@ -515,6 +564,14 @@ func validateActiveClearMarker(marker journalActiveClearMarker) error {
 	if err := validateJournalData(marker.Previous); err != nil {
 		return fmt.Errorf("active journal clear fence previous state is invalid: %w", err)
 	}
+	// Only the three bounded ST-PORT policy candidates use the additional
+	// space. All pre-existing journal metadata retains its original limit.
+	withoutCandidates := marker
+	withoutCandidates.Previous.ActivePortPolicy = nil
+	base, err := json.Marshal(withoutCandidates)
+	if err != nil || len(base)+1 > journalActiveClearMarkerMaxSize {
+		return errors.New("active journal clear fence metadata exceeds its bound")
+	}
 	if marker.Previous.ActiveJob.LeaseToken != "" ||
 		!marker.Previous.ActiveJob.ReleaseToken.Empty() {
 		return errors.New("active journal clear fence contains an execution credential")
@@ -529,6 +586,13 @@ func validateActiveClearMarker(marker journalActiveClearMarker) error {
 		return errors.New("active journal clear fence digest is invalid")
 	}
 	return nil
+}
+
+func activeClearMarkerSizeLimit(marker journalActiveClearMarker) int {
+	if marker.Previous.ActivePortPolicy != nil {
+		return journalPortActiveClearMarkerMaxSize
+	}
+	return journalActiveClearMarkerMaxSize
 }
 
 func (j *Journal) activeClearMarkerPath() string {
@@ -580,7 +644,7 @@ func (j *Journal) installActiveClearMarkerLocked(previous journalData) error {
 	}
 
 	encoded, err := json.Marshal(marker)
-	if err != nil || len(encoded)+1 > journalActiveClearMarkerMaxSize {
+	if err != nil || len(encoded)+1 > activeClearMarkerSizeLimit(marker) {
 		return errors.New("encode active journal clear fence")
 	}
 	encoded = append(encoded, '\n')
@@ -633,6 +697,24 @@ func safeActiveClearMarkerFile(info os.FileInfo) bool {
 		managedSnapshotOwnedByCurrentUser(info)
 }
 
+// This fence includes three bounded port candidates. Keep the identity-file
+// reader's independent 1 MiB limit unchanged while retaining its secure-open
+// identity, metadata, and size checks here.
+func openVerifiedActiveClearMarker(path string, expected os.FileInfo) (*os.File, os.FileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, errors.New("open active journal clear fence")
+	}
+	opened, err := file.Stat()
+	if err != nil || !safeActiveClearMarkerFile(opened) || !os.SameFile(expected, opened) ||
+		expected.Size() != opened.Size() || expected.Mode() != opened.Mode() ||
+		!expected.ModTime().Equal(opened.ModTime()) || opened.Size() <= 0 || opened.Size() > journalPortActiveClearMarkerMaxSize {
+		_ = file.Close()
+		return nil, nil, errors.New("active journal clear fence changed during secure open")
+	}
+	return file, opened, nil
+}
+
 func (j *Journal) loadActiveClearMarkerLocked() (journalActiveClearMarker, bool, error) {
 	path := j.activeClearMarkerPath()
 	info, err := os.Lstat(path)
@@ -640,10 +722,10 @@ func (j *Journal) loadActiveClearMarkerLocked() (journalActiveClearMarker, bool,
 		return journalActiveClearMarker{}, false, nil
 	}
 	if err != nil || !safeActiveClearMarkerFile(info) || info.Size() <= 0 ||
-		info.Size() > journalActiveClearMarkerMaxSize {
+		info.Size() > journalPortActiveClearMarkerMaxSize {
 		return journalActiveClearMarker{}, false, errors.New("active journal clear fence is unsafe")
 	}
-	file, openedInfo, err := openVerifiedConfig(path, info)
+	file, openedInfo, err := openVerifiedActiveClearMarker(path, info)
 	if err != nil || !safeActiveClearMarkerFile(openedInfo) {
 		if file != nil {
 			_ = file.Close()
@@ -651,8 +733,8 @@ func (j *Journal) loadActiveClearMarkerLocked() (journalActiveClearMarker, bool,
 		return journalActiveClearMarker{}, false, errors.New("open active journal clear fence")
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, journalActiveClearMarkerMaxSize+1))
-	if err != nil || len(data) == 0 || len(data) > journalActiveClearMarkerMaxSize {
+	data, err := io.ReadAll(io.LimitReader(file, journalPortActiveClearMarkerMaxSize+1))
+	if err != nil || len(data) == 0 || len(data) > journalPortActiveClearMarkerMaxSize {
 		return journalActiveClearMarker{}, false, errors.New("read active journal clear fence")
 	}
 	var marker journalActiveClearMarker
@@ -660,6 +742,9 @@ func (j *Journal) loadActiveClearMarkerLocked() (journalActiveClearMarker, bool,
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&marker); err != nil {
 		return journalActiveClearMarker{}, false, errors.New("decode active journal clear fence")
+	}
+	if len(data) > activeClearMarkerSizeLimit(marker) {
+		return journalActiveClearMarker{}, false, errors.New("active journal clear fence exceeds its bound")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
@@ -690,6 +775,7 @@ func (j *Journal) reconcileActiveClearMarkerLocked(mainExists bool) error {
 	cleared.ActiveJob = nil
 	cleared.ActivePlan = nil
 	cleared.ActivePortPlan = nil
+	cleared.ActivePortPolicy = nil
 	clearedSHA256, err := journalDataSHA256(cleared)
 	if err != nil {
 		return errors.New("digest cleared journal during active clear recovery")

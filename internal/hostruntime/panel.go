@@ -17,33 +17,35 @@ import (
 )
 
 type UpdateJob struct {
-	ProtocolVersion int                              `json:"protocol_version,omitempty"`
-	CommandID       string                           `json:"command_id,omitempty"`
-	ID              string                           `json:"id"`
-	Operation       string                           `json:"operation,omitempty"`
-	PortReconfigure *SystemdPortMutationGrantBinding `json:"port_reconfigure,omitempty"`
-	AgentServiceID  string                           `json:"updater_id,omitempty"`
-	HostID          string                           `json:"host_id,omitempty"`
-	TransportMode   string                           `json:"transport_mode,omitempty"`
-	OwnershipEpoch  int64                            `json:"ownership_epoch,omitempty"`
-	PolicyRevision  int64                            `json:"policy_revision,omitempty"`
-	TargetID        string                           `json:"target_id"`
-	TargetType      string                           `json:"target_type,omitempty"`
-	ServiceType     string                           `json:"service_type"`
-	DeploymentMode  string                           `json:"deployment_mode"`
-	CurrentVersion  string                           `json:"current_version,omitempty"`
-	TargetVersion   string                           `json:"target_version"`
-	Version         string                           `json:"version,omitempty"`
-	LeaseToken      string                           `json:"lease_token,omitempty"`
-	ReleaseToken    BoundedSecret                    `json:"-"`
-	LeaseExpiresAt  string                           `json:"lease_expires_at,omitempty"`
-	Status          string                           `json:"status,omitempty"`
-	Progress        int                              `json:"progress,omitempty"`
-	Code            string                           `json:"code,omitempty"`
-	Message         string                           `json:"message,omitempty"`
-	ArtifactDigest  string                           `json:"artifact_digest,omitempty"`
-	PreviousDigest  string                           `json:"previous_digest,omitempty"`
-	Sequence        uint64                           `json:"sequence,omitempty"`
+	ProtocolVersion         int                                 `json:"protocol_version,omitempty"`
+	CommandID               string                              `json:"command_id,omitempty"`
+	ID                      string                              `json:"id"`
+	Operation               string                              `json:"operation,omitempty"`
+	PortReconfigure         *SystemdPortMutationGrantBinding    `json:"port_reconfigure,omitempty"`
+	PortResult              *contracts.SystemUpdatePortResultV2 `json:"port_result,omitempty"`
+	LastRecoveryObservation *contracts.SystemUpdatePortResultV2 `json:"last_recovery_observation,omitempty"`
+	AgentServiceID          string                              `json:"updater_id,omitempty"`
+	HostID                  string                              `json:"host_id,omitempty"`
+	TransportMode           string                              `json:"transport_mode,omitempty"`
+	OwnershipEpoch          int64                               `json:"ownership_epoch,omitempty"`
+	PolicyRevision          int64                               `json:"policy_revision,omitempty"`
+	TargetID                string                              `json:"target_id"`
+	TargetType              string                              `json:"target_type,omitempty"`
+	ServiceType             string                              `json:"service_type"`
+	DeploymentMode          string                              `json:"deployment_mode"`
+	CurrentVersion          string                              `json:"current_version,omitempty"`
+	TargetVersion           string                              `json:"target_version"`
+	Version                 string                              `json:"version,omitempty"`
+	LeaseToken              string                              `json:"lease_token,omitempty"`
+	ReleaseToken            BoundedSecret                       `json:"-"`
+	LeaseExpiresAt          string                              `json:"lease_expires_at,omitempty"`
+	Status                  string                              `json:"status,omitempty"`
+	Progress                int                                 `json:"progress,omitempty"`
+	Code                    string                              `json:"code,omitempty"`
+	Message                 string                              `json:"message,omitempty"`
+	ArtifactDigest          string                              `json:"artifact_digest,omitempty"`
+	PreviousDigest          string                              `json:"previous_digest,omitempty"`
+	Sequence                uint64                              `json:"sequence,omitempty"`
 	// ReportSequence is local-only. Claim responses define it as the exact
 	// sequence to use for the first report, while Sequence remains the last
 	// sequence stored by the server.
@@ -93,6 +95,15 @@ func (j UpdateJob) validateOperationUnion() error {
 func (p SystemdPortMutationGrantBinding) validatePortJobContract(
 	deploymentMode string,
 ) error {
+	if p.PortContractVersion != 0 {
+		shared := p.sharedPortPlan()
+		if contracts.ValidateSystemUpdatePortPlan(shared) != nil ||
+			(deploymentMode == ModeDocker) != (shared.DockerBaseline != nil) ||
+			(deploymentMode != ModeDocker && deploymentMode != ModeSystemd) {
+			return errors.New("port v2 reconfiguration immutable fields are invalid")
+		}
+		return nil
+	}
 	if p.NetworkNamespace != systemdPortNetworkNamespaceHost ||
 		p.Protocol != systemdPortProtocolTCP ||
 		p.OldPort < 1 || p.OldPort > 65535 ||
@@ -180,8 +191,20 @@ type JobReport struct {
 // PortReconfigurationJobReport is the complete public result contract sent to
 // the Control Panel. The richer SystemdPortReconfigureResult is privileged
 // local reconciliation state and must never be exposed in a job report.
-type PortReconfigurationJobReport struct {
-	Result string `json:"result"`
+type PortReconfigurationJobReport contracts.SystemUpdatePortResultV2
+
+// Legacy saved jobs keep their result-only wire shape. Port contract v2 always
+// supplies the full observation and is validated against its immutable plan.
+func (p PortReconfigurationJobReport) MarshalJSON() ([]byte, error) {
+	if p.Observation.ObservedAt.IsZero() && p.ObservedSnapshotID == "" &&
+		p.ObservedSnapshotSHA256 == "" && p.ObservedConfigRevision == 0 &&
+		p.ObservedConfigSHA256 == "" && p.ObservedExecutorPolicyRevision == 0 &&
+		p.ObservedExecutorPolicySHA256 == "" && p.RuntimeInstance == nil {
+		return json.Marshal(struct {
+			Result contracts.SystemUpdatePortReconfigurationResult `json:"result"`
+		}{p.Result})
+	}
+	return json.Marshal(contracts.SystemUpdatePortResultV2(p))
 }
 
 type MutationGrantBinding struct {
@@ -205,22 +228,28 @@ type MutationGrantBinding struct {
 // without accepting any privileged local path, unit, command, URL, image, or
 // environment variable name.
 type SystemdPortMutationGrantBinding struct {
-	NetworkNamespace               string                          `json:"network_namespace"`
-	Protocol                       string                          `json:"protocol"`
-	OldPort                        int                             `json:"old_port"`
-	NewPort                        int                             `json:"new_port"`
-	ExpectedEndpointRevision       int64                           `json:"expected_endpoint_revision"`
-	TargetEndpointRevision         int64                           `json:"target_endpoint_revision"`
-	ExpectedConfigRevision         int64                           `json:"expected_config_revision"`
-	TargetConfigRevision           int64                           `json:"target_config_revision"`
-	ExpectedConfigSHA256           string                          `json:"expected_config_sha256"`
-	TargetConfigSHA256             string                          `json:"target_config_sha256"`
-	ExpectedSourcePolicyRevision   int64                           `json:"expected_source_policy_revision"`
-	ExpectedUpdaterPolicyRevision  int64                           `json:"expected_updater_policy_revision"`
-	ExpectedExecutorPolicyRevision int64                           `json:"expected_executor_policy_revision"`
-	ExpectedExecutorPolicySHA256   string                          `json:"expected_executor_policy_sha256"`
-	PortPlanSHA256                 string                          `json:"port_plan_sha256"`
-	Docker                         *DockerPortMutationGrantBinding `json:"docker,omitempty"`
+	PortContractVersion            int                                       `json:"port_contract_version,omitempty"`
+	Mode                           contracts.SystemUpdatePortMode            `json:"mode,omitempty"`
+	Before                         *contracts.SystemUpdatePortSnapshotRef    `json:"before,omitempty"`
+	Target                         *contracts.SystemUpdatePortSnapshotRef    `json:"target,omitempty"`
+	Rollback                       *contracts.SystemUpdatePortSnapshotRef    `json:"rollback,omitempty"`
+	DockerBaseline                 *contracts.SystemUpdatePortDockerBaseline `json:"docker_baseline,omitempty"`
+	NetworkNamespace               string                                    `json:"network_namespace"`
+	Protocol                       string                                    `json:"protocol"`
+	OldPort                        int                                       `json:"old_port,omitempty"`
+	NewPort                        int                                       `json:"new_port,omitempty"`
+	ExpectedEndpointRevision       int64                                     `json:"expected_endpoint_revision,omitempty"`
+	TargetEndpointRevision         int64                                     `json:"target_endpoint_revision,omitempty"`
+	ExpectedConfigRevision         int64                                     `json:"expected_config_revision,omitempty"`
+	TargetConfigRevision           int64                                     `json:"target_config_revision,omitempty"`
+	ExpectedConfigSHA256           string                                    `json:"expected_config_sha256,omitempty"`
+	TargetConfigSHA256             string                                    `json:"target_config_sha256,omitempty"`
+	ExpectedSourcePolicyRevision   int64                                     `json:"expected_source_policy_revision,omitempty"`
+	ExpectedUpdaterPolicyRevision  int64                                     `json:"expected_updater_policy_revision,omitempty"`
+	ExpectedExecutorPolicyRevision int64                                     `json:"expected_executor_policy_revision,omitempty"`
+	ExpectedExecutorPolicySHA256   string                                    `json:"expected_executor_policy_sha256,omitempty"`
+	PortPlanSHA256                 string                                    `json:"port_plan_sha256"`
+	Docker                         *DockerPortMutationGrantBinding           `json:"docker,omitempty"`
 }
 
 type DockerPortMutationGrantBinding struct {

@@ -1,9 +1,10 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
 
 umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
+trap 'smoke_status=$?; if [[ $- == *e* ]]; then printf "%s:%s: exit %s\n" "${BASH_SOURCE[0]##*/}" "${LINENO}" "${smoke_status}" >&2; fi' ERR
 
 [[ $(id -u) -eq 0 ]] || {
   printf '%s\n' 'host agent installer prepare smoke requires root' >&2

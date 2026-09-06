@@ -1,12 +1,16 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	contracts "github.com/example/autostream-contracts/pkg/contracts"
@@ -22,7 +26,7 @@ type fixtureConfig struct {
 }
 
 func main() {
-	listener := requiredFixtureNodeListener()
+	listener, listenerSHA256, listenerDevice, listenerInode := requiredFixtureNodeListener()
 	address, err := netip.ParseAddrPort(listener.BindAddress)
 	if err != nil || !address.Addr().IsUnspecified() || address.Port() < 1024 {
 		panic("Node listener bind_address is invalid")
@@ -71,6 +75,9 @@ func main() {
 			"advertised_port": config.advertisedPort,
 			"container_port":  config.port,
 			"config_revision": config.configRevision,
+			"listener_sha256": listenerSHA256,
+			"listener_device": listenerDevice,
+			"listener_inode":  listenerInode,
 		})
 	})
 	server := &http.Server{
@@ -83,20 +90,31 @@ func main() {
 	}
 }
 
-func requiredFixtureNodeListener() contracts.NodeListenerConfig {
+func requiredFixtureNodeListener() (contracts.NodeListenerConfig, string, uint64, uint64) {
 	directory := os.Getenv("CREDENTIALS_DIRECTORY")
 	if directory != "/run/autostream-credentials" {
 		panic("CREDENTIALS_DIRECTORY is invalid")
 	}
-	body, err := os.ReadFile(filepath.Join(directory, "node-listener.json"))
+	file, err := os.Open(filepath.Join(directory, "node-listener.json"))
 	if err != nil {
 		panic("Node listener credential is unavailable")
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, (64<<10)+1))
+	info, statErr := file.Stat()
+	if err != nil || len(body) > 64<<10 || statErr != nil {
+		panic("Node listener credential is invalid")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		panic("Node listener identity is unavailable")
 	}
 	listener, err := contracts.ParseNodeListenerConfig(body)
 	if err != nil || listener.ServiceType != "worker" {
 		panic("Node listener credential is invalid")
 	}
-	return listener
+	digest := sha256.Sum256(body)
+	return listener, hex.EncodeToString(digest[:]), uint64(stat.Dev), stat.Ino
 }
 
 func requiredInt(name string, minimum, maximum int) int {

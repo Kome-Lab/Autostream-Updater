@@ -32,6 +32,47 @@ Wave 1 preserves the existing root-owned identity, policy, journal, A/B slot,
 socket, and state paths. A normal runtime upgrade must use the version-matched
 installer and must not issue a new Configure Token or delete recovery state.
 
+Docker Node listener approval remains an inline Compose configuration. At
+execution, the Local Executor stores the exact non-secret listener bytes under
+`/var/lib/autostream-local-executor/docker-listener-configs/<service>/<sha256>.json`
+and derives a file-backed Compose model for the read-only container. Generations
+are root-owned (directories `0700`, files `0444`) and survive container/daemon
+restarts and rollback. The initial limit is 256 generations per service, each
+at most 64 KiB. At capacity new generations fail closed; existing generations
+remain reusable. No automatic garbage collection is performed; only an explicit
+purge may remove generations after their runtime and rollback uses have ended.
+
+## Port reconfiguration
+
+Port contract version 2 supports a local listener change, or a local change
+with an advertised endpoint port change. Advertised-only changes are rejected.
+Docker published and container ports remain separate inputs in the existing
+fixed Node profile. The mapping environment digest and the derived container
+listener configuration keep their existing, distinct byte representations.
+
+The Agent advertises this capability only after an actual root probe confirms
+the installed policy on disk and in memory. Each job retains immutable before,
+target, and rollback snapshots. The Local Executor consumes the exact grant,
+rechecks the baseline, then atomically writes and securely reloads the fixed
+root policy before changing the listener. The first write must begin within
+30 seconds measured from immediately before grant consumption, also bounded
+by authorization expiry. Forward and rollback each have a 120-second budget.
+
+Verified results retain `applied`, `unchanged`, or `rolled_back` and the first
+observation time. A no-op requires fresh proof and performs no policy write or
+restart. Rollback restores the original functional ports using newly generated
+configuration bytes at revision C+2. A failed rollback retains the recovery
+hold and failure observation without occupying the accepted-result slot.
+After a disconnect or restart, a fresh authorization for the same job may
+observe a completed target or recover toward the saved rollback snapshot;
+it never repeats an unproven forward operation. Other host mutations remain
+blocked until that recovery converges.
+
+The existing port ledger stores the three bounded policy candidates and
+recovery latch. No replacement policy, privileged path, service, command, or
+runtime credential can be supplied by a port job. Installer policy ownership,
+fixed paths, and the existing Docker listener materialization remain in use.
+
 ## Local development
 
 ```text

@@ -181,6 +181,17 @@ func NewLocalExecutorTargetObserver(client LocalExecutorProbeClient) HostTargetO
 			observation.PolicySHA256 = probe.PolicySHA256
 			observation.ConfigRevision = probe.ConfigRevision
 			observation.ConfigSHA256 = probe.ConfigSHA256
+			observation.PortContractVersion = probe.PortContractVersion
+			observation.PolicyTransitionVersion = probe.PolicyTransitionVersion
+			observation.SourcePolicyRevision = probe.SourcePolicyRevision
+			observation.ProjectionRevision = probe.ProjectionRevision
+			observation.AgentUID, observation.AgentGID = probe.AgentUID, probe.AgentGID
+			observation.EndpointRevision = probe.EndpointRevision
+			observation.ObservedAt = probe.ObservedAt
+			if probe.DockerRoot != nil {
+				root := *probe.DockerRoot
+				observation.DockerRoot = &root
+			}
 			if probe.Docker != nil {
 				if target.DeploymentMode != ModeDocker ||
 					target.AppliedEndpoint == nil ||

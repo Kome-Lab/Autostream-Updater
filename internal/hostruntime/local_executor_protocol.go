@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
@@ -108,10 +109,10 @@ func (r LocalExecutorRequest) Validate() error {
 			r.HostSelfUpdateGeneration != "" ||
 			r.RuntimeCredential != nil ||
 			r.PortPlan.TargetID != r.ServiceID ||
-			r.SourcePolicyRevision != r.PortPlan.ExpectedSourcePolicyRevision ||
+			r.SourcePolicyRevision != r.PortPlan.sourcePolicyRevision() ||
 			r.OwnershipEpoch != r.PortPlan.OwnershipEpoch ||
-			r.OwnershipPolicyRevision != r.PortPlan.ExpectedUpdaterPolicyRevision ||
-			r.ExecutorPolicyRevision != r.PortPlan.ExpectedExecutorPolicyRevision ||
+			r.OwnershipPolicyRevision != r.PortPlan.projectionRevision() ||
+			r.ExecutorPolicyRevision != r.PortPlan.executorPolicyRevision() ||
 			!validBoundedSecret(r.MutationGrant.Reveal()) {
 			return errors.New("local executor port mutation binding is invalid")
 		}
@@ -243,19 +244,28 @@ func (r LocalExecutorRequest) Validate() error {
 }
 
 type LocalExecutorProbe struct {
-	ServiceID       string                        `json:"service_id"`
-	ServiceType     string                        `json:"service_type"`
-	DeploymentMode  string                        `json:"deployment_mode"`
-	PolicyRevision  int64                         `json:"policy_revision"`
-	PolicySHA256    string                        `json:"policy_sha256"`
-	ConfigRevision  int64                         `json:"config_revision"`
-	ConfigSHA256    string                        `json:"config_sha256,omitempty"`
-	CurrentVersion  string                        `json:"current_version"`
-	MainPID         int                           `json:"main_pid"`
-	ListenerPID     int                           `json:"listener_pid"`
-	ControlGroup    string                        `json:"control_group"`
-	ListenerAddress string                        `json:"listener_address"`
-	Docker          *LocalExecutorDockerPortProbe `json:"docker,omitempty"`
+	PortContractVersion     int                                      `json:"port_contract_version,omitempty"`
+	PolicyTransitionVersion int                                      `json:"policy_transition_version,omitempty"`
+	SourcePolicyRevision    int64                                    `json:"source_policy_revision,omitempty"`
+	ProjectionRevision      int64                                    `json:"projection_revision,omitempty"`
+	AgentUID                uint32                                   `json:"agent_uid,omitempty"`
+	AgentGID                uint32                                   `json:"agent_gid,omitempty"`
+	EndpointRevision        int64                                    `json:"endpoint_revision,omitempty"`
+	ObservedAt              time.Time                                `json:"observed_at,omitzero"`
+	DockerRoot              *contracts.UpdaterPortDockerRootBaseline `json:"docker_root,omitempty"`
+	ServiceID               string                                   `json:"service_id"`
+	ServiceType             string                                   `json:"service_type"`
+	DeploymentMode          string                                   `json:"deployment_mode"`
+	PolicyRevision          int64                                    `json:"policy_revision"`
+	PolicySHA256            string                                   `json:"policy_sha256"`
+	ConfigRevision          int64                                    `json:"config_revision"`
+	ConfigSHA256            string                                   `json:"config_sha256,omitempty"`
+	CurrentVersion          string                                   `json:"current_version"`
+	MainPID                 int                                      `json:"main_pid"`
+	ListenerPID             int                                      `json:"listener_pid"`
+	ControlGroup            string                                   `json:"control_group"`
+	ListenerAddress         string                                   `json:"listener_address"`
+	Docker                  *LocalExecutorDockerPortProbe            `json:"docker,omitempty"`
 }
 
 type LocalExecutorDockerPortProbe struct {
@@ -291,6 +301,11 @@ func (p LocalExecutorDockerPortProbe) Validate() error {
 }
 
 func (p LocalExecutorProbe) Validate() error {
+	if p.PortContractVersion != 0 || p.PolicyTransitionVersion != 0 {
+		if p.PortContractVersion != 2 || p.PolicyTransitionVersion != 1 || p.SourcePolicyRevision < 1 || p.ProjectionRevision < 1 || p.AgentUID == 0 || p.AgentGID == 0 || p.EndpointRevision < 1 || p.ObservedAt.IsZero() {
+			return errors.New("local executor port policy baseline is invalid")
+		}
+	}
 	if !identifierPattern.MatchString(p.ServiceID) || !validLocalExecutorServiceType(p.ServiceType) {
 		return errors.New("local executor probe identity is invalid")
 	}

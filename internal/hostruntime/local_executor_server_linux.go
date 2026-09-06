@@ -45,6 +45,13 @@ func ServeLocalExecutor(ctx context.Context, policyPath string) error {
 	if err != nil {
 		return err
 	}
+	if filepath.Clean(policyPath) == localExecutorPortPolicyPath {
+		manager, managerErr := newFilePortPolicyStore(policyPath, true)
+		if managerErr != nil {
+			return managerErr
+		}
+		ctx = context.WithValue(ctx, portPolicyContextKey{}, portPolicyStore(manager))
+	}
 	systemdState, err := newFileSystemdPortStateStore(LocalExecutorMutationStateDir, true)
 	if err != nil {
 		return err
@@ -56,6 +63,9 @@ func ServeLocalExecutor(ctx context.Context, policyPath string) error {
 	appliedPortState := localExecutorAppliedPortState{
 		systemd: systemdState,
 		docker:  dockerState,
+	}
+	if err := validatePortV2Startup(policy, systemdState, dockerState); err != nil {
+		return err
 	}
 	activated, inherited, err := localExecutorActivatedListener(
 		policy.SocketPath,
@@ -249,6 +259,13 @@ func serveLocalExecutorConnection(
 	if err != nil {
 		_ = EncodeLocalExecutorResponse(connection, localExecutorFailure("invalid_request"))
 		return
+	}
+	if manager := portPolicyFromContext(ctx); manager != nil {
+		current, loadErr := manager.Snapshot()
+		if loadErr != nil {
+			return
+		}
+		policy = current
 	}
 	if validateLocalExecutorPeerForOperation(
 		peer,

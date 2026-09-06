@@ -39,6 +39,7 @@ type linuxSystemdPortRuntime struct {
 	v2GrantBinding   *contracts.UpdaterMutationGrantBinding
 	now              func() time.Time
 	requireRootOwned bool
+	policyStore      portPolicyStore
 }
 
 func newPlatformSystemdPortExecution(
@@ -119,6 +120,7 @@ func newPlatformSystemdPortExecution(
 		consumeGrant: consumeGrant, consumeV2Grant: consumeV2Grant,
 		v2GrantBinding: remoteRuntime.v2GrantBinding, now: now,
 		requireRootOwned: true,
+		policyStore:      remoteRuntime.portPolicyStore,
 	}
 	return portRuntime, state, nil
 }

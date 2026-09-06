@@ -699,7 +699,7 @@ if mode_output="$("${INSTALLER}" --upgrade --prepare 2>&1)"; then
   printf '%s\n' 'Host Agent installer accepted --upgrade with --prepare' >&2
   exit 1
 fi
-grep -Fq -- '--prepare, --config, and --upgrade are mutually exclusive' \
+grep -Fq -- '--prepare and --upgrade are mutually exclusive' \
   <<<"${mode_output}"
 assert_no_completion "${mode_output}"
 assert_helper_not_called
@@ -711,7 +711,7 @@ if mode_output="$("${INSTALLER}" --upgrade --config "${IDENTITY_PATH}" 2>&1)"; t
   printf '%s\n' 'Host Agent installer accepted --upgrade with --config' >&2
   exit 1
 fi
-grep -Fq -- '--prepare, --config, and --upgrade are mutually exclusive' \
+grep -Fq -- 'unknown argument: --config' \
   <<<"${mode_output}"
 assert_no_completion "${mode_output}"
 assert_helper_not_called

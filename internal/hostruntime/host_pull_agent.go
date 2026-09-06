@@ -15,6 +15,7 @@ import (
 	"time"
 
 	controlversion "github.com/Kome-Lab/Autostream-Updater/internal/version"
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const (
@@ -26,17 +27,26 @@ const (
 )
 
 type HostTargetObservation struct {
-	ServiceID              string
-	Availability           string
-	AvailabilityCode       string
-	ReportedPort           int
-	ReportedServiceType    string
-	ReportedDeploymentMode string
-	PolicyRevision         int64
-	PolicySHA256           string
-	ConfigRevision         int64
-	ConfigSHA256           string
-	Docker                 *HostDockerPortObservation
+	PortContractVersion     int
+	PolicyTransitionVersion int
+	SourcePolicyRevision    int64
+	ProjectionRevision      int64
+	AgentUID                uint32
+	AgentGID                uint32
+	EndpointRevision        int64
+	ObservedAt              time.Time
+	DockerRoot              *contracts.UpdaterPortDockerRootBaseline
+	ServiceID               string
+	Availability            string
+	AvailabilityCode        string
+	ReportedPort            int
+	ReportedServiceType     string
+	ReportedDeploymentMode  string
+	PolicyRevision          int64
+	PolicySHA256            string
+	ConfigRevision          int64
+	ConfigSHA256            string
+	Docker                  *HostDockerPortObservation
 }
 
 type HostDockerPortObservation struct {
@@ -394,6 +404,11 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 		if policy != nil {
 			currentRevision = policy.Revision
 		}
+		if active := a.Journal.Active(); active != nil && isPortContractV2(*active) {
+			// A same-job R may legitimately be ahead of CP's still-pending T.
+			// Fetch without a current revision, then apply the durable job fence.
+			currentRevision = 0
+		}
 		next, changed, fetchErr := a.ControlPlane.FetchHostAgentPolicy(ctx, a.Bootstrap.NodeID, currentRevision)
 		if fetchErr != nil {
 			if ctx.Err() == nil {
@@ -421,7 +436,12 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 			a.Logf("host pull agent policy binding mismatch")
 			return false
 		}
-		policy = next
+		resolved, resolveErr := a.portRecoveryPolicy(*next)
+		if resolveErr != nil {
+			a.Logf("host pull agent port recovery projection is unavailable")
+			return false
+		}
+		policy = &resolved
 		observations, observationFailed = a.observe(ctx, *policy)
 		if a.hasActiveRecovery() {
 			return true
@@ -709,6 +729,11 @@ func (a *HostPullAgent) replaceRuntimeIdentity(identity Config) error {
 }
 
 func (a *HostPullAgent) observe(ctx context.Context, policy HostAgentPolicy) ([]HostTargetObservation, bool) {
+	if effective, err := a.portRecoveryPolicy(policy); err != nil {
+		return nil, true
+	} else {
+		policy = effective
+	}
 	if a.ObserveTargets == nil {
 		observations := make([]HostTargetObservation, 0, len(policy.Targets))
 		for _, target := range policy.Targets {
@@ -781,6 +806,13 @@ func (a *HostPullAgent) observe(ctx context.Context, policy HostAgentPolicy) ([]
 }
 
 func (a *HostPullAgent) capabilities(binding HostAgentBinding, policy *HostAgentPolicy, observations []HostTargetObservation, observationFailed bool) map[string]any {
+	if policy != nil {
+		if effective, err := a.portRecoveryPolicy(*policy); err == nil {
+			policy = &effective
+		} else {
+			observationFailed = true
+		}
+	}
 	executorReady := a.executorReady(policy, observations, observationFailed)
 	mutationReady := a.mutationCapabilityReady(
 		binding, policy, observations, observationFailed,
@@ -809,6 +841,13 @@ func (a *HostPullAgent) capabilities(binding HostAgentBinding, policy *HostAgent
 		"executor_protocol_version": LocalExecutorMutationProtocolVersion,
 		"mutation_protocol_version": LocalExecutorMutationProtocolVersion,
 		"recovery_protocol_version": HostSelfUpdateRecoveryProtocolVersion,
+	}
+	if !observationFailed && policy != nil {
+		if baseline := portPolicyBaseline(*policy, observations); baseline != nil {
+			capabilities["port_contract_version"] = baseline.PortContractVersion
+			capabilities["policy_transition_version"] = baseline.PolicyTransitionVersion
+			capabilities["port_policy_baseline"] = baseline
+		}
 	}
 	if a.Journal != nil && a.Journal.Active() != nil {
 		capabilities["recovery_pending"] = true

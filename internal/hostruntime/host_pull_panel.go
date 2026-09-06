@@ -63,15 +63,17 @@ type HostAgentPolicy struct {
 }
 
 type HostAgentPolicyTarget struct {
-	ServiceID             string             `json:"service_id"`
-	ServiceType           string             `json:"service_type"`
-	DeploymentMode        string             `json:"deployment_mode"`
-	AppliedConfigRevision int64              `json:"applied_config_revision,omitempty"`
-	AppliedConfigSHA256   string             `json:"applied_config_sha256,omitempty"`
-	DesiredEndpoint       *HostAgentEndpoint `json:"desired_endpoint,omitempty"`
-	AppliedEndpoint       *HostAgentEndpoint `json:"applied_endpoint,omitempty"`
-	LocalListenEndpoint   *HostAgentEndpoint `json:"local_listen_endpoint,omitempty"`
-	LocalHealthEndpoint   *HostAgentEndpoint `json:"local_health_endpoint,omitempty"`
+	ServiceID               string             `json:"service_id"`
+	ServiceType             string             `json:"service_type"`
+	DeploymentMode          string             `json:"deployment_mode"`
+	EndpointRevision        int64              `json:"endpoint_revision,omitempty"`
+	AppliedEndpointRevision int64              `json:"applied_endpoint_revision,omitempty"`
+	AppliedConfigRevision   int64              `json:"applied_config_revision,omitempty"`
+	AppliedConfigSHA256     string             `json:"applied_config_sha256,omitempty"`
+	DesiredEndpoint         *HostAgentEndpoint `json:"desired_endpoint,omitempty"`
+	AppliedEndpoint         *HostAgentEndpoint `json:"applied_endpoint,omitempty"`
+	LocalListenEndpoint     *HostAgentEndpoint `json:"local_listen_endpoint,omitempty"`
+	LocalHealthEndpoint     *HostAgentEndpoint `json:"local_health_endpoint,omitempty"`
 }
 
 type HostAgentEndpoint struct {
@@ -371,7 +373,8 @@ func (p HostAgentPolicy) validateForService(serviceID string, currentRevision in
 		if deploymentMode != ModeSystemd && deploymentMode != ModeDocker {
 			return errors.New("host agent policy deployment mode is invalid")
 		}
-		if target.AppliedConfigRevision < 0 ||
+		if target.EndpointRevision < 0 || target.AppliedEndpointRevision < 0 ||
+			target.AppliedConfigRevision < 0 ||
 			(target.AppliedConfigSHA256 != "" && !digestPattern.MatchString(target.AppliedConfigSHA256)) {
 			return errors.New("host agent policy target config revision is invalid")
 		}

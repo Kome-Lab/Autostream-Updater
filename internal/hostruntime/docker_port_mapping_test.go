@@ -38,6 +38,7 @@ type dockerPortRollbackRunner struct {
 	upCount           int
 	configCount       int
 	cancelApply       context.CancelFunc
+	executionModels   [][]byte
 }
 
 func canonicalWorkerDockerPortTarget() *DockerTarget {
@@ -134,6 +135,18 @@ func (r *dockerPortRollbackRunner) Run(_ context.Context, dir string, env []stri
 		r.configCount++
 		return dockerRollbackComposeModel(r.oldImage), nil
 	case strings.Contains(joined, " up -d "):
+		for index, arg := range args {
+			if arg == "-f" && index+1 < len(args) {
+				if !strings.HasSuffix(args[index+1], "-execution.json") {
+					return "", errors.New("up did not use a derived execution model")
+				}
+				body, err := os.ReadFile(args[index+1])
+				if err != nil {
+					return "", err
+				}
+				r.executionModels = append(r.executionModels, body)
+			}
+		}
 		r.upCount++
 		if r.upCount == 1 && r.cancelApply != nil {
 			r.cancelApply()
@@ -788,6 +801,7 @@ func TestTrustedDockerApplyRejectsForeignPublishedPortOwnerBeforeCheckpoint(t *t
 }
 
 func TestTrustedDockerSoftwareUpdatePreservesPortMappingDuringForcedRollback(t *testing.T) {
+	listenerStore := dockerListenerTestStore(t)
 	const oldSource = "v1.5.0"
 	const newSource = "v1.6.0"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -858,7 +872,7 @@ func TestTrustedDockerSoftwareUpdatePreservesPortMappingDuringForcedRollback(t *
 	applyContext, cancelApply := context.WithCancel(context.Background())
 	defer cancelApply()
 	runner.cancelApply = cancelApply
-	result, err := applyDockerWithGateAndBaselineWithOwnerCheck(
+	result, err := applyDockerWithListenerStore(
 		applyContext,
 		target,
 		plan,
@@ -871,6 +885,7 @@ func TestTrustedDockerSoftwareUpdatePreservesPortMappingDuringForcedRollback(t *
 		&staged.Baseline,
 		newImage,
 		acceptTestFixtureOwner,
+		listenerStore,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -878,6 +893,18 @@ func TestTrustedDockerSoftwareUpdatePreservesPortMappingDuringForcedRollback(t *
 	if !gateCalled || result.Status != "rolled_back" || !result.RolledBack ||
 		runner.upCount != 2 || runner.configCount != 1 {
 		t.Fatalf("rollback result=%+v gate=%v up=%d config=%d", result, gateCalled, runner.upCount, runner.configCount)
+	}
+	if len(runner.executionModels) != 2 {
+		t.Fatal("both actual execution models must be captured")
+	}
+	for index, canonical := range [][]byte{frozen, []byte(dockerRollbackComposeModel(oldImage))} {
+		prepared, err := listenerStore.prepare(canonical, target.Docker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := listenerStore.validate(prepared, canonical, runner.executionModels[index], target.Docker); err != nil {
+			t.Fatal(err)
+		}
 	}
 	restored, err := os.ReadFile(versionEnv)
 	if err != nil || string(restored) != oldVersionEnv {

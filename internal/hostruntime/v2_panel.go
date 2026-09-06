@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -258,6 +259,9 @@ func mapV2LeaseToUpdateJob(
 			return UpdateJob{}, errors.New("v2 port reconfiguration intent is unavailable")
 		}
 		job.PortReconfigure = mapV2PortReconfiguration(desired.PortReconfigure)
+		if desired.PortReconfigure.PortContractVersion == 2 {
+			job.PolicyRevision = desired.PortReconfigure.Before.ProjectionRevision
+		}
 		// Port v2 is deliberately versionless. Do not invent a compatibility
 		// version merely to satisfy assumptions in an older execution path.
 	case contracts.UpdaterDesiredBootstrap:
@@ -283,6 +287,12 @@ func mapV2PortReconfiguration(
 		return nil
 	}
 	mapped := &SystemdPortMutationGrantBinding{
+		PortContractVersion:            plan.PortContractVersion,
+		Mode:                           plan.Mode,
+		Before:                         clonePortSnapshotRef(plan.Before),
+		Target:                         clonePortSnapshotRef(plan.Target),
+		Rollback:                       clonePortSnapshotRef(plan.Rollback),
+		DockerBaseline:                 clonePortDockerBaseline(plan.DockerBaseline),
 		NetworkNamespace:               plan.NetworkNamespace,
 		Protocol:                       string(plan.Protocol),
 		OldPort:                        plan.OldPort,
@@ -369,7 +379,8 @@ func validateV2PanelReportBinding(
 		report.Sequence > uint64(math.MaxInt64) || report.Progress < 0 || report.Progress > 100 {
 		return errors.New("v2 updater report lease binding is invalid")
 	}
-	isTerminal := isTerminalUpdateStatus(report.Status)
+	isTerminal := isTerminalUpdateStatus(report.Status) || (report.Status == "canceled" &&
+		lease.Command.DesiredOperation.PortReconfigure != nil && lease.Command.DesiredOperation.PortReconfigure.PortContractVersion == 2)
 	if lease.Command.DesiredOperation.Operation != contracts.UpdaterDesiredPortReconfigure {
 		if report.PortReconfigure != nil {
 			return errors.New("v2 non-port report contains a port result")
@@ -383,7 +394,17 @@ func validateV2PanelReportBinding(
 		return nil
 	}
 	if report.PortReconfigure == nil {
+		if lease.Command.DesiredOperation.PortReconfigure != nil &&
+			lease.Command.DesiredOperation.PortReconfigure.PortContractVersion == 2 &&
+			(report.Status == "failed" || report.Status == "canceled") {
+			return nil
+		}
 		return errors.New("v2 terminal port report omitted its result")
+	}
+	if plan := lease.Command.DesiredOperation.PortReconfigure; plan != nil && plan.PortContractVersion == 2 {
+		if err := contracts.ValidateSystemUpdatePortResult(*plan, contracts.SystemUpdatePortResultV2(*report.PortReconfigure)); err != nil {
+			return errors.New("v2 port report does not match its immutable snapshot")
+		}
 	}
 	result := report.PortReconfigure.Result
 	valid := (report.Status == "succeeded" &&
@@ -404,7 +425,11 @@ func mapV2JobReport(
 	mapped := v2PanelMappedReport{source: cloneV2PanelReport(report)}
 	command := lease.Command
 	authorization := command.MutationAuthorization
-	if !isTerminalUpdateStatus(report.Status) {
+	portAmbiguous := report.Status == "reconciling" && report.Code == "outcome_ambiguous" &&
+		command.DesiredOperation.PortReconfigure != nil && command.DesiredOperation.PortReconfigure.PortContractVersion == 2
+	portCanceled := report.Status == "canceled" && command.DesiredOperation.PortReconfigure != nil &&
+		command.DesiredOperation.PortReconfigure.PortContractVersion == 2
+	if !isTerminalUpdateStatus(report.Status) && !portAmbiguous && !portCanceled {
 		phase, ok := v2ProgressPhase(report.Status)
 		if !ok {
 			return v2PanelMappedReport{}, errors.New("v2 updater progress status is unsupported")
@@ -492,10 +517,36 @@ func mapV2JobReport(
 			Message:   "updater execution failed",
 			Retryable: false,
 		}
+	case "canceled":
+		result.Outcome = contracts.UpdaterOutcomeCanceled
+	case "reconciling":
+		if !portAmbiguous {
+			return v2PanelMappedReport{}, errors.New("v2 result does not identify an ambiguous port observation")
+		}
+		result.Outcome = contracts.UpdaterOutcomeAmbiguous
+		evidence.EvidenceCode = "outcome_ambiguous"
+		message, _ := contracts.CanonicalUpdaterSafeErrorMessage("outcome_ambiguous")
+		result.SafeError = &contracts.V2UpdaterSafeError{Code: "outcome_ambiguous", Message: message, Retryable: false}
 	default:
 		return v2PanelMappedReport{}, errors.New("v2 updater terminal status is unsupported")
 	}
+	if command.DesiredOperation.Operation == contracts.UpdaterDesiredPortReconfigure &&
+		command.DesiredOperation.PortReconfigure != nil && command.DesiredOperation.PortReconfigure.PortContractVersion == 2 &&
+		report.PortReconfigure != nil {
+		port := contracts.SystemUpdatePortResultV2(*report.PortReconfigure)
+		result.PortReconfigure = clonePortResult(&port)
+		evidence.ObservedAt = port.Observation.ObservedAt
+		if contracts.IsAcceptedSystemUpdatePortResult(port) {
+			result.AppliedRevision = port.ObservedConfigRevision
+			evidence.ObservedRevision = port.ObservedConfigRevision
+		}
+	}
 	result.Evidence = []contracts.UpdaterEvidence{evidence}
+	if result.PortReconfigure != nil && result.PortReconfigure.Result == contracts.SystemUpdatePortReconfigurationRolledBack {
+		application := evidence
+		application.EvidenceCode = "application_probe_verified"
+		result.Evidence = append(result.Evidence, application)
+	}
 	if contracts.ValidateUpdaterResult(lease, result) != nil {
 		return v2PanelMappedReport{}, errors.New("v2 updater result mapping is invalid")
 	}
@@ -552,7 +603,7 @@ func mapV2MutationGrantBinding(
 		request.LeaseGeneration != uint64(lease.LeaseGeneration) ||
 		request.HostID != authorization.HostID || request.TransportMode != HostTransportPullV2 ||
 		request.OwnershipEpoch != authorization.Fence ||
-		request.PolicyRevision != authorization.DesiredRevision ||
+		request.PolicyRevision != job.PolicyRevision ||
 		request.TargetID != target.ServiceID || request.ServiceType != string(target.ServiceType) ||
 		request.DeploymentMode != string(target.DeploymentMode) ||
 		request.TargetVersion != job.EffectiveVersion() ||
@@ -564,13 +615,21 @@ func mapV2MutationGrantBinding(
 	}
 	if lease.Command.DesiredOperation.Operation == contracts.UpdaterDesiredPortReconfigure {
 		if request.PortReconfigure == nil ||
-			request.PortReconfigure.PortPlanSHA256 != request.PlanSHA256 ||
 			!v2PortGrantMatchesDesired(
 				request.PortReconfigure,
 				lease.Command.DesiredOperation.PortReconfigure,
 			) {
 			return contracts.UpdaterMutationGrantBinding{},
 				errors.New("v2 updater port mutation grant changed the desired plan")
+		}
+		if desired := lease.Command.DesiredOperation.PortReconfigure; desired != nil && desired.PortContractVersion == 2 {
+			runtimeDigest, err := contracts.ComputeSystemUpdatePortRuntimePlanSHA256(*desired, job.ID, job.HostID, job.TargetID, job.EffectiveType(),
+				job.OwnershipEpoch, request.LeaseGeneration, request.SessionID)
+			if err != nil || runtimeDigest != request.PlanSHA256 {
+				return contracts.UpdaterMutationGrantBinding{}, errors.New("v2 updater port runtime plan binding changed")
+			}
+		} else if request.PortReconfigure.PortPlanSHA256 != request.PlanSHA256 {
+			return contracts.UpdaterMutationGrantBinding{}, errors.New("v2 updater port runtime plan binding changed")
 		}
 	} else if request.PortReconfigure != nil {
 		return contracts.UpdaterMutationGrantBinding{},
@@ -592,6 +651,10 @@ func v2PortGrantMatchesDesired(
 	actual *SystemdPortMutationGrantBinding,
 	desired *contracts.SystemUpdatePortReconfiguration,
 ) bool {
+	if actual != nil && desired != nil && (actual.PortContractVersion != 0 || desired.PortContractVersion != 0) {
+		mapped := mapV2PortReconfiguration(desired)
+		return reflect.DeepEqual(actual, mapped)
+	}
 	if actual == nil || desired == nil ||
 		actual.NetworkNamespace != desired.NetworkNamespace ||
 		actual.Protocol != string(desired.Protocol) ||
@@ -629,10 +692,10 @@ func v2PortGrantMatchesDesired(
 func cloneV2PanelJob(job UpdateJob) UpdateJob {
 	copy := job
 	if job.PortReconfigure != nil {
-		port := *job.PortReconfigure
-		port.Docker = cloneDockerPortMutationGrantBinding(job.PortReconfigure.Docker)
-		copy.PortReconfigure = &port
+		copy.PortReconfigure = clonePortMutationBinding(job.PortReconfigure)
 	}
+	copy.PortResult = clonePortResult(job.PortResult)
+	copy.LastRecoveryObservation = clonePortResult(job.LastRecoveryObservation)
 	return copy
 }
 
@@ -640,6 +703,10 @@ func cloneV2PanelReport(report JobReport) JobReport {
 	copy := report
 	if report.PortReconfigure != nil {
 		port := *report.PortReconfigure
+		if report.PortReconfigure.RuntimeInstance != nil {
+			runtimeInstance := *report.PortReconfigure.RuntimeInstance
+			port.RuntimeInstance = &runtimeInstance
+		}
 		copy.PortReconfigure = &port
 	}
 	return copy
@@ -656,7 +723,7 @@ func sameV2PanelReport(left, right JobReport) bool {
 	if left.PortReconfigure == nil || right.PortReconfigure == nil {
 		return left.PortReconfigure == nil && right.PortReconfigure == nil
 	}
-	return *left.PortReconfigure == *right.PortReconfigure
+	return reflect.DeepEqual(left.PortReconfigure, right.PortReconfigure)
 }
 
 func v2PanelControlPlaneError(operation string, err error) error {

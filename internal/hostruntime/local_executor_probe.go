@@ -14,6 +14,7 @@ import (
 	"time"
 
 	applicationprobe "github.com/Kome-Lab/Autostream-Updater/internal/probe"
+	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
 
 const localExecutorHTTPMaxBytes = 64 << 10
@@ -186,6 +187,23 @@ func handleLocalExecutorRequestWithSystemdState(
 		ControlGroup:    after.ControlGroup,
 		ListenerAddress: target.LocalListen.address(),
 		Docker:          dockerProbe,
+	}
+	canonicalPolicy, encodeErr := json.Marshal(policy)
+	manager := portPolicyFromContext(ctx)
+	if manager != nil && encodeErr == nil && manager.Verify(canonicalPolicy) == nil && policy.SourcePolicyRevision > 0 && policy.ProjectionRevision > 0 &&
+		policy.AgentUID > 0 && policy.AgentGID > 0 && target.EndpointRevision > 0 && digestPattern.MatchString(target.ConfigSHA256) {
+		probe.PortContractVersion = 2
+		probe.PolicyTransitionVersion = 1
+		probe.SourcePolicyRevision, probe.ProjectionRevision = policy.SourcePolicyRevision, policy.ProjectionRevision
+		probe.AgentUID, probe.AgentGID = policy.AgentUID, policy.AgentGID
+		probe.EndpointRevision = target.EndpointRevision
+		probe.ObservedAt = time.Now().UTC()
+		if installed, ok := policy.Target(request.ServiceID); ok && installed.DeploymentMode == ModeDocker && installed.Docker != nil {
+			probe.DockerRoot = &contracts.UpdaterPortDockerRootBaseline{
+				ComposeConfigSHA256: installed.Docker.ComposeConfigSHA256,
+				CurrentVersion:      installed.Docker.CurrentVersion,
+			}
+		}
 	}
 	response := LocalExecutorResponse{Version: LocalExecutorProtocolVersion, Probe: probe}
 	if err := response.Validate(); err != nil {

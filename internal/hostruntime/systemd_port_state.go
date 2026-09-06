@@ -11,7 +11,10 @@ import (
 )
 
 const (
-	systemdPortLedgerMaxBytes         = 128 << 10
+	systemdPortLedgerMaxBytes = 128 << 10
+	// Three existing <=1 MiB policies are base64 encoded inside the v2
+	// ledger. This ceiling includes that fixed expansion and metadata.
+	systemdPortV2LedgerMaxBytes       = 5 << 20
 	systemdPortAppliedSidecarMaxBytes = 64 << 10
 )
 
@@ -179,6 +182,7 @@ func (s *fileSystemdPortStateStore) Stage(ledger systemdPortLedger) error {
 }
 
 func (s *fileSystemdPortStateStore) readPrivateJSON(path string, out any, label string) (bool, error) {
+	maximum := systemdPortPrivateJSONMaxBytes(out, true)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -188,13 +192,13 @@ func (s *fileSystemdPortStateStore) readPrivateJSON(path string, out any, label 
 		!info.Mode().IsRegular() ||
 		runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 ||
 		info.Size() <= 0 ||
-		info.Size() > systemdPortLedgerMaxBytes ||
+		info.Size() > int64(maximum) ||
 		s.requireRootOwned && !isRootOwner(info) {
 		return false, errors.New(label + " is not a private regular file")
 	}
-	file, openedInfo, err := openVerifiedConfig(path, info)
+	file, openedInfo, err := openSystemdPortPrivateJSON(path, info, maximum)
 	if err != nil ||
-		openedInfo.Size() > systemdPortLedgerMaxBytes ||
+		openedInfo.Size() > int64(maximum) ||
 		s.requireRootOwned && validateRootOwnedFileAndParents(path, openedInfo, "systemd port ledger") != nil {
 		if file != nil {
 			_ = file.Close()
@@ -202,20 +206,41 @@ func (s *fileSystemdPortStateStore) readPrivateJSON(path string, out any, label 
 		return false, errors.New(label + " changed during secure open")
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, systemdPortLedgerMaxBytes+1))
-	if err != nil || len(data) == 0 || len(data) > systemdPortLedgerMaxBytes {
+	data, err := io.ReadAll(io.LimitReader(file, int64(maximum)+1))
+	if err != nil || len(data) == 0 || len(data) > maximum {
 		return false, errors.New("read " + label)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	if rejectPortDuplicateJSONKeys(data) != nil {
+		return false, errors.New(label + " contains duplicate fields")
+	}
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
 		return false, errors.New("decode " + label)
+	}
+	if len(data) > systemdPortPrivateJSONMaxBytes(out, false) {
+		return false, errors.New(label + " exceeds its versioned size limit")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return false, errors.New(label + " contains trailing data")
 	}
 	return true, nil
+}
+
+func openSystemdPortPrivateJSON(path string, expected os.FileInfo, maximum int) (*os.File, os.FileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, errors.New("open private port state")
+	}
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(expected, opened) ||
+		expected.Size() != opened.Size() || expected.Mode() != opened.Mode() ||
+		!expected.ModTime().Equal(opened.ModTime()) || opened.Size() <= 0 || opened.Size() > int64(maximum) {
+		_ = file.Close()
+		return nil, nil, errors.New("private port state changed during secure open")
+	}
+	return file, opened, nil
 }
 
 func (s *fileSystemdPortStateStore) Save(ledger systemdPortLedger) error {
@@ -342,11 +367,29 @@ func (s *fileSystemdPortStateStore) VerifyAppliedSidecar(
 
 func (s *fileSystemdPortStateStore) writePrivateJSON(path string, value any, label string) error {
 	payload, err := json.Marshal(value)
-	if err != nil || len(payload) > systemdPortLedgerMaxBytes {
+	if err != nil || len(payload)+1 > systemdPortPrivateJSONMaxBytes(value, false) {
 		return errors.New("encode " + label)
 	}
 	if err := writeAtomicFile(path, append(payload, '\n'), 0o600); err != nil {
 		return errors.New("persist " + label)
 	}
 	return nil
+}
+
+func systemdPortPrivateJSONMaxBytes(value any, reading bool) int {
+	versioned := false
+	switch ledger := value.(type) {
+	case systemdPortLedger:
+		versioned = ledger.Plan.PortContractVersion == 2
+	case *systemdPortLedger:
+		versioned = reading || ledger != nil && ledger.Plan.PortContractVersion == 2
+	case dockerPortLedger:
+		versioned = ledger.Plan.PortContractVersion == 2
+	case *dockerPortLedger:
+		versioned = reading || ledger != nil && ledger.Plan.PortContractVersion == 2
+	}
+	if versioned {
+		return systemdPortV2LedgerMaxBytes
+	}
+	return systemdPortLedgerMaxBytes
 }

@@ -3,6 +3,7 @@ package hostruntime
 import (
 	"context"
 	"errors"
+	"reflect"
 	"runtime"
 	"strings"
 	"time"
@@ -28,6 +29,25 @@ func handleLocalExecutorMutation(
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "target_busy")
 	}
 	defer unlockLifecycle()
+	if manager, ok := ctx.Value(portPolicyContextKey{}).(portPolicyStore); ok {
+		current, loadErr := manager.Snapshot()
+		if loadErr != nil {
+			return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "policy_invalid")
+		}
+		policy = current
+		rt.portPolicyStore = manager
+	}
+	if rt.portPolicyStore != nil {
+		stateDir, requireRoot := LocalExecutorMutationStateDir, true
+		if rt.localStateDir != "" {
+			stateDir, requireRoot = rt.localStateDir, false
+		}
+		systemdState, stateErr := newFileSystemdPortStateStore(stateDir, requireRoot)
+		dockerState, dockerErr := newFileDockerPortStateStore(stateDir, requireRoot)
+		if stateErr != nil || dockerErr != nil || !portV2HostLaneAllows(policy, request, systemdState, dockerState) {
+			return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "target_busy")
+		}
+	}
 	if strings.HasPrefix(request.Operation, "runtime_credential_") {
 		return handleLocalExecutorRuntimeCredential(
 			ctx, policy, request, defaultRuntimeCredentialExecutorRuntime(),
@@ -160,6 +180,19 @@ func handleLocalExecutorMutation(
 	if err := ensureExecutorStateDirectories(cfg); err != nil {
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "state_unavailable")
 	}
+	if localTarget.DeploymentMode == ModeDocker {
+		portState, err := newFileDockerPortStateStore(cfg.StateDir, rt.localStateDir == "")
+		if err != nil {
+			return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "state_unavailable")
+		}
+		// The whole root-policy digest above remains the grant authority. Only
+		// the selected runtime's resolved Compose hash may come from its exact
+		// accepted v2 port ledger; the installed fixed profile stays unchanged.
+		target, err = localExecutorSoftwareRuntimeTarget(policy, localTarget, portState)
+		if err != nil {
+			return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "config_mismatch")
+		}
+	}
 	secured, err := securePrivilegedTarget(target)
 	if err != nil {
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "target_unavailable")
@@ -255,6 +288,9 @@ func validateV2PortMutationGrantBinding(
 	policy *LocalExecutorPolicy,
 	rootTarget *LocalExecutorTarget,
 ) error {
+	if plan.PortContractVersion == 2 {
+		return validatePortV2GrantBinding(now, binding, operation, plan, fence, policy, rootTarget)
+	}
 	if contracts.ValidateUpdaterMutationGrantBinding(now, binding) != nil ||
 		plan.Validate() != nil ||
 		binding.Operation != contracts.UpdaterMutationOperation(operation) ||
@@ -311,6 +347,9 @@ func v2PortDesiredMatchesPlan(
 	desired *contracts.SystemUpdatePortReconfiguration,
 	plan SystemdPortReconfigurePlan,
 ) bool {
+	if plan.PortContractVersion == 2 {
+		return desired != nil && reflect.DeepEqual(*desired, plan.SharedPortPlan())
+	}
 	if desired == nil || desired.Result != "" ||
 		desired.NetworkNamespace != plan.NetworkNamespace ||
 		string(desired.Protocol) != plan.Protocol ||

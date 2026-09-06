@@ -106,7 +106,12 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 	)
 	hardenDockerPortSmokeProjectParent(t)
 
-	stateDir := t.TempDir()
+	// /opt is a private tmpfs in this namespace. /var/lib is shared with
+	// the actual Docker daemon, so its bind source sees the same inode.
+	stateDir, err := os.MkdirTemp("/var/lib", "autostream-docker-port-smoke-")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +129,7 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 			cleanupDockerPortSmokeEnvironment(
 				t, baseRunner, image, foreignContainer, runDirExisted,
 			)
+			cleanupDockerPortSmokeListeners(t, baseRunner, stateDir, foreignContainer)
 		}
 	})
 
@@ -153,18 +159,6 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 	versionEnvSHA256 := dockerPortSmokeSHA256(versionEnv)
 
 	dockerTarget := dockerPortSmokeTarget()
-	mustDockerPortSmokeRun(
-		t, baseRunner, dockerPortSmokeProjectDir, "/usr/bin/docker",
-		append(
-			composeArgs(&dockerTarget, ""),
-			"up", "-d", "--no-deps", "--no-build", "--pull", "never",
-			dockerTarget.Service,
-		)...,
-	)
-	waitForDockerPortFixture(t, 18081, 443, 8080, 1, false)
-	initialContainerID := dockerPortSmokeContainerID(t, baseRunner)
-	assertDockerPortFixtureBoundary(t, baseRunner, initialContainerID, 18081, 8080)
-
 	rawCompose := mustDockerPortSmokeRun(
 		t, baseRunner, dockerPortSmokeProjectDir, "/usr/bin/docker",
 		append(
@@ -186,6 +180,40 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 	}
 	dockerTarget.PortComposePolicySHA256 = composePolicySHA256
 	dockerTarget.ComposeConfigSHA256 = composeConfigSHA256
+	adapter, err := dockerPortAdapterFor("worker", &dockerTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newDockerPortSmokeRunner(t, imageID, repositoryDigest, captureDir, adapter)
+	workRoot := filepath.Join(stateDir, "docker-work")
+	if err := ensureDockerPortWorkDirectory(workRoot, true); err != nil {
+		t.Fatal(err)
+	}
+	initialWork, err := os.MkdirTemp(workRoot, dockerPortRecreatePrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialCanonical := filepath.Join(initialWork, "compose-frozen.json")
+	writeDockerPortSmokeFile(t, initialCanonical, []byte(rawCompose))
+	listenerStore := defaultDockerNodeListenerStore()
+	listenerStore.root = filepath.Join(stateDir, "docker-listener-configs")
+	initialExecution, err := listenerStore.freeze(initialCanonical, &dockerTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := listenerStore.validateFrozen(initialExecution, &dockerTarget); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Run(context.Background(), dockerPortSmokeProjectDir, dockerCommandEnv(), "/usr/bin/docker",
+		append(composeFrozenArgs(&dockerTarget, initialExecution.path), "up", "-d", "--no-deps", "--no-build", "--pull", "never", dockerTarget.Service)...); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureRemoveDockerPortTransient(workRoot, initialWork, true); err != nil {
+		t.Fatal(err)
+	}
+	waitForDockerPortFixture(t, 18081, 443, 8080, 1, false)
+	initialContainerID := dockerPortSmokeContainerID(t, baseRunner)
+	assertDockerPortFixtureBoundary(t, baseRunner, initialContainerID, 18081, 8080, listenerStore.root)
 
 	policy := LocalExecutorPolicy{
 		SchemaVersion:        LocalExecutorMutationPolicySchemaVersion,
@@ -228,18 +256,10 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 		t.Fatalf("secure Docker target preflight: %v", err)
 	}
 
-	adapter, err := dockerPortAdapterFor("worker", &dockerTarget)
-	if err != nil {
-		t.Fatal(err)
-	}
 	current := newDockerPortSmokeState(t, adapter, 443, 18081, 8080, 1, 1)
 	if current.configSHA256 != dockerPortEnvSHA256(initialPortEnv) {
 		t.Fatal("initial root policy and port sidecar differ")
 	}
-	runner := newDockerPortSmokeRunner(
-		t, imageID, repositoryDigest, captureDir, adapter,
-	)
-
 	// First real transaction: advertised, published and container ports remain
 	// independent. The public endpoint stays 443 while both local Docker ports
 	// move.
@@ -356,7 +376,7 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 	// A foreign container owns the proposed loopback port. The production
 	// availability check must reject it before grant consumption or any write.
 	startDockerPortSmokeForeignContainer(
-		t, baseRunner, image, foreignContainer, 18087, 22080,
+		t, baseRunner, image, foreignContainer, stateDir, 18087, 22080,
 	)
 	foreign := newDockerPortSmokeState(
 		t, adapter, 443, 18087, 22080,
@@ -394,12 +414,28 @@ func TestDockerPortDaemonSmoke(t *testing.T) {
 	if runner.repoDigestCalls() == 0 {
 		t.Fatal("production baseline did not inspect immutable image identity")
 	}
+	if !t.Run("st_port_v2", func(t *testing.T) {
+		current = runSTPortDockerDaemonSequence(t, runner, baseRunner, stateDir, captureDir, policy, current, imageID, repositoryDigest, versionEnvSHA256)
+	}) {
+		t.FailNow()
+	}
+	// Reopen the same retained generation through a fresh container process,
+	// then a restarted daemon. The shared absolute source must remain usable.
+	restartContainer := dockerPortSmokeContainerID(t, baseRunner)
+	mustDockerPortSmokeRun(t, baseRunner, "", "/usr/bin/docker", "restart", restartContainer)
+	waitForDockerPortFixture(t, current.publishedPort, 443, current.containerPort, current.configRevision, false)
+	assertDockerPortFixtureBoundary(t, baseRunner, restartContainer, current.publishedPort, current.containerPort, listenerStore.root)
+	mustDockerPortSmokeRun(t, baseRunner, "", "/usr/bin/systemctl", "restart", "docker")
+	mustDockerPortSmokeRun(t, baseRunner, "", "/usr/bin/docker", "start", restartContainer)
+	waitForDockerPortFixture(t, current.publishedPort, 443, current.containerPort, current.configRevision, false)
+	assertDockerPortFixtureBoundary(t, baseRunner, restartContainer, current.publishedPort, current.containerPort, listenerStore.root)
 	assertDockerPortSmokeFrozenCaptures(t, captureDir)
 	assertDockerPortSmokeWorkDirEmpty(t, stateDir)
 
 	cleanupDockerPortSmokeEnvironment(
 		t, baseRunner, image, foreignContainer, runDirExisted,
 	)
+	cleanupDockerPortSmokeListeners(t, baseRunner, stateDir, foreignContainer)
 	cleaned = true
 	requireDockerPortSmokeHostClean(t, baseRunner)
 }
@@ -427,6 +463,16 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 		payload.CaptureDir, adapter,
 	)
 	grantCalls := 0
+	request := dockerPortSmokeRequest(payload.Plan, payload.Operation)
+	ctx := context.Background()
+	if payload.Plan.PortContractVersion == 2 {
+		request = newSTPortV2Request(t, payload.Plan, time.Now(), payload.Operation)
+		manager, err := newFilePortPolicyStore(dockerPortSmokePolicyPath, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx = context.WithValue(ctx, portPolicyContextKey{}, portPolicyStore(manager))
+	}
 	remoteRuntime := executorMutationRuntime{
 		platformOS:    "linux",
 		localStateDir: payload.StateDir,
@@ -449,21 +495,29 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 			)
 			return nil
 		},
+		consumeV2Grant: func(_ context.Context, panelURL, jobID, grant string, consumed contracts.UpdaterMutationGrantConsumeRequest, _ *http.Client, now time.Time) error {
+			grantCalls++
+			if request.MutationGrantV2Binding == nil || panelURL != "https://panel.example.com" || jobID != payload.Plan.JobID || grant != dockerPortDaemonSmokeGrant ||
+				!reflect.DeepEqual(consumed.Binding, *request.MutationGrantV2Binding) || contracts.ValidateUpdaterMutationGrantBinding(now, consumed.Binding) != nil {
+				return errors.New("versioned child mutation grant binding changed")
+			}
+			writeDockerPortSmokeJSON(t, payload.GrantRecordPath, consumed.Binding)
+			return nil
+		},
 	}
 	if payload.CrashAfterRecreate {
 		remoteRuntime.dockerPortCrashPointForTest = func(point string) error {
-			if point == "after_docker_recreate" {
+			if point == "after_docker_recreate" || payload.Plan.PortContractVersion == 2 && point == "after_restart" {
 				os.Exit(dockerPortDaemonSmokeCrashExit)
 			}
 			return nil
 		}
 	}
-	request := dockerPortSmokeRequest(payload.Plan, payload.Operation)
 	request.MutationGrant = NewBoundedSecret(
 		os.Getenv(dockerPortDaemonSmokeGrantEnv),
 	)
 	response := handleLocalExecutorMutation(
-		context.Background(),
+		ctx,
 		policy,
 		request,
 		remoteRuntime,
@@ -531,15 +585,8 @@ func (r *dockerPortSmokeRunner) Run(
 	}
 	frozenPath := dockerPortSmokeFrozenComposePath(args)
 	if frozenPath != "" {
-		capturePath := filepath.Join(
-			r.captureDir,
-			fmt.Sprintf(
-				"compose-frozen-%d-%d.json",
-				os.Getpid(), time.Now().UnixNano(),
-			),
-		)
-		if err := os.Link(frozenPath, capturePath); err != nil {
-			return "", fmt.Errorf("capture frozen Compose inode: %w", err)
+		if err := r.captureExecution(frozenPath); err != nil {
+			return "", err
 		}
 	}
 	output, err := r.base.Run(ctx, dir, env, name, args...)
@@ -557,6 +604,9 @@ func (r *dockerPortSmokeRunner) Run(
 		if waitErr := waitForDockerPortTCP(ctx, publishedPort); waitErr != nil {
 			return output, waitErr
 		}
+		if verifyErr := r.verifyMountedListener(ctx, frozenPath, publishedPort); verifyErr != nil {
+			return output, verifyErr
+		}
 	}
 	return output, err
 }
@@ -565,6 +615,206 @@ func (r *dockerPortSmokeRunner) repoDigestCalls() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.repositoryCalls
+}
+
+type dockerPortSmokeListenerRecord struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
+}
+
+func dockerPortSmokeListenerIdentity(path string) (dockerPortSmokeListenerRecord, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o444 || validateSecureRootPath(path, false) != nil {
+		return dockerPortSmokeListenerRecord{}, errors.New("smoke listener file is not immutable and root-owned")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return dockerPortSmokeListenerRecord{}, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return dockerPortSmokeListenerRecord{}, errors.New("smoke listener inode changed")
+	}
+	body, err := io.ReadAll(io.LimitReader(file, dockerNodeListenerMaxBytes+1))
+	stat, ok := opened.Sys().(*syscall.Stat_t)
+	if err != nil || !ok || len(body) > dockerNodeListenerMaxBytes {
+		return dockerPortSmokeListenerRecord{}, errors.New("smoke listener identity unavailable")
+	}
+	digest := sha256.Sum256(body)
+	return dockerPortSmokeListenerRecord{path, hex.EncodeToString(digest[:]), uint64(stat.Dev), stat.Ino}, nil
+}
+
+func (r *dockerPortSmokeRunner) captureExecution(path string) error {
+	canonicalPath := strings.TrimSuffix(path, "-execution.json") + ".json"
+	canonical, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		return err
+	}
+	execution, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	target := dockerPortSmokeTarget()
+	target.ComposeConfigSHA256, err = composeModelHash(canonical, target.Service)
+	if err != nil {
+		return err
+	}
+	store := defaultDockerNodeListenerStore()
+	store.root = filepath.Join(filepath.Dir(r.captureDir), "docker-listener-configs")
+	plan, err := store.prepare(canonical, &target)
+	if err != nil {
+		return err
+	}
+	if err := store.validate(plan, canonical, execution, &target); err != nil {
+		return err
+	}
+	suffix := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+	for kind, source := range map[string]string{"canonical": canonicalPath, "execution": path} {
+		if err := os.Link(source, filepath.Join(r.captureDir, "compose-"+kind+"-"+suffix+".json")); err != nil {
+			return errors.New("capture canonical and actual execution Compose inodes")
+		}
+	}
+	record, err := dockerPortSmokeListenerIdentity(plan.path)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(filepath.Join(filepath.Dir(r.captureDir), "listener-generations.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(append(body, '\n'))
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	return firstError(writeErr, syncErr, closeErr)
+}
+
+func (r *dockerPortSmokeRunner) verifyMountedListener(ctx context.Context, path string, publishedPort int) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var model struct {
+		Configs map[string]struct {
+			File string `json:"file"`
+		} `json:"configs"`
+	}
+	if json.Unmarshal(body, &model) != nil || len(model.Configs) != 1 {
+		return errors.New("smoke execution listener source is ambiguous")
+	}
+	for _, config := range model.Configs {
+		if filepath.Dir(config.File) != filepath.Join(filepath.Dir(r.captureDir), "docker-listener-configs", "worker") {
+			return errors.New("smoke listener source escaped task storage")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return verifyDockerPortSmokeListenerFile(config.File, publishedPort)
+	}
+	return errors.New("smoke execution listener is missing")
+}
+
+func verifyDockerPortSmokeListenerFile(path string, publishedPort int) error {
+	record, err := dockerPortSmokeListenerIdentity(path)
+	if err != nil {
+		return err
+	}
+	var actual struct {
+		SHA256 string `json:"listener_sha256"`
+		Device uint64 `json:"listener_device"`
+		Inode  uint64 `json:"listener_inode"`
+	}
+	if err := getDockerPortFixtureJSON(&http.Client{Timeout: time.Second}, fmt.Sprintf("http://127.0.0.1:%d/config", publishedPort), &actual); err != nil {
+		return err
+	}
+	if actual.SHA256 != record.SHA256 || actual.Device != record.Device || actual.Inode != record.Inode {
+		return errors.New("Docker daemon and executor do not observe the same listener bytes and inode")
+	}
+	return nil
+}
+
+func cleanupDockerPortSmokeListeners(t *testing.T, runner OSCommandRunner, stateDir, foreignContainer string) {
+	t.Helper()
+	// Only remove recorded files after both managed and foreign containers
+	// (including stopped containers) have been removed successfully.
+	for _, filter := range []string{"label=com.docker.compose.project=autostream", "name=^/" + foreignContainer + "$"} {
+		out, err := runner.Run(context.Background(), "", dockerCommandEnv(), "/usr/bin/docker", "ps", "-aq", "--filter", filter)
+		if err != nil || strings.TrimSpace(out) != "" {
+			t.Error("listener cleanup requires removal of all fixture containers")
+			return
+		}
+	}
+	body, err := os.ReadFile(filepath.Join(stateDir, "listener-generations.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil || len(body) > 1<<20 {
+		t.Error("listener cleanup inventory is unavailable or oversized")
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	records := map[string]dockerPortSmokeListenerRecord{}
+	for index := 0; ; index++ {
+		var record dockerPortSmokeListenerRecord
+		err := decoder.Decode(&record)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil || index > 256 || filepath.Dir(record.Path) != filepath.Join(stateDir, "docker-listener-configs", "worker") || filepath.Base(record.Path) != record.SHA256+".json" {
+			t.Error("listener cleanup inventory escaped task ownership")
+			return
+		}
+		current, err := dockerPortSmokeListenerIdentity(record.Path)
+		if err != nil || current != record {
+			t.Error("listener cleanup inode changed")
+			return
+		}
+		records[record.Path] = record
+	}
+	for path := range records {
+		if err := os.Remove(path); err != nil {
+			t.Error("remove recorded listener generation")
+			return
+		}
+	}
+	serviceDir := filepath.Join(stateDir, "docker-listener-configs", "worker")
+	lockPath := filepath.Join(serviceDir, ".generation.lock")
+	if info, err := os.Lstat(lockPath); err == nil {
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !isRootOwner(info) || info.Size() != 0 {
+			t.Error("task generation lock changed")
+			return
+		}
+		if err := os.Remove(lockPath); err != nil {
+			t.Error(err)
+			return
+		}
+	}
+	for _, path := range []string{serviceDir, filepath.Dir(serviceDir)} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Error("listener cleanup found unrecorded files")
+			return
+		}
+	}
+	foreignPath := filepath.Join(stateDir, "foreign-listener", "node-listener.json")
+	if _, err := os.Lstat(foreignPath); err == nil {
+		if _, err := dockerPortSmokeListenerIdentity(foreignPath); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Remove(foreignPath); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Remove(filepath.Dir(foreignPath)); err != nil {
+			t.Error(err)
+		}
+	}
 }
 
 func dockerPortSmokeFrozenComposePath(args []string) string {
@@ -576,7 +826,7 @@ func dockerPortSmokeFrozenComposePath(args []string) string {
 		}
 		if args[index] == "-f" && index+1 < len(args) {
 			candidate := args[index+1]
-			if filepath.Base(candidate) == "compose-frozen.json" {
+			if filepath.Base(candidate) == "compose-frozen-execution.json" {
 				frozenPath = candidate
 			}
 		}
@@ -1351,7 +1601,7 @@ func assertDockerPortSmokeFrozenCaptures(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) < 5 {
+	if len(entries) < 12 || len(entries)%2 != 0 {
 		t.Fatalf("captured frozen Compose count=%d", len(entries))
 	}
 	for _, entry := range entries {
@@ -1373,11 +1623,14 @@ func assertDockerPortSmokeFrozenCaptures(
 func startDockerPortSmokeForeignContainer(
 	t *testing.T,
 	runner OSCommandRunner,
-	image, name string,
+	image, name, stateDir string,
 	publishedPort, containerPort int,
 ) {
 	t.Helper()
-	credentialDir := t.TempDir()
+	credentialDir := filepath.Join(stateDir, "foreign-listener")
+	if err := os.Mkdir(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	credentialPath := filepath.Join(credentialDir, "node-listener.json")
 	credential, err := contracts.MarshalNodeListenerConfig(contracts.NodeListenerConfig{
 		SchemaVersion:  2,
@@ -1445,6 +1698,7 @@ func assertDockerPortFixtureBoundary(
 	runner OSCommandRunner,
 	containerID string,
 	publishedPort, containerPort int,
+	listenerRoot string,
 ) {
 	t.Helper()
 	mounts := strings.TrimSpace(mustDockerPortSmokeRun(
@@ -1459,12 +1713,29 @@ func assertDockerPortFixtureBoundary(
 		t, runner, "", "/usr/bin/docker",
 		"port", containerID, fmt.Sprintf("%d/tcp", containerPort),
 	))
-	if mounts != "[]" || privileged != "false" ||
+	var mounted []struct {
+		Type, Source, Destination string
+		RW                        bool
+	}
+	if json.Unmarshal([]byte(mounts), &mounted) != nil || len(mounted) != 1 ||
+		mounted[0].Type != "bind" || mounted[0].RW ||
+		mounted[0].Destination != "/run/autostream-credentials/node-listener.json" ||
+		filepath.Dir(mounted[0].Source) != filepath.Join(listenerRoot, "worker") || privileged != "false" ||
 		mapping != fmt.Sprintf("127.0.0.1:%d", publishedPort) {
-		t.Fatalf(
-			"Docker fixture boundary mounts=%s privileged=%s mapping=%s",
-			mounts, privileged, mapping,
-		)
+		t.Fatal("Docker fixture mount, privilege or loopback boundary mismatch")
+	}
+	var hostConfig struct {
+		ReadonlyRootfs       bool
+		CapDrop, SecurityOpt []string
+	}
+	hostRaw := mustDockerPortSmokeRun(t, runner, "", "/usr/bin/docker", "inspect", "--format={{json .HostConfig}}", containerID)
+	if json.Unmarshal([]byte(hostRaw), &hostConfig) != nil || !hostConfig.ReadonlyRootfs ||
+		!reflect.DeepEqual(hostConfig.CapDrop, []string{"ALL"}) ||
+		!(reflect.DeepEqual(hostConfig.SecurityOpt, []string{"no-new-privileges:true"}) || reflect.DeepEqual(hostConfig.SecurityOpt, []string{"no-new-privileges"})) {
+		t.Fatal("Docker fixture confinement changed")
+	}
+	if err := verifyDockerPortSmokeListenerFile(mounted[0].Source, publishedPort); err != nil {
+		t.Fatal(err)
 	}
 }
 

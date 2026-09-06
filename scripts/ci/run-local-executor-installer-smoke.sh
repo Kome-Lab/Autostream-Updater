@@ -529,7 +529,7 @@ done
 test -e /tmp/autostream-local-executor.socket.enabled
 test -e /tmp/autostream-local-executor.socket.active
 test -e /tmp/autostream-local-executor.service.active
-grep -Eq '^validate-policy --policy /etc/autostream-local-executor/\.policy\.json\.new\.' "${BINARY_LOG}"
+grep -Eq '^validate-policy --policy /etc/autostream/updater/\.executor-policy\.json\.new\.' "${BINARY_LOG}"
 grep -qx -- 'enable --now autostream-local-executor.socket' "${SYSTEMCTL_LOG}"
 grep -qx -- 'start autostream-local-executor.service' "${SYSTEMCTL_LOG}"
 

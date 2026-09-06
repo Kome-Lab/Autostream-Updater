@@ -37,7 +37,7 @@ func (f *fakeRunner) Run(_ context.Context, dir string, env []string, name strin
 		f.psCount++
 		return fmt.Sprintf("container-%d\n", f.psCount), nil
 	case strings.Contains(joined, "config --format json"):
-		return `{"services":{"worker":{"image":"ghcr.io/kome-lab/autostream-docker/worker@` + testPlatform + `"}}}`, nil
+		return string(fixedDockerApplyTestModel("ghcr.io/kome-lab/autostream-docker/worker@" + testPlatform)), nil
 	case len(args) > 0 && args[0] == "inspect":
 		if strings.Contains(joined, "container-2") {
 			return testNewImage + "\n", nil
@@ -55,7 +55,16 @@ func (f *fakeRunner) Run(_ context.Context, dir string, env []string, name strin
 	}
 }
 
+func fixedDockerApplyTestModel(image string) []byte {
+	raw, err := dockerNodeListenerTestModel([]byte(`{"services":{"worker":{"image":"`+image+`"}}}`), "worker", "0.0.0.0:8080", 1)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
 func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
+	listenerStore := dockerListenerTestStore(t)
 	version := "v2.0.0"
 	sourceVersion := "v1.0.16"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +82,7 @@ func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	versionEnv := filepath.Join(root, "worker.env")
-	model := []byte(`{"services":{"worker":{"image":"ignored"}}}`)
+	model := fixedDockerApplyTestModel("ignored")
 	modelDigest, err := composeModelHash(model, "worker")
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +91,7 @@ func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
 		DockerPath: filepath.Join(root, "docker"), ComposeProject: "autostream", ProjectDir: root, ComposeFiles: []string{filepath.Join(root, "compose.yml")}, Service: "worker", ImageRepo: "ghcr.io/kome-lab/autostream-docker/worker", ImageVariable: "AUTOSTREAM_DOCKER_VERSION", VersionEnvFile: versionEnv, CurrentVersion: "v1.9.0", ComposeConfigSHA256: modelDigest,
 	}}
 	runner := &fakeRunner{}
-	result, err := applyDocker(context.Background(), target, ApplyPlan{JobID: "job-1", TargetVersion: version, StageDir: stage, ExpectedVersion: sourceVersion, ExpectedImageDigest: testPlatform, ExpectedPlatformDigest: testPlatform}, runner)
+	result, err := applyDockerWithListenerStore(context.Background(), target, ApplyPlan{JobID: "job-1", TargetVersion: version, StageDir: stage, ExpectedVersion: sourceVersion, ExpectedImageDigest: testPlatform, ExpectedPlatformDigest: testPlatform}, runner, nil, false, nil, "", acceptTestFixtureOwner, listenerStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +109,9 @@ func TestDockerApplyUsesFixedComposeArgumentsAndBundleVersion(t *testing.T) {
 		}
 		if strings.Contains(joined, "up -d --no-deps --no-build --pull never worker") {
 			foundUp = true
+			if !strings.Contains(joined, "compose-frozen-execution.json") {
+				t.Fatal("up did not use derived execution model")
+			}
 		}
 		if strings.Contains(joined, "config --format json") && strings.Contains(joined, "--env-file "+versionEnv) {
 			foundConfig = true

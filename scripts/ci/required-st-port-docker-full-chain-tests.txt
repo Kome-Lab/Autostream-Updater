@@ -1,0 +1,5 @@
+TestSTPortFullChainDocker
+TestSTPortFullChainDocker/D1_local_only
+TestSTPortFullChainDocker/D2_local_and_advertised
+TestSTPortFullChainDocker/D3_unchanged
+TestSTPortFullChainDocker/D4_rolled_back

@@ -35,7 +35,9 @@ type linuxDockerPortRuntime struct {
 	now              func() time.Time
 	crashPoint       func(string) error
 	requireRootOwned bool
+	policyStore      portPolicyStore
 	requireRootWork  bool
+	listenerStore    dockerNodeListenerStore
 }
 
 type dockerPortResolvedModel struct {
@@ -134,13 +136,19 @@ func newPlatformDockerPortExecution(
 		consumeGrant: consumeGrant, consumeV2Grant: consumeV2Grant,
 		v2GrantBinding: remoteRuntime.v2GrantBinding, now: now,
 		requireRootOwned: true,
+		policyStore:      remoteRuntime.portPolicyStore,
 		requireRootWork:  requireRootState,
+		listenerStore:    defaultDockerNodeListenerStore(),
 	}
 	if remoteRuntime.localStateDir != "" {
 		// The crash hook is intentionally reachable only through the existing
 		// private state-directory test seam. Production construction never
 		// supplies either value.
 		portRuntime.crashPoint = remoteRuntime.dockerPortCrashPointForTest
+		// The existing private construction seam may choose isolated storage,
+		// but ownership/parent checks are identical to production. Real Docker
+		// tests place this state root on /var/lib, visible to the outer daemon.
+		portRuntime.listenerStore.root = filepath.Join(stateDir, "docker-listener-configs")
 	}
 	return portRuntime, state, nil
 }
@@ -272,6 +280,11 @@ func (r *linuxDockerPortRuntime) Prepare(
 		resolved.configRevision != configRevision ||
 		resolved.policySHA256 != target.Docker.PortComposePolicySHA256 {
 		return dockerPortPreparedModel{}, errors.New("staged Docker port model differs from approved policy")
+	}
+	approved := docker
+	approved.ComposeConfigSHA256 = resolved.composeSHA256
+	if _, err := r.dockerListenerStore().prepare(resolved.raw, &approved); err != nil {
+		return dockerPortPreparedModel{}, err
 	}
 	prepared := dockerPortPreparedModel{
 		ComposePolicySHA256: resolved.policySHA256,
@@ -492,11 +505,19 @@ func (r *linuxDockerPortRuntime) Recreate(
 	if err := writeAtomicFile(frozenPath, resolved.raw, 0o600); err != nil {
 		return errors.New("freeze Docker port Compose model")
 	}
+	listenerStore := r.dockerListenerStore()
+	execution, err := listenerStore.freeze(frozenPath, runtimeTarget.Docker)
+	if err != nil {
+		return err
+	}
 	args := append(
-		composeFrozenArgs(runtimeTarget.Docker, frozenPath),
+		composeFrozenArgs(runtimeTarget.Docker, execution.path),
 		"up", "-d", "--no-deps", "--no-build", "--pull", "never",
 		"--force-recreate", runtimeTarget.Docker.Service,
 	)
+	if err := listenerStore.validateFrozen(execution, runtimeTarget.Docker); err != nil {
+		return err
+	}
 	_, runErr := r.runner.Run(
 		ctx,
 		runtimeTarget.Docker.ProjectDir,
@@ -515,6 +536,13 @@ func (r *linuxDockerPortRuntime) Recreate(
 		return errors.New("wipe Docker port frozen Compose model")
 	}
 	return nil
+}
+
+func (r *linuxDockerPortRuntime) dockerListenerStore() dockerNodeListenerStore {
+	if r.listenerStore.root == "" {
+		return defaultDockerNodeListenerStore()
+	}
+	return r.listenerStore
 }
 
 func (r *linuxDockerPortRuntime) CrashPoint(point string) error {

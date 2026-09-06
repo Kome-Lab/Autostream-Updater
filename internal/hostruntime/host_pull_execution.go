@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"time"
@@ -129,6 +130,11 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 	if !ok || a.Journal == nil {
 		return errors.New("host pull execution dependencies are incomplete")
 	}
+	if activePolicy, err := a.portRecoveryPolicy(policy); err != nil {
+		return err
+	} else {
+		policy = activePolicy
+	}
 	if err := a.validateRuntimeForClaim(ctx, binding, policy); err != nil {
 		return err
 	}
@@ -219,7 +225,7 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 		job.HostID != binding.ExecutionHostID ||
 		job.TransportMode != HostTransportPullV2 ||
 		job.OwnershipEpoch != binding.OwnershipEpoch ||
-		job.PolicyRevision != policy.Revision ||
+		(!isPortContractV2(job) && job.PolicyRevision != policy.Revision) ||
 		job.LeaseGeneration == 0 ||
 		job.ReportSequence == 0 {
 		return errors.New("pull_v2 claim ownership or lease binding is invalid")
@@ -239,6 +245,14 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 	}
 	if job.EffectiveOperation() == updateJobOperationPortReconfigure {
 		port := job.PortReconfigure
+		if isPortContractV2(job) {
+			if job.CurrentVersion != "" || job.TargetVersion != "" || job.Version != "" ||
+				job.PolicyRevision != port.Before.ProjectionRevision ||
+				!portClaimPolicyMatches(job, policy, target) {
+				return errors.New("pull_v2 port claim does not match its original snapshot and policy")
+			}
+			return nil
+		}
 		if port == nil ||
 			port.ExpectedSourcePolicyRevision != policy.SourcePolicyRevision ||
 			port.ExpectedUpdaterPolicyRevision != policy.Revision ||
@@ -321,6 +335,9 @@ func sameRecoveredJobIntent(active, recovered UpdateJob) bool {
 func samePortMutationGrantBinding(
 	left, right *SystemdPortMutationGrantBinding,
 ) bool {
+	if left != nil && right != nil && (left.PortContractVersion != 0 || right.PortContractVersion != 0) {
+		return reflect.DeepEqual(left, right)
+	}
 	if left == nil || right == nil {
 		return left == right
 	}
@@ -521,6 +538,11 @@ func (a *HostPullAgent) processPortReconfigurationJob(
 	if err := a.Journal.SetActivePortPlan(plan); err != nil {
 		return err
 	}
+	if isPortContractV2(job) {
+		if err := a.Journal.StagePortPolicy(policy, job, plan); err != nil {
+			return err
+		}
+	}
 	if _, err := a.emitPortExecutionReport(
 		ctx, panel, job, "installing", "",
 		"root executor is applying the fixed port transition", 65, nil,
@@ -531,8 +553,12 @@ func (a *HostPullAgent) processPortReconfigurationJob(
 		ctx, panel, binding, policy, job, plan, "port_reconfigure",
 	)
 	if err != nil {
+		code := ""
+		if isPortContractV2(job) {
+			code = "outcome_ambiguous"
+		}
 		if _, reportErr := a.emitPortExecutionReport(
-			ctx, panel, job, "reconciling", "",
+			ctx, panel, job, "reconciling", code,
 			"port mutation result is uncertain; reconciling without reapplying", 99, nil,
 		); reportErr != nil {
 			return reportErr
@@ -568,6 +594,10 @@ func portExecutionPlanFromJob(
 	}
 	port := *job.PortReconfigure
 	plan := SystemdPortReconfigurePlan{
+		PortContractVersion: port.PortContractVersion,
+		Mode:                port.Mode, Before: clonePortSnapshotRef(port.Before),
+		Target: clonePortSnapshotRef(port.Target), Rollback: clonePortSnapshotRef(port.Rollback),
+		DockerBaseline: clonePortDockerBaseline(port.DockerBaseline),
 		DeploymentMode: job.DeploymentMode,
 		JobID:          job.ID, HostID: job.HostID, TargetID: job.TargetID,
 		ServiceType:      job.EffectiveType(),
@@ -588,7 +618,13 @@ func portExecutionPlanFromJob(
 		SessionID:                      sessionID,
 		Docker:                         cloneDockerPortMutationGrantBinding(port.Docker),
 	}
-	if plan.ExpectedSourcePolicyRevision != policy.SourcePolicyRevision ||
+	if isPortContractV2(job) {
+		plan.PortIntentSHA256 = port.PortPlanSHA256
+		target, ok := hostPullPolicyTarget(policy, job.TargetID)
+		if !ok || !portClaimPolicyMatches(job, policy, target) {
+			return SystemdPortReconfigurePlan{}, errors.New("port v2 job policy fence is stale")
+		}
+	} else if plan.ExpectedSourcePolicyRevision != policy.SourcePolicyRevision ||
 		plan.ExpectedUpdaterPolicyRevision != policy.Revision ||
 		plan.ExpectedExecutorPolicyRevision != policy.LocalExecutorPolicyRevision ||
 		plan.ExpectedExecutorPolicySHA256 != policy.LocalExecutorPolicySHA256 {
@@ -625,6 +661,11 @@ func (a *HostPullAgent) recoverPortExecutionPlan(
 		if err := a.Journal.SetActivePortPlan(fresh); err != nil {
 			return SystemdPortReconfigurePlan{}, err
 		}
+		if isPortContractV2(job) {
+			if err := a.Journal.StagePortPolicy(policy, job, fresh); err != nil {
+				return SystemdPortReconfigurePlan{}, err
+			}
+		}
 		return fresh, nil
 	}
 	if stored.Validate() != nil {
@@ -636,6 +677,11 @@ func (a *HostPullAgent) recoverPortExecutionPlan(
 	}
 	if err := a.Journal.SetActivePortPlan(rebound); err != nil {
 		return SystemdPortReconfigurePlan{}, err
+	}
+	if isPortContractV2(job) {
+		if err := a.Journal.StagePortPolicy(policy, job, rebound); err != nil {
+			return SystemdPortReconfigurePlan{}, err
+		}
 	}
 	return rebound, nil
 }
@@ -684,6 +730,10 @@ func (a *HostPullAgent) invokePortExecutionMutation(
 		OwnershipPolicyRevision: job.PolicyRevision,
 		ExecutorPolicyRevision:  policy.LocalExecutorPolicyRevision,
 	}
+	if isPortContractV2(job) {
+		fence.SourcePolicyRevision = plan.Before.SourcePolicyRevision
+		fence.ExecutorPolicyRevision = plan.Before.ExecutorPolicyRevision
+	}
 	if grant.V2Binding != nil {
 		v2Executor := requiredV2Executor
 		if v2Executor == nil {
@@ -726,6 +776,13 @@ func (a *HostPullAgent) finishPortExecutionResult(
 	if err := validatePortExecutionResult(plan, result); err != nil {
 		return err
 	}
+	if plan.PortContractVersion == 2 {
+		var err error
+		result, err = a.verifyPortResultProjection(ctx, job, plan, result)
+		if err != nil {
+			return err
+		}
+	}
 	switch result.Status {
 	case "succeeded":
 		return a.emitPortExecutionTerminal(
@@ -751,6 +808,22 @@ func validatePortExecutionResult(
 	plan SystemdPortReconfigurePlan,
 	result SystemdPortReconfigureResult,
 ) error {
+	if plan.PortContractVersion == 2 {
+		if result.PortContractVersion != 2 || result.PortResult == nil || result.Validate() != nil ||
+			string(result.PortResult.Result) != result.Result {
+			return errors.New("local executor returned an invalid port v2 result")
+		}
+		// This validates root evidence without claiming that the Agent adopted
+		// a projection. Actual projection verification happens before queueing.
+		checked := *clonePortResult(result.PortResult)
+		if contracts.IsAcceptedSystemUpdatePortResult(checked) {
+			checked.Observation.AgentProjectionVerified = true
+		}
+		if contracts.ValidateSystemUpdatePortResult(plan.SharedPortPlan(), checked) != nil {
+			return errors.New("local executor port v2 result is outside the immutable plan")
+		}
+		return nil
+	}
 	resultMode := strings.TrimSpace(result.DeploymentMode)
 	if resultMode == "" {
 		resultMode = ModeSystemd
@@ -1098,7 +1171,8 @@ func validateV2PortExecutionGrant(
 		plan.TargetID != job.TargetID ||
 		plan.ServiceType != job.EffectiveType() ||
 		plan.effectiveDeploymentMode() != job.DeploymentMode ||
-		plan.ExpectedUpdaterPolicyRevision != job.PolicyRevision ||
+		(plan.PortContractVersion != 2 && plan.ExpectedUpdaterPolicyRevision != job.PolicyRevision) ||
+		(plan.PortContractVersion == 2 && plan.Before.ProjectionRevision != job.PolicyRevision) ||
 		plan.OwnershipEpoch != job.OwnershipEpoch ||
 		plan.LeaseGeneration != job.LeaseGeneration {
 		return errors.New("v2 mutation grant does not match the port reconfiguration plan")
@@ -1127,6 +1201,14 @@ func validateV2ExecutionGrantCommon(
 	authorization := command.MutationAuthorization
 	target := authorization.Target
 	policyTarget, ok := hostPullPolicyTarget(policy, job.TargetID)
+	portV2 := isPortContractV2(job)
+	revisionMatches := authorization.DesiredRevision == policy.Revision && authorization.DesiredRevision == job.PolicyRevision
+	configMatches := target.ExpectedConfigRevision == policyTarget.appliedConfigRevision()
+	if portV2 {
+		revisionMatches = authorization.DesiredRevision == job.PortReconfigure.Target.ConfigRevision &&
+			job.PolicyRevision == job.PortReconfigure.Before.ProjectionRevision && portClaimPolicyMatches(job, policy, policyTarget)
+		configMatches = target.ExpectedConfigRevision == job.PortReconfigure.Before.ConfigRevision
+	}
 	if !ok ||
 		command.CommandID != job.CommandID ||
 		authorization.JobID != job.ID ||
@@ -1134,8 +1216,7 @@ func validateV2ExecutionGrantCommon(
 		authorization.UpdaterID != job.AgentServiceID ||
 		authorization.HostID != hostBinding.ExecutionHostID ||
 		authorization.HostID != job.HostID ||
-		authorization.DesiredRevision != policy.Revision ||
-		authorization.DesiredRevision != job.PolicyRevision ||
+		!revisionMatches ||
 		authorization.Fence != hostBinding.OwnershipEpoch ||
 		authorization.Fence != job.OwnershipEpoch ||
 		lease.LeaseGeneration != int64(job.LeaseGeneration) ||
@@ -1143,7 +1224,7 @@ func validateV2ExecutionGrantCommon(
 		target.ServiceID != job.TargetID ||
 		string(target.ServiceType) != job.EffectiveType() ||
 		string(target.DeploymentMode) != job.DeploymentMode ||
-		target.ExpectedConfigRevision != policyTarget.appliedConfigRevision() {
+		!configMatches {
 		return contracts.UpdaterDesiredOperation{}, errors.New("v2 mutation grant does not match the claimed job and active policy")
 	}
 	return command.DesiredOperation, nil
@@ -1193,7 +1274,7 @@ func (a *HostPullAgent) flushExecutionReports(ctx context.Context, panel HostPul
 		if err := a.Journal.Ack(item.JobID, item.Report.Sequence); err != nil {
 			return err
 		}
-		if isTerminalUpdateStatus(item.Report.Status) {
+		if isTerminalUpdateStatus(item.Report.Status) && !isPortRecoveryObservation(item.Report) {
 			if err := cleanupJobDirectory(a.StateDir, item.JobID); err != nil {
 				return err
 			}
