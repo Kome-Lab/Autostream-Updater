@@ -58,7 +58,7 @@ FROM ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092
 ENV container=docker
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
     systemd systemd-sysv dbus mariadb-server mariadb-client ca-certificates openssl python3 \
-    docker.io docker-compose-v2 docker-registry \
+    docker.io docker-compose-v2 docker-buildx docker-registry \
     fonts-noto-cjk libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3

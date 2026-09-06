@@ -259,7 +259,7 @@ func newSTPortChainHarnessWithRuntime(t *testing.T, adapter stPortChainRuntimeAd
 	h.cp = h.start(t, "cp", h.cpBinary, "TestSTPortFullChainControlPanelProcess", 0, 0)
 	initial := h.cp.call(t, stPortChainCommand{Command: "init"})
 	if !initial.OK || len(initial.RootPolicy) == 0 || initial.AgentIdentityYAML == "" || initial.WorkerIdentityYAML == "" {
-		t.Fatal("real CP initial authority is unavailable")
+		t.Fatalf("real CP initial authority is unavailable: %s", initial.ErrorCode)
 	}
 	if json.Unmarshal(initial.RootPolicy, &h.rootPolicy) != nil || h.rootPolicy.Validate() != nil || h.rootPolicy.AgentUID != h.uid || h.rootPolicy.AgentGID != h.gid {
 		t.Fatal("CP fixed profile does not match the runtime fixture")

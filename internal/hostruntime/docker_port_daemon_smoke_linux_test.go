@@ -1155,6 +1155,8 @@ func setupDockerPortSmokeRoot(t *testing.T, image, imageID string) {
 		"/opt/autostream/local-executor/docker/ports",
 		"/etc/autostream-local-executor",
 		"/etc/autostream-local-executor/docker",
+		"/etc/autostream",
+		"/etc/autostream/updater",
 	} {
 		if err := os.Mkdir(directory, 0o700); err != nil {
 			t.Fatalf("create %s: %v", directory, err)
@@ -1986,6 +1988,7 @@ func requireDockerPortSmokeHostClean(
 	for _, path := range []string{
 		dockerPortSmokeProjectDir,
 		"/etc/autostream-local-executor",
+		"/etc/autostream",
 		filepath.Join(
 			privilegedLockDir(), ".autostream-host-lifecycle.lock",
 		),
@@ -2090,6 +2093,8 @@ func cleanupDockerPortSmokeEnvironment(
 		"/opt/autostream",
 		"/etc/autostream-local-executor/docker",
 		"/etc/autostream-local-executor",
+		"/etc/autostream/updater",
+		"/etc/autostream",
 	} {
 		if err := os.Remove(path); err != nil &&
 			!errors.Is(err, os.ErrNotExist) {
