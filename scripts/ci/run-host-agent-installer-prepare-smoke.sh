@@ -607,7 +607,7 @@ if excessive_parent_output="$("${PACKAGE_ROOT}/install/install-autostream-host-a
   printf '%s\n' 'prepare accepted identity-parent listing access' >&2
   exit 1
 fi
-[[ ${excessive_parent_output} == *'excessive identity parent access'* ]]
+[[ ${excessive_parent_output} == *'the dedicated Agent has a customized identity parent ACL'* ]]
 [[ $(getfacl --absolute-names --numeric /etc/autostream) == "${excessive_parent_acl}" ]]
 printf '%s\n' "${existing_parent_acl}" | setfacl --restore=-
 ln -s /root /etc/systemd/system/autostream-local-executor.service

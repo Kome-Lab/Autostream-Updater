@@ -112,27 +112,72 @@ docker compose version >/dev/null
 REGISTRY
 }
 
+capture_boot_failure() {
+  local runtime=$1
+  # PID 1 has not received application inputs or credentials at this point.
+  run_bounded docker inspect --format \
+    '{"status":{{json .State.Status}},"running":{{json .State.Running}},"oom_killed":{{json .State.OOMKilled}},"exit_code":{{json .State.ExitCode}},"error":{{json (printf "%.1024s" .State.Error)}}}' \
+    "${container_id}" > "${evidence}/artifacts/boot-${runtime}-state.json" 2>/dev/null || true
+  run_bounded docker logs --tail 80 --timestamps "${container_id}" \
+    > "${evidence}/artifacts/boot-${runtime}.log" 2>&1 || true
+}
+
+record_runtime_phase() {
+  printf '{"schema_version":1,"runtime":"%s","entered_phase":"%s"}\n' \
+    "$1" "$2" > "${evidence}/artifacts/runtime-phase-$1.json"
+}
+
 run_runtime() {
   local runtime=$1 parent_test=$2 docker_selected=0 test_seconds
   if [[ ${runtime} == docker ]]; then docker_selected=1; fi
-  container_id="$(run_bounded docker run --detach --privileged --cgroupns=private --network none \
+  # Keep Docker's cgroup mount scoped to this private namespace. A bind of the
+  # host hierarchy would disagree with /proc/1/cgroup and expose sibling groups.
+  record_runtime_phase "${runtime}" container_create
+  container_id="$(run_bounded docker create --privileged --cgroupns=private --network none \
     --cpus 2 --memory 4g --pids-limit 1024 \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
-    --mount type=bind,source=/sys/fs/cgroup,target=/sys/fs/cgroup \
     --mount "type=bind,source=${evidence},target=/evidence" "${image}")" || return 1
   [[ ${container_id} =~ ^[0-9a-f]{64}$ ]] || return 1
+  record_runtime_phase "${runtime}" container_start
+  if ! run_bounded docker start "${container_id}" >/dev/null; then
+    capture_boot_failure "${runtime}"
+    return 1
+  fi
+  record_runtime_phase "${runtime}" systemd_ready
   for _ in $(seq 1 60); do
     if run_bounded docker exec "${container_id}" systemctl show-environment >/dev/null 2>&1; then break; fi
+    if [[ $(run_bounded docker inspect --format '{{.State.Running}}' "${container_id}") != true ]]; then
+      capture_boot_failure "${runtime}"
+      return 1
+    fi
     run_bounded sleep 1 || return 1
   done
-  run_bounded docker exec "${container_id}" systemctl show-environment >/dev/null || return 1
+  if ! run_bounded docker exec "${container_id}" systemctl show-environment >/dev/null 2>&1; then
+    capture_boot_failure "${runtime}"
+    return 1
+  fi
+  record_runtime_phase "${runtime}" cgroup_view
+  if ! run_bounded docker exec "${container_id}" /bin/sh -ec \
+    'cat /proc/1/cgroup; findmnt -n -t cgroup,cgroup2 -o TARGET,FSTYPE,OPTIONS; test -w /sys/fs/cgroup' \
+    > "${evidence}/artifacts/cgroup-${runtime}.log" 2>&1; then
+    capture_boot_failure "${runtime}"
+    return 1
+  fi
+  record_runtime_phase "${runtime}" input_copy
   run_bounded docker exec "${container_id}" /usr/bin/install -d -m 0755 /opt/st-port-input /run/autostream-st-port-full-chain || return 1
   run_bounded docker cp "${work}/hostruntime.test" "${container_id}:/opt/st-port-input/hostruntime.test" || return 1
   run_bounded docker cp "${work}/docker-port-fixture" "${container_id}:/opt/st-port-input/docker-port-fixture" || return 1
   run_bounded docker cp "${cp_binary}" "${container_id}:/opt/st-port-input/control-panel.test" || return 1
   run_bounded docker cp "${worker_binary}" "${container_id}:/opt/st-port-input/autostream-worker" || return 1
   run_bounded docker exec "${container_id}" chmod 0755 /opt/st-port-input/hostruntime.test /opt/st-port-input/control-panel.test /opt/st-port-input/autostream-worker /opt/st-port-input/docker-port-fixture || return 1
-  run_bounded docker exec "${container_id}" systemctl start mariadb || return 1
+  record_runtime_phase "${runtime}" mariadb_start
+  if ! run_bounded docker exec "${container_id}" systemctl start mariadb; then
+    run_bounded docker exec "${container_id}" systemctl show mariadb \
+      --property=ActiveState,SubState,Result,ExecMainStatus \
+      > "${evidence}/artifacts/mariadb-${runtime}-state.log" 2>&1 || true
+    return 1
+  fi
+  record_runtime_phase "${runtime}" mariadb_schema
   run_bounded docker exec "${container_id}" mariadb --protocol=socket --user=root --execute='CREATE DATABASE st_port_chain_full CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' || return 1
   run_bounded docker exec --interactive "${container_id}" /bin/bash -eu <<'BOOTSTRAP' || return 1
 umask 077
@@ -141,11 +186,13 @@ printf '%s\n' 'ST-PORT disposable integration namespace v1' > /run/autostream-st
 chmod 0644 /run/autostream-st-port-full-chain/isolated
 BOOTSTRAP
   if [[ ${runtime} == docker ]]; then
+    record_runtime_phase "${runtime}" docker_daemon_registry
     prepare_registry > "${evidence}/build/docker-registry.log" 2>&1 || return 1
   fi
   test_seconds="$(remaining_seconds)" || return 1
   [[ ${test_seconds} -gt 10 ]] || return 1
   test_seconds=$((test_seconds - 5))
+  record_runtime_phase "${runtime}" required_test
   set +e
   run_bounded docker exec \
     --env GOMAXPROCS=2 --env TZ=UTC \
