@@ -6,7 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -156,15 +160,18 @@ func (e stPortChainDockerContainerEvidence) summary() string {
 		e.observation, e.phase, e.status, e.running, e.paused, e.restarting, e.dead, e.oomKilled, e.started, e.finished, e.exitCode, e.errorPresent)
 }
 
-func (f *stPortChainDockerFixture) observeInitialFailure(t *testing.T, ctx context.Context) {
+func (f *stPortChainDockerFixture) observeInitialFailure(t *testing.T, ctx context.Context, failureOutput string, failureTruncated bool) {
 	t.Helper()
-	// The original initial_up has already returned. Both commands below are
-	// read-only and scoped to its fixed project/service, then its one exact ID.
+	// The original initial_up has already returned. All commands below are
+	// read-only within its shared observation budget and fixed fixture targets.
 	if f.target.ComposeProject != "autostream" || f.target.Service != "worker" || f.target.ImageRepo != dockerPortSmokeImageRepo ||
 		!digestPattern.MatchString(f.imageID) || !digestPattern.MatchString(f.repositoryDigest) {
 		t.Log("ST-PORT Docker initial container: observation=invalid_target phase=unknown")
 		return
 	}
+	stPortChainDockerInitialProgress(t, failureOutput, failureTruncated)
+	stPortChainDockerInitialStorage(t, ctx)
+	stPortChainDockerInitialNetwork(t, ctx)
 	runner := OSCommandRunner{NewProcessGroup: true}
 	output, truncated, err := runner.runWithOutputMetadata(ctx, "", dockerCommandEnv(), "/usr/bin/docker", "ps", "-aq", "--no-trunc",
 		"--filter", "label=com.docker.compose.project=autostream", "--filter", "label=com.docker.compose.service=worker")
@@ -191,6 +198,242 @@ func (f *stPortChainDockerFixture) observeInitialFailure(t *testing.T, ctx conte
 	state, stateError := stPortChainDockerInitialContainer(output, truncated, ids[0], f.imageID, dockerPortSmokeImageRepo+"@"+f.repositoryDigest)
 	t.Log("ST-PORT Docker initial container: " + state.summary())
 	t.Log("ST-PORT Docker initial state error: " + stateError.summary())
+}
+
+type stPortChainDockerProgress struct {
+	first, last                                          string
+	count                                                int
+	creating, created, starting, started, failed, capped bool
+}
+
+func stPortChainDockerProgressFor(output, kind, name string) stPortChainDockerProgress {
+	progress := stPortChainDockerProgress{first: "none", last: "none"}
+	// Plain Compose progress names only the fixed resource. Strip display
+	// escapes in memory and ignore all free-form suffixes and other resources.
+	output = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`).ReplaceAllString(output, "")
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != kind || fields[1] != name {
+			continue
+		}
+		phase := strings.ToLower(fields[2])
+		switch phase {
+		case "creating", "created", "starting", "started", "running", "error":
+		default:
+			phase = "unknown"
+		}
+		if progress.count == 0 {
+			progress.first = phase
+		}
+		progress.last = phase
+		progress.creating = progress.creating || phase == "creating"
+		progress.created = progress.created || phase == "created"
+		progress.starting = progress.starting || phase == "starting"
+		progress.started = progress.started || phase == "started" || phase == "running"
+		progress.failed = progress.failed || phase == "error"
+		if progress.count < 32 {
+			progress.count++
+		} else {
+			progress.capped = true
+		}
+	}
+	return progress
+}
+
+func stPortChainDockerInitialProgress(t *testing.T, output string, truncated bool) {
+	t.Helper()
+	for _, target := range []struct{ kind, name, label string }{
+		{"Network", "autostream_default", "network"},
+		{"Container", "autostream-worker-1", "container"},
+	} {
+		progress := stPortChainDockerProgressFor(output, target.kind, target.name)
+		t.Logf("ST-PORT Docker initial progress: target=%s observed=%t first=%s last=%s creating=%t created=%t starting=%t started=%t failed=%t records=%d capped=%t input_truncated=%t",
+			target.label, progress.count > 0, progress.first, progress.last, progress.creating, progress.created, progress.starting, progress.started, progress.failed, progress.count, progress.capped, truncated)
+	}
+}
+
+func stPortChainDockerInitialNetwork(t *testing.T, ctx context.Context) {
+	t.Helper()
+	runner := OSCommandRunner{NewProcessGroup: true}
+	output, truncated, err := runner.runWithOutputMetadata(ctx, "", dockerCommandEnv(), "/usr/bin/docker", "network", "ls", "--no-trunc", "--format", `{{if eq .Name "autostream_default"}}{{.ID}}{{end}}`,
+		"--filter", "name=autostream_default")
+	if err != nil || truncated {
+		t.Logf("ST-PORT Docker initial network: observation=selection_unavailable truncated=%t deadline_exceeded=%t", truncated, ctx.Err() == context.DeadlineExceeded)
+		return
+	}
+	ids := strings.Fields(output)
+	if len(ids) == 0 {
+		t.Log("ST-PORT Docker initial network: observation=observed present=false")
+		return
+	}
+	if len(ids) != 1 || len(ids[0]) != 64 || strings.Trim(ids[0], "0123456789abcdef") != "" {
+		t.Log("ST-PORT Docker initial network: observation=selection_ambiguous")
+		return
+	}
+	const format = `{"identity_matches":{{and (eq .Name "autostream_default") (eq (index .Labels "com.docker.compose.project") "autostream") (eq (index .Labels "com.docker.compose.network") "default")}},"driver":{{json .Driver}},"internal":{{json .Internal}},"attachable":{{json .Attachable}},"ipv6":{{json .EnableIPv6}},"ipam_driver":{{json .IPAM.Driver}},"ipam_configs":{{len .IPAM.Config}},"endpoints":{{len .Containers}}}`
+	output, truncated, err = runner.runWithOutputMetadata(ctx, "", dockerCommandEnv(), "/usr/bin/docker", "network", "inspect", "--format", format, ids[0])
+	var state struct {
+		IdentityMatches bool   `json:"identity_matches"`
+		Driver          string `json:"driver"`
+		Internal        bool   `json:"internal"`
+		Attachable      bool   `json:"attachable"`
+		IPv6            bool   `json:"ipv6"`
+		IPAMDriver      string `json:"ipam_driver"`
+		IPAMConfigs     int    `json:"ipam_configs"`
+		Endpoints       int    `json:"endpoints"`
+	}
+	if err != nil || truncated || json.Unmarshal([]byte(output), &state) != nil {
+		t.Logf("ST-PORT Docker initial network: observation=state_unavailable truncated=%t deadline_exceeded=%t", truncated, ctx.Err() == context.DeadlineExceeded)
+		return
+	}
+	if !state.IdentityMatches {
+		t.Log("ST-PORT Docker initial network: observation=identity_mismatch")
+		return
+	}
+	driver, ipam := "unknown", "unknown"
+	if state.Driver == "bridge" {
+		driver = "bridge"
+	}
+	if state.IPAMDriver == "default" {
+		ipam = "default"
+	}
+	if state.IPAMConfigs < 0 || state.IPAMConfigs > 16 {
+		state.IPAMConfigs = -1
+	}
+	if state.Endpoints < 0 || state.Endpoints > 64 {
+		state.Endpoints = -1
+	}
+	t.Logf("ST-PORT Docker initial network: observation=observed present=true driver=%s internal=%t attachable=%t ipv6=%t ipam_driver=%s ipam_configs=%d endpoints=%d",
+		driver, state.Internal, state.Attachable, state.IPv6, ipam, state.IPAMConfigs, state.Endpoints)
+}
+
+func stPortChainDockerInitialStorage(t *testing.T, ctx context.Context) {
+	t.Helper()
+	// Only recognized DriverStatus keys are returned, and all text values are
+	// projected again before logging. The daemon's root is compared in-template.
+	const format = `{{ $backing := "" }}{{ $dtype := "" }}{{ $native := "" }}{{ $userxattr := "" }}{{ $type := "" }}{{range .DriverStatus}}{{if eq (index . 0) "Backing Filesystem"}}{{ $backing = index . 1 }}{{end}}{{if eq (index . 0) "Supports d_type"}}{{ $dtype = index . 1 }}{{end}}{{if eq (index . 0) "Native Overlay Diff"}}{{ $native = index . 1 }}{{end}}{{if eq (index . 0) "userxattr"}}{{ $userxattr = index . 1 }}{{end}}{{if eq (index . 0) "driver-type"}}{{ $type = index . 1 }}{{end}}{{end}}{"driver":{{json .Driver}},"root_expected":{{eq .DockerRootDir "/var/lib/docker"}},"backing":{{json $backing}},"dtype":{{json $dtype}},"native":{{json $native}},"userxattr":{{json $userxattr}},"type":{{json $type}}}`
+	output, truncated, err := (OSCommandRunner{NewProcessGroup: true}).runWithOutputMetadata(ctx, "", dockerCommandEnv(), "/usr/bin/docker", "info", "--format", format)
+	var state struct {
+		Driver, Backing, Dtype, Native, Userxattr, Type string
+		RootExpected                                    bool `json:"root_expected"`
+	}
+	if err != nil || truncated || json.Unmarshal([]byte(output), &state) != nil {
+		t.Logf("ST-PORT Docker initial storage: observation=unavailable truncated=%t deadline_exceeded=%t", truncated, ctx.Err() == context.DeadlineExceeded)
+	} else {
+		driver, driverType := "unknown", "unknown"
+		switch state.Driver {
+		case "overlay2", "overlayfs", "fuse-overlayfs", "vfs", "btrfs", "zfs", "devicemapper":
+			driver = state.Driver
+		}
+		if state.Type == "io.containerd.snapshotter.v1" {
+			driverType = "containerd_snapshotter"
+		}
+		triState := func(value string) string {
+			switch value {
+			case "true", "false":
+				return value
+			case "":
+				return "unavailable"
+			default:
+				return "unknown"
+			}
+		}
+		t.Logf("ST-PORT Docker initial storage: observation=observed driver=%s root_expected=%t backing_fs=%s supports_dtype=%s native_overlay_diff=%s userxattr=%s driver_type=%s",
+			driver, state.RootExpected, stPortChainDockerFilesystem(state.Backing), triState(state.Dtype), triState(state.Native), triState(state.Userxattr), driverType)
+	}
+	// These are fixed paths in the fixture's namespace, not a claim about an
+	// arbitrary daemon root. Keep both possible stores distinct even when one
+	// is absent; the daemon driver and root comparison above remain separate.
+	targets := []struct{ label, path string }{
+		{"docker", "/var/lib/docker"},
+		{"containerd", "/var/lib/containerd"},
+	}
+	if ctx.Err() != nil {
+		for _, target := range targets {
+			t.Logf("ST-PORT Docker initial storage mount: target=%s observation=unavailable deadline_exceeded=%t", target.label, ctx.Err() == context.DeadlineExceeded)
+		}
+		return
+	}
+	var root syscall.Statfs_t
+	rootErr := syscall.Statfs("/", &root)
+	mountObserved, mountTruncated := false, false
+	var independentMount [2]bool
+	if ctx.Err() == nil {
+		if file, openErr := os.Open("/proc/self/mountinfo"); openErr == nil {
+			body, readErr := io.ReadAll(io.LimitReader(file, (256<<10)+1))
+			_ = file.Close()
+			mountTruncated = len(body) > 256<<10
+			if readErr == nil && !mountTruncated {
+				mountObserved = true
+				for _, line := range strings.Split(string(body), "\n") {
+					fields := strings.Fields(line)
+					for i, target := range targets {
+						if len(fields) >= 10 && fields[4] == target.path {
+							independentMount[i] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	for i, target := range targets {
+		if ctx.Err() != nil {
+			t.Logf("ST-PORT Docker initial storage mount: target=%s observation=unavailable deadline_exceeded=%t", target.label, ctx.Err() == context.DeadlineExceeded)
+			continue
+		}
+		var data syscall.Statfs_t
+		dataErr := syscall.Statfs(target.path, &data)
+		filesystem := "unavailable"
+		if dataErr == nil {
+			switch uint32(data.Type) {
+			case 0x794c7630:
+				filesystem = "overlayfs"
+			case 0xef53:
+				filesystem = "extfs"
+			case 0x58465342:
+				filesystem = "xfs"
+			case 0x9123683e:
+				filesystem = "btrfs"
+			case 0x01021994:
+				filesystem = "tmpfs"
+			default:
+				filesystem = "other"
+			}
+		}
+		t.Logf("ST-PORT Docker initial storage mount: target=%s fixture_statfs_available=%t fixture_data_fs=%s fixture_data_same_root_fs=%t fixture_mountinfo_available=%t fixture_mountinfo_truncated=%t fixture_data_independent_mount=%t",
+			target.label, rootErr == nil && dataErr == nil, filesystem, rootErr == nil && dataErr == nil && root.Fsid == data.Fsid, mountObserved, mountTruncated, independentMount[i])
+	}
+}
+
+func stPortChainDockerFilesystem(value string) string {
+	switch value {
+	case "extfs", "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "overlay", "overlayfs", "tmpfs":
+		return value
+	case "":
+		return "unavailable"
+	default:
+		return "unknown"
+	}
+}
+
+func TestSTPortDockerProgressUsesFixedTargetsAndPhases(t *testing.T) {
+	const sensitive = "DO_NOT_PUBLISH_FIXTURE_CREDENTIAL"
+	output := "\x1b[32m Network autostream_default Creating\x1b[0m\n" +
+		" Network other_default Created\n" +
+		" Container autostream-worker-1 Created\n" +
+		" Network autostream_default Error " + sensitive + "\n"
+	progress := stPortChainDockerProgressFor(output, "Network", "autostream_default")
+	if progress.count != 2 || progress.first != "creating" || progress.last != "error" || !progress.creating || !progress.failed || progress.created {
+		t.Fatal("fixed network progress accepted another resource or ignored its observed boundary")
+	}
+	unknown := stPortChainDockerProgressFor("Network autostream_default "+sensitive, "Network", "autostream_default")
+	if unknown.first != "unknown" || unknown.last != "unknown" || unknown.created || unknown.started || unknown.failed {
+		t.Fatal("unrecognized progress was promoted to a known phase")
+	}
+	capped := stPortChainDockerProgressFor(strings.Repeat("Network autostream_default Creating\n", 40), "Network", "autostream_default")
+	if capped.count != 32 || !capped.capped {
+		t.Fatal("progress record count exceeded its diagnostic bound")
+	}
 }
 
 func TestSTPortDockerCommandOutputBoundaries(t *testing.T) {

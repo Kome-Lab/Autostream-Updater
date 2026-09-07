@@ -541,8 +541,131 @@ type dockerPortSmokeRunner struct {
 	captureDir       string
 	adapter          dockerPortAdapter
 
-	mu              sync.Mutex
-	repositoryCalls int
+	mu               sync.Mutex
+	repositoryCalls  int
+	stPortDiagnostic dockerPortSmokeSTPortDiagnostic
+}
+
+// This fixture-only observation never changes a runner result or a crash hook.
+// It retains closed phase names and capped counters, never command data/errors.
+type dockerPortSmokeSTPortDiagnostic struct {
+	step, firstPhase, lastPhase, firstFailure string
+	runnerCalls, phaseCalls                   int
+	runnerCapped, phaseCapped, active         bool
+}
+
+func (r *dockerPortSmokeRunner) beginSTPortDiagnostic(step string, sameProcess bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stPortDiagnostic = dockerPortSmokeSTPortDiagnostic{step: dockerPortSmokeStep(step), active: sameProcess}
+}
+
+func dockerPortSmokeStep(step string) string {
+	switch step {
+	case "noop", "local_only", "container_only", "combined_recovery", "rollback":
+		return step
+	default:
+		return "unknown"
+	}
+}
+
+func (r *dockerPortSmokeRunner) observeSTPortPhase(phase string) error {
+	switch phase {
+	case "after_grant_consume", "before_policy_write", "after_policy_write", "after_policy_reload",
+		"after_sidecar_write", "after_restart", "after_rollback_latch", "after_rollback_runtime_write", "after_result_save":
+	default:
+		phase = "unknown"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	diagnostic := &r.stPortDiagnostic
+	if diagnostic.active {
+		if diagnostic.firstPhase == "" {
+			diagnostic.firstPhase = phase
+		}
+		diagnostic.lastPhase = phase
+		if diagnostic.phaseCalls < 64 {
+			diagnostic.phaseCalls++
+		} else {
+			diagnostic.phaseCapped = true
+		}
+	}
+	return nil
+}
+
+func (r *dockerPortSmokeRunner) observeSTPortRunner(phase string, failed bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	diagnostic := &r.stPortDiagnostic
+	if !diagnostic.active {
+		return
+	}
+	if diagnostic.runnerCalls < 256 {
+		diagnostic.runnerCalls++
+	} else {
+		diagnostic.runnerCapped = true
+	}
+	if failed && diagnostic.firstFailure == "" {
+		switch phase {
+		case "command", "compose_capture", "mapping_read", "mapping_parse", "listener_tcp", "listener_identity":
+			diagnostic.firstFailure = phase
+		default:
+			diagnostic.firstFailure = "unknown"
+		}
+	}
+}
+
+func (r *dockerPortSmokeRunner) logSTPortResultFailure(t *testing.T, step string, response LocalExecutorResponse, plan SystemdPortReconfigurePlan, expected string, consumed int) {
+	t.Helper()
+	resultName := func(value string) string {
+		switch value {
+		case systemdPortResultApplied, systemdPortResultUnchanged, systemdPortResultRolledBack, systemdPortResultRollbackFailed:
+			return value
+		default:
+			return "unknown"
+		}
+	}
+	actual, status, errorCode := "absent", "absent", "none"
+	validResponse := response.Validate() == nil
+	nested, matches, stateKnown, recovery := false, false, false, false
+	if result := response.PortResult; result != nil {
+		actual = resultName(result.Result)
+		status = "unknown"
+		switch result.Status {
+		case "succeeded", "rolled_back", "failed":
+			status = result.Status
+		}
+		nested, stateKnown, recovery = result.PortResult != nil, result.StateKnown, result.RecoveryRequired
+		matches = validResponse && nested && portV2AcceptedResultMatchesPlan(plan, *result)
+	}
+	if response.Error != nil {
+		errorCode = "unknown"
+		if validLocalExecutorFailureCode(response.Error.Code) {
+			errorCode = response.Error.Code
+		}
+	}
+	version := response.Version
+	if version != LocalExecutorProtocolVersion && version != LocalExecutorMutationProtocolVersion {
+		version = -1
+	}
+	if consumed < 0 || consumed > 64 {
+		consumed = -1
+	}
+	t.Logf("ST-PORT Docker smoke result: step=%s expected=%s actual=%s status=%s version=%d response_valid=%t port_present=%t nested_present=%t plan_match=%t state_known=%t recovery_required=%t error_present=%t error_code=%s consume_count=%d",
+		dockerPortSmokeStep(step), resultName(expected), actual, status, version, validResponse, response.PortResult != nil, nested, matches, stateKnown, recovery, response.Error != nil, errorCode, consumed)
+	r.mu.Lock()
+	diagnostic := r.stPortDiagnostic
+	r.mu.Unlock()
+	if diagnostic.step != dockerPortSmokeStep(step) {
+		diagnostic = dockerPortSmokeSTPortDiagnostic{}
+	}
+	for _, value := range []*string{&diagnostic.firstPhase, &diagnostic.lastPhase, &diagnostic.firstFailure} {
+		if *value == "" {
+			*value = "none"
+		}
+	}
+	t.Logf("ST-PORT Docker smoke boundary: same_process_observation=%t first_phase=%s last_phase=%s phase_calls=%d phase_capped=%t first_runner_failure=%s runner_calls=%d runner_capped=%t",
+		diagnostic.active, diagnostic.firstPhase, diagnostic.lastPhase, diagnostic.phaseCalls, diagnostic.phaseCapped, diagnostic.firstFailure, diagnostic.runnerCalls, diagnostic.runnerCapped)
 }
 
 func newDockerPortSmokeRunner(
@@ -569,7 +692,9 @@ func (r *dockerPortSmokeRunner) Run(
 	env []string,
 	name string,
 	args ...string,
-) (string, error) {
+) (output string, err error) {
+	phase := "command"
+	defer func() { r.observeSTPortRunner(phase, err != nil) }()
 	if len(args) == 4 &&
 		args[0] == "image" &&
 		args[1] == "inspect" &&
@@ -585,25 +710,31 @@ func (r *dockerPortSmokeRunner) Run(
 	}
 	frozenPath := dockerPortSmokeFrozenComposePath(args)
 	if frozenPath != "" {
+		phase = "compose_capture"
 		if err := r.captureExecution(frozenPath); err != nil {
 			return "", err
 		}
 	}
-	output, err := r.base.Run(ctx, dir, env, name, args...)
+	phase = "command"
+	output, err = r.base.Run(ctx, dir, env, name, args...)
 	if err == nil && frozenPath != "" {
+		phase = "mapping_read"
 		body, readErr := os.ReadFile(r.adapter.PortEnvFile)
 		if readErr != nil {
 			return output, readErr
 		}
+		phase = "mapping_parse"
 		publishedPort, _, _, parseErr := parseDockerPortEnv(
 			r.adapter, body,
 		)
 		if parseErr != nil {
 			return output, parseErr
 		}
+		phase = "listener_tcp"
 		if waitErr := waitForDockerPortTCP(ctx, publishedPort); waitErr != nil {
 			return output, waitErr
 		}
+		phase = "listener_identity"
 		if verifyErr := r.verifyMountedListener(ctx, frozenPath, publishedPort); verifyErr != nil {
 			return output, verifyErr
 		}

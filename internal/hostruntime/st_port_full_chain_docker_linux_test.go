@@ -254,8 +254,8 @@ func (f *stPortChainDockerFixture) startInitialNode(t *testing.T, h *stPortChain
 	if err != nil || listener.validateFrozen(execution, &f.target) != nil {
 		t.Fatal("freeze verified initial Node listener projection")
 	}
-	stPortChainDockerRunObserved(t, h.ctx, "initial_up", f.target.ProjectDir, func(ctx context.Context) {
-		f.observeInitialFailure(t, ctx)
+	stPortChainDockerRunObserved(t, h.ctx, "initial_up", f.target.ProjectDir, func(ctx context.Context, output string, truncated bool) {
+		f.observeInitialFailure(t, ctx, output, truncated)
 	}, append(composeFrozenArgs(&f.target, execution.path), "up", "-d", "--no-deps", "--no-build", "--pull", "never", f.target.Service)...)
 	if secureRemoveDockerPortTransient(localExecutorDockerWorkDir, work, true) != nil {
 		t.Fatal("remove initial transient Compose input")
@@ -540,7 +540,7 @@ func stPortChainDockerRun(t *testing.T, parent context.Context, stage, directory
 	return stPortChainDockerRunObserved(t, parent, stage, directory, nil, args...)
 }
 
-func stPortChainDockerRunObserved(t *testing.T, parent context.Context, stage, directory string, onFailure func(context.Context), args ...string) string {
+func stPortChainDockerRunObserved(t *testing.T, parent context.Context, stage, directory string, onFailure func(context.Context, string, bool), args ...string) string {
 	t.Helper()
 	switch stage {
 	case "daemon_version", "compose_version", "empty_project", "fixture_push", "fixture_pull", "image_identity", "repository_identity", "compose_config", "initial_up", "runtime_inspect":
@@ -571,7 +571,7 @@ func stPortChainDockerRunObserved(t *testing.T, parent context.Context, stage, d
 			// Observations get one separate ten-second read-only budget. They do
 			// not retry the failed command or extend its execution deadline.
 			observationCtx, observationCancel := context.WithTimeout(parent, 10*time.Second)
-			onFailure(observationCtx)
+			onFailure(observationCtx, output, truncated)
 			observationCancel()
 		}
 		t.Fatal("isolated real Docker command failed at the recorded stage")

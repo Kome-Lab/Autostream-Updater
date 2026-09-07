@@ -56,6 +56,7 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 	if !ok {
 		t.Fatal("full-chain diagnostic requires the production v2 Panel client")
 	}
+	stPortChainObserveWire(panel)
 	observedPanel := &stPortChainObservedPanel{V2PanelClient: panel, execution: panel, rootCalls: portClient.calls.Load}
 	portClient.observeFailure = func(operation string, err error) {
 		observedPanel.record(operation, "root_socket", operation, err)

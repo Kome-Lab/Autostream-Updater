@@ -60,11 +60,12 @@ func runSTPortDockerDaemonSequence(t *testing.T, runner *dockerPortSmokeRunner, 
 		return stPortDockerDaemonPlan(t, loaded, current, mode, advertised, published, container, jobID,
 			dockerPortSmokeContainerID(t, base), imageID, repositoryDigest, versionEnvSHA256, resolved.Docker.ComposeConfigSHA256)
 	}
-	assertResult := func(response LocalExecutorResponse, plan SystemdPortReconfigurePlan, kind string) dockerPortSmokeState {
+	assertResult := func(step string, response LocalExecutorResponse, plan SystemdPortReconfigurePlan, kind string, consumed int) dockerPortSmokeState {
 		t.Helper()
 		if response.Validate() != nil || response.PortResult == nil || response.PortResult.PortResult == nil || response.PortResult.Result != kind ||
 			!portV2AcceptedResultMatchesPlan(plan, *response.PortResult) {
-			t.Fatalf("versioned real Docker result is unverified; safe error=%v", response.Error)
+			runner.logSTPortResultFailure(t, step, response, plan, kind, consumed)
+			t.Fatal("versioned real Docker result is unverified; see bounded result evidence")
 		}
 		ref := portV2ResultSnapshot(plan, kind)
 		manager, err := newFilePortPolicyStore(dockerPortSmokePolicyPath, true)
@@ -92,26 +93,32 @@ func runSTPortDockerDaemonSequence(t *testing.T, runner *dockerPortSmokeRunner, 
 	}
 	noop := planFor(contracts.SystemUpdatePortModeLocalOnly, current.advertisedPort, current.publishedPort, current.containerPort, "job-st-port-noop")
 	beforeID := dockerPortSmokeContainerID(t, base)
+	runner.beginSTPortDiagnostic("noop", true)
 	response, consumed := runSTPortDockerDaemonMutation(t, runner, stateDir, noop, "port_reconfigure")
-	current = assertResult(response, noop, systemdPortResultUnchanged)
+	current = assertResult("noop", response, noop, systemdPortResultUnchanged, consumed)
 	if consumed != 0 || dockerPortSmokeContainerID(t, base) != beforeID {
 		t.Fatal("real Docker no-op consumed or recreated")
 	}
 
 	local := planFor(contracts.SystemUpdatePortModeLocalOnly, current.advertisedPort, 18083, current.containerPort, "job-st-port-local")
+	runner.beginSTPortDiagnostic("local_only", true)
 	response, consumed = runSTPortDockerDaemonMutation(t, runner, stateDir, local, "port_reconfigure")
-	current = assertResult(response, local, systemdPortResultApplied)
+	current = assertResult("local_only", response, local, systemdPortResultApplied, consumed)
 	if consumed != 1 || current.advertisedPort != 443 || current.containerPort != local.Before.Docker.ContainerPort {
 		t.Fatal("local-only real Docker changed unrelated endpoint or container port")
 	}
 	containerOnly := planFor(contracts.SystemUpdatePortModeLocalOnly, current.advertisedPort, current.publishedPort, 18080, "job-st-port-container-only")
+	runner.beginSTPortDiagnostic("container_only", true)
 	response, consumed = runSTPortDockerDaemonMutation(t, runner, stateDir, containerOnly, "port_reconfigure")
-	current = assertResult(response, containerOnly, systemdPortResultApplied)
+	current = assertResult("container_only", response, containerOnly, systemdPortResultApplied, consumed)
 	if consumed != 1 || current.publishedPort != containerOnly.Before.Docker.PublishedPort || current.containerPort == containerOnly.Before.Docker.ContainerPort {
 		t.Fatal("container-only change did not retain its existing published port")
 	}
 
 	combined := planFor(contracts.SystemUpdatePortModeLocalAndAdvertised, 8443, 18084, 19080, "job-st-port-combined")
+	// The child owns its execution counters. Do not reuse the preceding
+	// same-process trace or claim an unobserved consume count for recovery.
+	runner.beginSTPortDiagnostic("combined_recovery", false)
 	grantRecord := filepath.Join(stateDir, "st-port-crash-grant.json")
 	runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: combined, Operation: "port_reconfigure", StateDir: stateDir,
 		CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, GrantRecordPath: grantRecord, ExpectGrant: true, CrashAfterRecreate: true}, true)
@@ -128,14 +135,15 @@ func runSTPortDockerDaemonSequence(t *testing.T, runner *dockerPortSmokeRunner, 
 	runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: combined, Operation: "port_reconfigure_reconcile", StateDir: stateDir,
 		CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, ResponsePath: responsePath, GrantRecordPath: unconsumedPath}, false)
 	readDockerPortSmokeJSON(t, responsePath, &response)
-	current = assertResult(response, combined, systemdPortResultApplied)
+	current = assertResult("combined_recovery", response, combined, systemdPortResultApplied, -1)
 	if pathExists(unconsumedPath) || current.advertisedPort != 8443 {
 		t.Fatal("root restart repeated forward consume or lost combined snapshot")
 	}
 
 	unhealthy := planFor(contracts.SystemUpdatePortModeLocalAndAdvertised, 9443, 18086, 21080, "job-st-port-rollback")
+	runner.beginSTPortDiagnostic("rollback", true)
 	response, consumed = runSTPortDockerDaemonMutation(t, runner, stateDir, unhealthy, "port_reconfigure")
-	current = assertResult(response, unhealthy, systemdPortResultRolledBack)
+	current = assertResult("rollback", response, unhealthy, systemdPortResultRolledBack, consumed)
 	if consumed != 1 || current.configRevision != unhealthy.Before.ConfigRevision+2 || current.advertisedPort != 8443 ||
 		current.publishedPort != unhealthy.Before.Docker.PublishedPort || current.containerPort != unhealthy.Before.Docker.ContainerPort {
 		t.Fatal("real rollback did not restore B functional values using C+2")
@@ -169,6 +177,9 @@ func runSTPortDockerDaemonMutation(t *testing.T, runner CommandRunner, stateDir 
 			}
 			return nil
 		}}
+	if observed, ok := runner.(*dockerPortSmokeRunner); ok {
+		rt.dockerPortCrashPointForTest = observed.observeSTPortPhase
+	}
 	ctx := context.WithValue(context.Background(), portPolicyContextKey{}, portPolicyStore(manager))
 	return handleLocalExecutorMutation(ctx, policy, request, rt), consumed
 }
