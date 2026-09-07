@@ -1500,9 +1500,29 @@ func assertDockerPortSmokeApplied(
 			plan.Docker.NewContainerPort ||
 		response.PortResult.Docker.AppliedHealthPort !=
 			plan.Docker.NewHealthPort {
+		portResultPresent := response.PortResult != nil
+		dockerResultPresent := portResultPresent && response.PortResult.Docker != nil
+		resultClass := "missing"
+		if portResultPresent {
+			switch response.PortResult.Result {
+			case systemdPortResultApplied:
+				resultClass = "applied"
+			case systemdPortResultRolledBack:
+				resultClass = "rolled_back"
+			case systemdPortResultRollbackFailed:
+				resultClass = "rollback_failed"
+			default:
+				resultClass = "other"
+			}
+		}
 		t.Fatalf(
-			"applied response=%+v error=%+v validate=%v",
-			response, response.Error, response.Validate(),
+			"applied response mismatch: result=%s validation_error_present=%t error_present=%t port_result_present=%t docker_result_present=%t "+
+				"advertised_match=%t published_match=%t container_match=%t health_match=%t",
+			resultClass, err != nil, response.Error != nil, portResultPresent, dockerResultPresent,
+			portResultPresent && response.PortResult.AppliedPort == plan.NewPort,
+			dockerResultPresent && plan.Docker != nil && response.PortResult.Docker.AppliedPublishedPort == plan.Docker.NewPublishedPort,
+			dockerResultPresent && plan.Docker != nil && response.PortResult.Docker.AppliedContainerPort == plan.Docker.NewContainerPort,
+			dockerResultPresent && plan.Docker != nil && response.PortResult.Docker.AppliedHealthPort == plan.Docker.NewHealthPort,
 		)
 	}
 }

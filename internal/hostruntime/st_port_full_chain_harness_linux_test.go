@@ -356,7 +356,75 @@ func (h *stPortChainHarness) installWorker(t *testing.T) {
 	if systemdPortSidecarSHA256(body) != target.ConfigSHA256 || os.WriteFile("/opt/autostream/local-executor/ports/worker.json", body, 0o600) != nil {
 		t.Fatal("initial CP listener bytes differ from the runtime")
 	}
-	gate := "#!/usr/bin/python3\nimport json, os, sys\np='/run/autostream-st-port-full-chain/runtime-fault.json'\nif not os.path.exists(p): sys.exit(0)\nwith open(p) as f: fault=json.load(f)\nwith open(os.path.join(os.environ['CREDENTIALS_DIRECTORY'],'node-listener.json')) as f: listener=json.load(f)\nc=listener['config_revision']\nsys.exit(1 if (c >= fault['revision'] if fault['mode']=='at_or_after' else c==fault['revision']) else 0)\n"
+	gate := fmt.Sprintf(`#!/usr/bin/python3
+import json, os, stat, sys
+names = ('actor_match node_env_match node_ancestors_traversable node_file_safe node_read_ok node_required_fields node_type_match node_listener_match credential_env_valid credential_ancestors_traversable credential_file_safe credential_read_ok credential_json_v2_match credential_service_match credential_revision_match credential_bind_match').split()
+observed = dict.fromkeys(names, False)
+def traversable(path):
+    parents = []
+    while path != '/':
+        path = os.path.dirname(path)
+        parents.append(path)
+        if len(parents) > 16: return False
+    return all(os.access(parent, os.X_OK) for parent in parents)
+try:
+    observed['actor_match'] = os.getuid() == 16532 and os.getgid() == 16532
+    path = '/etc/autostream/worker/node.yaml'
+    observed['node_env_match'] = os.environ.get('AUTOSTREAM_NODE_CONFIG') == path
+    observed['node_ancestors_traversable'] = traversable(path)
+    info = os.lstat(path)
+    observed['node_file_safe'] = stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_gid == 16532 and stat.S_IMODE(info.st_mode) == 0o640
+    with open(path) as f: body = f.read(65537)
+    observed['node_read_ok'] = len(body) <= 65536
+    fields, section = {}, ''
+    for raw in body.splitlines() if observed['node_read_ok'] else []:
+        line = raw.strip()
+        if not line or line.startswith('#'): continue
+        if not raw.startswith(' ') and line.endswith(':'):
+            section = line[:-1]
+            continue
+        key, sep, value = line.partition(':')
+        if not sep: continue
+        value = value.strip()
+        if value.startswith('"'):
+            try: value = json.loads(value)
+            except ValueError: value = value.strip('\'"')
+        else: value = value.strip('\'"')
+        fields[section + '.' + key.strip()] = value
+    observed['node_required_fields'] = all(fields.get(key) for key in ('panel.url', 'node.id', 'node.name', 'api.host', 'api.port', 'auth.token')) and int(fields.get('api.port', '0')) > 0
+    observed['node_type_match'] = fields.get('node.type') == 'worker'
+    observed['node_listener_match'] = fields.get('listener.credential') == 'node-listener.json'
+except Exception:
+    pass
+try:
+    directory = os.environ.get('CREDENTIALS_DIRECTORY', '')
+    observed['credential_env_valid'] = os.path.isabs(directory) and os.path.normpath(directory) == directory and len(directory) <= 1024
+    if observed['credential_env_valid']:
+        path = os.path.join(directory, 'node-listener.json')
+        observed['credential_ancestors_traversable'] = traversable(path)
+        info = os.lstat(path)
+        observed['credential_file_safe'] = stat.S_ISREG(info.st_mode) and not (stat.S_IMODE(info.st_mode) & 0o022) and 0 < info.st_size <= 4096
+        with open(path) as f: body = f.read(4097)
+        observed['credential_read_ok'] = 0 < len(body) <= 4096
+        if observed['credential_read_ok']:
+            pairs = json.loads(body, object_pairs_hook=list)
+            listener = dict(pairs)
+            observed['credential_json_v2_match'] = len(pairs) == len(listener) == 4 and set(listener) == {'schema_version', 'service_type', 'bind_address', 'config_revision'} and listener['schema_version'] == 2
+            observed['credential_service_match'] = listener.get('service_type') == 'worker'
+            observed['credential_revision_match'] = listener.get('config_revision') == %d
+            observed['credential_bind_match'] = listener.get('bind_address') == '127.0.0.1:18084'
+except Exception:
+    pass
+for name in names:
+    print('st-port-worker-config: ' + name + '=' + ('true' if observed[name] else 'false'), flush=True)
+# Preserve the existing runtime fault gate and its exit behavior.
+p='/run/autostream-st-port-full-chain/runtime-fault.json'
+if not os.path.exists(p): sys.exit(0)
+with open(p) as f: fault=json.load(f)
+with open(os.path.join(os.environ['CREDENTIALS_DIRECTORY'],'node-listener.json')) as f: listener=json.load(f)
+c=listener['config_revision']
+sys.exit(1 if (c >= fault['revision'] if fault['mode']=='at_or_after' else c==fault['revision']) else 0)
+`, target.ConfigRevision)
 	if os.WriteFile("/opt/autostream/st-port-test/worker-start-gate", []byte(gate), 0o755) != nil {
 		t.Fatal("write isolated runtime fault gate")
 	}
@@ -411,6 +479,13 @@ func (h *stPortChainHarness) diagnoseWorkerStartup(t *testing.T) {
 	journal, journalErr := runner.Run(ctx, "", nil, "/usr/bin/journalctl", "--unit=autostream-worker.service", "--no-pager", "--lines=32", "--output=cat")
 	t.Logf("ST-PORT Worker startup: journal_observation_available=%t", journalErr == nil)
 	if journalErr == nil {
+		for _, key := range strings.Fields("actor_match node_env_match node_ancestors_traversable node_file_safe node_read_ok node_required_fields node_type_match node_listener_match credential_env_valid credential_ancestors_traversable credential_file_safe credential_read_ok credential_json_v2_match credential_service_match credential_revision_match credential_bind_match") {
+			for _, value := range []string{"true", "false"} {
+				if strings.Contains(journal, "st-port-worker-config: "+key+"="+value) {
+					t.Logf("ST-PORT Worker initial configuration: %s=%s", key, value)
+				}
+			}
+		}
 		for _, class := range []struct{ text, name string }{
 			{"invalid node listener credential bind_address:", "listener_config_invalid"},
 			{"invalid updater identity:", "updater_identity_invalid"},

@@ -10,12 +10,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -551,6 +555,9 @@ func stPortChainDockerRun(t *testing.T, parent context.Context, stage, directory
 	// contain credentials and is never copied into public test diagnostics.
 	t.Logf("ST-PORT Docker command: stage=%s exit=%d elapsed_ms=%d deadline_exceeded=%t", stage, exitStatus, time.Since(started).Milliseconds(), errors.Is(ctx.Err(), context.DeadlineExceeded))
 	if err != nil {
+		if stage == "fixture_push" {
+			stPortChainDockerRegistryFailure(t, ctx, output)
+		}
 		for _, class := range []struct{ text, name string }{
 			{"connection refused", "connection_refused"},
 			{"x509:", "tls_validation_failed"},
@@ -570,6 +577,57 @@ func stPortChainDockerRun(t *testing.T, parent context.Context, stage, directory
 		t.Fatal("isolated real Docker command failed at the recorded stage")
 	}
 	return output
+}
+
+func stPortChainDockerRegistryFailure(t *testing.T, ctx context.Context, output string) {
+	t.Helper()
+	// Classify only bounded network observations. Never emit URLs, addresses,
+	// registry responses, authentication data or the original command output.
+	for _, raw := range regexp.MustCompile(`https?://[^\s"<>]+`).FindAllString(output, 4) {
+		endpoint, err := url.Parse(raw)
+		if err == nil {
+			t.Logf("ST-PORT Docker registry: expected_authority=%t tls=%t", endpoint.Hostname() == "ghcr.io", endpoint.Scheme == "https")
+		}
+	}
+	for _, match := range regexp.MustCompile(`dial tcp (\[[0-9a-fA-F:]+\]|[0-9.]+):([0-9]+)`).FindAllStringSubmatch(output, 4) {
+		address := net.ParseIP(strings.Trim(match[1], "[]"))
+		if address != nil {
+			t.Logf("ST-PORT Docker registry dial: ipv4=%t loopback=%t private=%t expected_port=%t", address.To4() != nil, address.IsLoopback(), address.IsPrivate(), match[2] == "443")
+		}
+	}
+	pidText, err := (OSCommandRunner{NewProcessGroup: true}).Run(ctx, "", nil, "/usr/bin/systemctl", "show", "docker.service", "--property=MainPID", "--value")
+	pid, parseErr := strconv.ParseUint(strings.TrimSpace(pidText), 10, 32)
+	if err != nil || parseErr != nil || pid == 0 {
+		t.Log("ST-PORT Docker registry: daemon_hosts_observed=false")
+		return
+	}
+	file, err := os.Open(fmt.Sprintf("/proc/%d/root/etc/hosts", pid))
+	if err != nil {
+		t.Log("ST-PORT Docker registry: daemon_hosts_observed=false")
+		return
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, 8193))
+	if err != nil || len(body) > 8192 {
+		t.Log("ST-PORT Docker registry: daemon_hosts_observed=false")
+		return
+	}
+	found, loopbackOnly := false, true
+	for _, line := range strings.Split(string(body), "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		for _, alias := range fields[1:] {
+			if alias == "ghcr.io" {
+				address := net.ParseIP(fields[0])
+				found = true
+				loopbackOnly = loopbackOnly && address != nil && address.IsLoopback()
+			}
+		}
+	}
+	t.Logf("ST-PORT Docker registry: daemon_hosts_observed=true alias_present=%t loopback_only=%t", found, found && loopbackOnly)
 }
 
 func stPortChainDockerRead(t *testing.T, path string) []byte {
