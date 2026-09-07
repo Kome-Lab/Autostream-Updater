@@ -56,6 +56,13 @@ type OSCommandRunner struct {
 }
 
 func (r OSCommandRunner) Run(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
+	output, _, err := r.runWithOutputMetadata(ctx, dir, env, name, args...)
+	return output, err
+}
+
+// runWithOutputMetadata preserves Run's command and error behavior. The extra
+// bit reports bytes actually discarded, not merely a buffer at its limit.
+func (r OSCommandRunner) runWithOutputMetadata(ctx context.Context, dir string, env []string, name string, args ...string) (string, bool, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	processDone := configureProcessGroup(cmd, r.NewProcessGroup)
 	cmd.Dir = dir
@@ -66,9 +73,9 @@ func (r OSCommandRunner) Run(ctx context.Context, dir string, env []string, name
 	err := cmd.Run()
 	processDone()
 	if err != nil {
-		return output.String(), fmt.Errorf("%s failed: %w", filepath.Base(name), err)
+		return output.String(), output.truncated, fmt.Errorf("%s failed: %w", filepath.Base(name), err)
 	}
-	return output.String(), nil
+	return output.String(), output.truncated, nil
 }
 
 func sanitizedCommandEnv(extra []string) []string {
@@ -94,11 +101,17 @@ func dockerCommandEnv() []string {
 	return []string{"HOME=/", "DOCKER_CONFIG=" + localExecutorDockerConfigDir}
 }
 
-type limitedBuffer struct{ bytes.Buffer }
+type limitedBuffer struct {
+	bytes.Buffer
+	truncated bool
+}
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
 	const max = 1 << 20
+	if n > max-b.Len() {
+		b.truncated = true
+	}
 	if b.Len() < max {
 		remaining := max - b.Len()
 		if len(p) > remaining {

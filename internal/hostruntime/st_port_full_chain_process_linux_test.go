@@ -52,6 +52,15 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal("production Agent initialization failed")
 	}
+	panel, ok := agent.ControlPlane.(*V2PanelClient)
+	if !ok {
+		t.Fatal("full-chain diagnostic requires the production v2 Panel client")
+	}
+	observedPanel := &stPortChainObservedPanel{V2PanelClient: panel, execution: panel, rootCalls: portClient.calls.Load}
+	portClient.observeFailure = func(operation string, err error) {
+		observedPanel.record(operation, "root_socket", operation, err)
+	}
+	agent.ControlPlane = observedPanel
 	agent.Journal, err = OpenJournal(agent.StateDir)
 	if err != nil {
 		t.Fatal("production Agent journal initialization failed")
@@ -74,6 +83,7 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 		var operationErr error
 		stage := ""
 		portClient.resetFailures()
+		observedPanel.resetFailures()
 		targetVerified := false
 		switch command.Command {
 		case "poll", "observe":
@@ -119,7 +129,12 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 			operationErr = errors.New("unsupported private Agent fixture command")
 		}
 		stop()
-		response := stPortChainResponse{OK: operationErr == nil, RootCalls: int(portClient.calls.Load()), TargetVerified: targetVerified}
+		response := stPortChainResponse{OK: operationErr == nil, RootCalls: int(portClient.calls.Load()), TargetVerified: targetVerified, PanelFailures: observedPanel.failures()}
+		response.FirstRootFailure, response.LastRootFailure = portClient.failures()
+		if operationErr == nil && len(response.PanelFailures) != 0 {
+			response.ErrorCode = "agent_operation_recovered"
+			response.FailureStage = stage
+		}
 		if operationErr != nil {
 			response.ErrorCode = "agent_operation_failed"
 			response.FailureStage = stage
@@ -128,7 +143,6 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 			if errors.As(operationErr, &panelErr) && panelErr.Status >= 100 && panelErr.Status <= 599 {
 				response.FailureHTTPStatus = panelErr.Status
 			}
-			response.FirstRootFailure, response.LastRootFailure = portClient.failures()
 			response.ActivePlanPresent = agent.Journal.ActivePortPlan() != nil
 		}
 		if active := agent.Journal.Active(); active != nil {
@@ -143,16 +157,20 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 
 type stPortChainCountingClient struct {
 	LocalExecutorClient
-	calls        atomic.Int64
-	mu           sync.Mutex
-	firstFailure string
-	lastFailure  string
+	calls          atomic.Int64
+	mu             sync.Mutex
+	firstFailure   string
+	lastFailure    string
+	observeFailure func(string, error)
 }
 
 func (c *stPortChainCountingClient) PortReconfigureV2(ctx context.Context, plan SystemdPortReconfigurePlan, fence LocalExecutorMutationFence, grant V2MutationGrant) (SystemdPortReconfigureResult, error) {
 	c.calls.Add(1)
 	result, err := c.LocalExecutorClient.PortReconfigureV2(ctx, plan, fence, grant)
 	c.recordFailure(err)
+	if c.observeFailure != nil {
+		c.observeFailure("root_apply", err)
+	}
 	return result, err
 }
 
@@ -160,6 +178,9 @@ func (c *stPortChainCountingClient) PortReconfigureReconcileV2(ctx context.Conte
 	c.calls.Add(1)
 	result, err := c.LocalExecutorClient.PortReconfigureReconcileV2(ctx, plan, fence, grant)
 	c.recordFailure(err)
+	if c.observeFailure != nil {
+		c.observeFailure("root_reconcile", err)
+	}
 	return result, err
 }
 

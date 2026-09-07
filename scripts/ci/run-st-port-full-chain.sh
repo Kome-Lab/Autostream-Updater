@@ -224,7 +224,15 @@ chmod 0644 /run/autostream-st-port-full-chain/isolated
 BOOTSTRAP
   if [[ ${runtime} == docker ]]; then
     record_runtime_phase "${runtime}" docker_daemon_registry
-    prepare_registry > "${evidence}/build/docker-registry.log" 2>&1 || return 1
+    registry_status=0
+    prepare_registry > "${evidence}/build/docker-registry.log" 2>&1 || registry_status=$?
+    # Retain only the two producer-authored booleans, including on failure.
+    # The private build output can contain credentials and is never uploaded.
+    awk '
+      /^st-port-registry-bootstrap: daemon_stopped_before_authority=true$/ && !stopped++ { print }
+      /^st-port-registry-bootstrap: daemon_started_after_authority=true$/ && !started++ { print }
+    ' "${evidence}/build/docker-registry.log" > "${evidence}/artifacts/docker-registry-bootstrap.log"
+    [[ ${registry_status} == 0 ]] || return 1
   fi
   test_seconds="$(remaining_seconds)" || return 1
   [[ ${test_seconds} -gt 10 ]] || return 1

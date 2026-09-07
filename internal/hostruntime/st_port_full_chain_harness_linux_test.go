@@ -56,6 +56,7 @@ type stPortChainResponse struct {
 	FirstRootFailure         string                                 `json:"first_root_failure,omitempty"`
 	LastRootFailure          string                                 `json:"last_root_failure,omitempty"`
 	ActivePlanPresent        bool                                   `json:"active_plan_present,omitempty"`
+	PanelFailures            []stPortChainPanelFailure              `json:"panel_failures,omitempty"`
 	RootPolicy               json.RawMessage                        `json:"root_policy,omitempty"`
 	AgentIdentityYAML        string                                 `json:"agent_identity_yaml,omitempty"`
 	WorkerIdentityYAML       string                                 `json:"worker_identity_yaml,omitempty"`
@@ -112,7 +113,7 @@ func (p *stPortChainProcess) call(t *testing.T, command stPortChainCommand) stPo
 	if err != nil {
 		t.Fatal("private process command/observation failed")
 	}
-	if !response.OK {
+	if !response.OK || len(response.PanelFailures) != 0 {
 		p.mu.Lock()
 		if p.diagnostics < 24 {
 			p.diagnostics++
@@ -120,7 +121,7 @@ func (p *stPortChainProcess) call(t *testing.T, command stPortChainCommand) stPo
 			// The response also carries private credentials and hashes: never log it.
 			code := "other"
 			switch response.ErrorCode {
-			case "agent_operation_failed", "create_rejected", "baseline_not_ready", "response_lost", "canonical_get_failed", "canonical_get_invalid", "invalid_create_intent", "create_response_invalid", "snapshot_unavailable":
+			case "agent_operation_failed", "agent_operation_recovered", "create_rejected", "baseline_not_ready", "response_lost", "canonical_get_failed", "canonical_get_invalid", "invalid_create_intent", "create_response_invalid", "snapshot_unavailable":
 				code = response.ErrorCode
 			}
 			stage := "none"
@@ -137,6 +138,17 @@ func (p *stPortChainProcess) call(t *testing.T, command stPortChainCommand) stPo
 				calls = -1
 			}
 			t.Logf("ST-PORT process failure: code=%s stage=%s class=%s http_status=%d root_calls=%d first_root=%s last_root=%s active_job=%t active_plan=%t active_result=%t", code, stage, stPortChainSafeFailureClass(response.FailureClass), status, calls, stPortChainSafeFailureClass(response.FirstRootFailure), stPortChainSafeFailureClass(response.LastRootFailure), response.ActiveJobID != "", response.ActivePlanPresent, response.ActiveResult != nil)
+			for i, failure := range response.PanelFailures {
+				if i >= stPortChainPanelFailureLimit {
+					break
+				}
+				failure = stPortChainSafePanelFailure(failure)
+				origin := "subsequent_observed"
+				if i == 0 {
+					origin = "first_observed"
+				}
+				t.Logf("ST-PORT operation failure: origin=%s operation=%s route=%s step=%s class=%s http_status=%d code=%s root_calls=%d", origin, failure.Operation, failure.Route, failure.Step, failure.Class, failure.HTTPStatus, failure.Code, failure.RootCalls)
+			}
 		}
 		p.mu.Unlock()
 	}

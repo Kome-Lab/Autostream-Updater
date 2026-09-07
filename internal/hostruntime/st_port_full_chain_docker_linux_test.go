@@ -254,7 +254,9 @@ func (f *stPortChainDockerFixture) startInitialNode(t *testing.T, h *stPortChain
 	if err != nil || listener.validateFrozen(execution, &f.target) != nil {
 		t.Fatal("freeze verified initial Node listener projection")
 	}
-	stPortChainDockerRun(t, h.ctx, "initial_up", f.target.ProjectDir, append(composeFrozenArgs(&f.target, execution.path), "up", "-d", "--no-deps", "--no-build", "--pull", "never", f.target.Service)...)
+	stPortChainDockerRunObserved(t, h.ctx, "initial_up", f.target.ProjectDir, func(ctx context.Context) {
+		f.observeInitialFailure(t, ctx)
+	}, append(composeFrozenArgs(&f.target, execution.path), "up", "-d", "--no-deps", "--no-build", "--pull", "never", f.target.Service)...)
 	if secureRemoveDockerPortTransient(localExecutorDockerWorkDir, work, true) != nil {
 		t.Fatal("remove initial transient Compose input")
 	}
@@ -535,6 +537,11 @@ func stPortChainDockerRegistry(t *testing.T) {
 
 func stPortChainDockerRun(t *testing.T, parent context.Context, stage, directory string, args ...string) string {
 	t.Helper()
+	return stPortChainDockerRunObserved(t, parent, stage, directory, nil, args...)
+}
+
+func stPortChainDockerRunObserved(t *testing.T, parent context.Context, stage, directory string, onFailure func(context.Context), args ...string) string {
+	t.Helper()
 	switch stage {
 	case "daemon_version", "compose_version", "empty_project", "fixture_push", "fixture_pull", "image_identity", "repository_identity", "compose_config", "initial_up", "runtime_inspect":
 	default:
@@ -543,7 +550,7 @@ func stPortChainDockerRun(t *testing.T, parent context.Context, stage, directory
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	started := time.Now()
-	output, err := (OSCommandRunner{NewProcessGroup: true}).Run(ctx, directory, dockerCommandEnv(), "/usr/bin/docker", args...)
+	output, truncated, err := (OSCommandRunner{NewProcessGroup: true}).runWithOutputMetadata(ctx, directory, dockerCommandEnv(), "/usr/bin/docker", args...)
 	exitStatus := 0
 	if err != nil {
 		exitStatus = -1
@@ -556,24 +563,16 @@ func stPortChainDockerRun(t *testing.T, parent context.Context, stage, directory
 	// contain credentials and is never copied into public test diagnostics.
 	t.Logf("ST-PORT Docker command: stage=%s exit=%d elapsed_ms=%d deadline_exceeded=%t", stage, exitStatus, time.Since(started).Milliseconds(), errors.Is(ctx.Err(), context.DeadlineExceeded))
 	if err != nil {
+		t.Log("ST-PORT Docker failure evidence: " + stPortChainDockerOutputEvidence(output, truncated, false).summary())
 		if stage == "fixture_push" {
 			stPortChainDockerRegistryFailure(t, ctx, output)
 		}
-		for _, class := range []struct{ text, name string }{
-			{"connection refused", "connection_refused"},
-			{"x509:", "tls_validation_failed"},
-			{"unauthorized", "authorization_failed"},
-			{"unknown flag:", "unsupported_flag"},
-			{"client version", "api_version_mismatch"},
-			{"no such host", "dns_failed"},
-			{"network is unreachable", "network_unreachable"},
-			{"permission denied", "permission_denied"},
-			{"no such file or directory", "file_missing"},
-			{"read-only file system", "read_only_filesystem"},
-		} {
-			if strings.Contains(strings.ToLower(output), class.text) {
-				t.Logf("ST-PORT Docker failure: class=%s", class.name)
-			}
+		if onFailure != nil {
+			// Observations get one separate ten-second read-only budget. They do
+			// not retry the failed command or extend its execution deadline.
+			observationCtx, observationCancel := context.WithTimeout(parent, 10*time.Second)
+			onFailure(observationCtx)
+			observationCancel()
 		}
 		t.Fatal("isolated real Docker command failed at the recorded stage")
 	}
