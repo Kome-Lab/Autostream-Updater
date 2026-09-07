@@ -583,18 +583,51 @@ func stPortChainDockerRegistryFailure(t *testing.T, ctx context.Context, output 
 	t.Helper()
 	// Classify only bounded network observations. Never emit URLs, addresses,
 	// registry responses, authentication data or the original command output.
+	lowerOutput := strings.ToLower(output)
+	t.Logf("ST-PORT Docker registry error shape: lookup=%t proxyconnect=%t dial_tcp=%t dial_udp=%t", strings.Contains(lowerOutput, "lookup "), strings.Contains(lowerOutput, "proxyconnect"), strings.Contains(lowerOutput, "dial tcp"), strings.Contains(lowerOutput, "dial udp"))
 	for _, raw := range regexp.MustCompile(`https?://[^\s"<>]+`).FindAllString(output, 4) {
 		endpoint, err := url.Parse(raw)
 		if err == nil {
 			t.Logf("ST-PORT Docker registry: expected_authority=%t tls=%t", endpoint.Hostname() == "ghcr.io", endpoint.Scheme == "https")
 		}
 	}
-	for _, match := range regexp.MustCompile(`dial tcp (\[[0-9a-fA-F:]+\]|[0-9.]+):([0-9]+)`).FindAllStringSubmatch(output, 4) {
-		address := net.ParseIP(strings.Trim(match[1], "[]"))
-		if address != nil {
-			t.Logf("ST-PORT Docker registry dial: ipv4=%t loopback=%t private=%t expected_port=%t", address.To4() != nil, address.IsLoopback(), address.IsPrivate(), match[2] == "443")
-		}
+	// A resolver failure can say "dial tcp: lookup ... dial udp ...".
+	// Classify at most four operation endpoints, including UDP destinations;
+	// a missing or non-IP endpoint contributes only to the bounded count.
+	matches := regexp.MustCompile(`\b(?:dial|read|write) (tcp[46]?|udp[46]?)(?::)?(?:[ \t]+([^ \t\r\n]+))?`).FindAllStringSubmatch(output, 5)
+	limitReached := len(matches) > 4
+	if limitReached {
+		matches = matches[:4]
 	}
+	endpointCount, unparsedCount := 0, 0
+	for _, match := range matches {
+		rawEndpoint := match[2]
+		if _, destination, found := strings.Cut(rawEndpoint, "->"); found {
+			rawEndpoint = destination
+		}
+		host, port, splitErr := net.SplitHostPort(strings.TrimSuffix(rawEndpoint, ":"))
+		host, _, _ = strings.Cut(host, "%")
+		address := net.ParseIP(host)
+		portNumber, portErr := strconv.ParseUint(port, 10, 16)
+		if splitErr != nil || address == nil || portErr != nil {
+			unparsedCount++
+			continue
+		}
+		protocol := "tcp"
+		if strings.HasPrefix(match[1], "udp") {
+			protocol = "udp"
+		}
+		portClass := "other"
+		switch portNumber {
+		case 443:
+			portClass = "443"
+		case 53:
+			portClass = "53"
+		}
+		endpointCount++
+		t.Logf("ST-PORT Docker registry dial: protocol=%s ipv4=%t loopback=%t private=%t unspecified=%t expected_port=%t port_class=%s", protocol, address.To4() != nil, address.IsLoopback(), address.IsPrivate(), address.IsUnspecified(), portNumber == 443, portClass)
+	}
+	t.Logf("ST-PORT Docker registry endpoints: observed=%d unparsed=%d limit_reached=%t", endpointCount, unparsedCount, limitReached)
 	pidText, err := (OSCommandRunner{NewProcessGroup: true}).Run(ctx, "", nil, "/usr/bin/systemctl", "show", "docker.service", "--property=MainPID", "--value")
 	pid, parseErr := strconv.ParseUint(strings.TrimSpace(pidText), 10, 32)
 	if err != nil || parseErr != nil || pid == 0 {

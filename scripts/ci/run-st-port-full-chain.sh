@@ -62,7 +62,11 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-
     fonts-noto-cjk libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
-CMD ["/sbin/init"]
+# systemd moves credential mounts from a child namespace back under /run.
+# Give this container-owned tmpfs its own shared peer group before PID 1 starts;
+# first disconnect propagation so nothing reaches the host or evidence bind.
+# https://systemd.io/CONTAINER_INTERFACE/ (Execution Environment, item 8)
+CMD ["/bin/sh", "-ec", "test \"$(findmnt -n -o FSTYPE -M /run)\" = tmpfs; mount --make-private /run; mount --make-shared /run; exec /sbin/init"]
 DOCKERFILE
 
 prepare_registry() {
@@ -163,6 +167,31 @@ run_runtime() {
     capture_boot_failure "${runtime}"
     return 1
   fi
+  record_runtime_phase "${runtime}" credential_mount_view
+  run_bounded docker exec --interactive "${container_id}" python3 - \
+    > "${evidence}/artifacts/credential-mount-${runtime}.json" <<'MOUNT_VIEW' || return 1
+import json
+with open('/proc/1/mountinfo') as source:
+    lines = source.read(262145)
+if len(lines) > 262144:
+    raise SystemExit('credential mount observation exceeded its bound')
+observed = {'run_tmpfs': False, 'run_shared': False, 'run_no_master': False,
+            'evidence_shared': False}
+for line in lines.splitlines():
+    fields = line.split()
+    if len(fields) < 10 or '-' not in fields: continue
+    split = fields.index('-')
+    flags = fields[6:split]
+    if fields[4] == '/run':
+        observed['run_tmpfs'] = fields[split + 1] == 'tmpfs'
+        observed['run_shared'] = any(flag.startswith('shared:') for flag in flags)
+        observed['run_no_master'] = not any(flag.startswith('master:') for flag in flags)
+    elif fields[4] == '/evidence':
+        observed['evidence_shared'] = any(flag.startswith('shared:') for flag in flags)
+print(json.dumps(observed, sort_keys=True))
+if not all(observed[name] for name in ('run_tmpfs', 'run_shared', 'run_no_master')) or observed['evidence_shared']:
+    raise SystemExit('credential mount isolation precondition failed')
+MOUNT_VIEW
   record_runtime_phase "${runtime}" input_copy
   run_bounded docker exec "${container_id}" /usr/bin/install -d -m 0755 /opt/st-port-input /run/autostream-st-port-full-chain || return 1
   run_bounded docker cp "${work}/hostruntime.test" "${container_id}:/opt/st-port-input/hostruntime.test" || return 1
