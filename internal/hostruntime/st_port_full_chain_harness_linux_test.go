@@ -234,6 +234,7 @@ func newSTPortChainHarness(t *testing.T) *stPortChainHarness {
 
 func newSTPortChainHarnessWithRuntime(t *testing.T, adapter stPortChainRuntimeAdapter) *stPortChainHarness {
 	t.Helper()
+	const sidecarDirectory = "/opt/autostream/local-executor/ports"
 	if os.Getenv("AUTOSTREAM_ST_PORT_FULL_CHAIN") != "1" {
 		t.Skip("isolated ST-PORT real-process integration is not selected")
 	}
@@ -242,7 +243,7 @@ func newSTPortChainHarnessWithRuntime(t *testing.T, adapter stPortChainRuntimeAd
 	if os.Geteuid() != 0 || err != nil || string(marker) != "ST-PORT disposable integration namespace v1\n" || containerErr != nil || strings.TrimSpace(string(container)) == "" {
 		t.Fatal("real-process integration requires its disposable systemd container")
 	}
-	for _, path := range []string{HostAgentIdentityPath, localExecutorPortPolicyPath, LocalExecutorMutationStateDir, HostPullAgentStateDir, "/opt/autostream/worker/current", stPortChainWorkerStateDir} {
+	for _, path := range []string{HostAgentIdentityPath, localExecutorPortPolicyPath, LocalExecutorMutationStateDir, HostPullAgentStateDir, "/opt/autostream/worker/current", stPortChainWorkerStateDir, sidecarDirectory} {
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatal("integration refuses a pre-existing runtime installation")
 		}
@@ -257,10 +258,26 @@ func newSTPortChainHarnessWithRuntime(t *testing.T, adapter stPortChainRuntimeAd
 		t.Fatal("locate integration binary")
 	}
 	h.testBinary = "/opt/autostream/st-port-test/hostruntime.test"
-	for _, directory := range []string{"/opt/autostream/st-port-test", "/etc/autostream/updater", "/etc/autostream/worker", "/opt/autostream/local-executor/ports", "/var/lib/autostream", h.evidence, filepath.Join(h.evidence, "processes"), filepath.Join(h.evidence, "artifacts")} {
+	for _, directory := range []string{"/opt/autostream/st-port-test", "/etc/autostream/updater", "/etc/autostream/worker", filepath.Dir(sidecarDirectory), "/var/lib/autostream", h.evidence, filepath.Join(h.evidence, "processes"), filepath.Join(h.evidence, "artifacts")} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal("prepare isolated fixture directories")
 		}
+	}
+	// Match the installer's private root-owned directory before any mutation.
+	// Exclusive creation refuses an existing link or runtime state.
+	if err := os.Mkdir(sidecarDirectory, 0o700); err != nil || os.Chown(sidecarDirectory, 0, 0) != nil || os.Chmod(sidecarDirectory, 0o700) != nil {
+		t.Fatal("prepare private root sidecar directory")
+	}
+	if validateRuntimeSystemdPortSidecarDirectory(sidecarDirectory, true) != nil {
+		t.Fatal("root sidecar directory does not satisfy the runtime boundary")
+	}
+	info, err := os.Lstat(sidecarDirectory)
+	if err != nil {
+		t.Fatal("inspect root sidecar directory")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || stat.Gid != 0 {
+		t.Fatal("root sidecar directory ownership differs from the installer")
 	}
 	// Match the canonical Worker's installer-owned parent and service state path.
 	if err := os.Chmod("/var/lib/autostream", 0o755); err != nil {

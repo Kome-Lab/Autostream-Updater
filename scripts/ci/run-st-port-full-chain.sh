@@ -38,7 +38,7 @@ container_id=''
 cleanup() {
   status=$?
   trap - EXIT
-  if [[ -n ${container_id} ]]; then timeout 30s docker rm --force -- "${container_id}" >/dev/null 2>&1 || true; fi
+  if [[ -n ${container_id} ]]; then timeout 30s docker rm --force --volumes -- "${container_id}" >/dev/null 2>&1 || true; fi
   case "${work}" in "${RUNNER_TEMP}"/st-port-full-chain.*) rm -rf -- "${work}" ;; *) die 'unsafe fixture cleanup path' ;; esac
   exit "${status}"
 }
@@ -141,13 +141,23 @@ record_runtime_phase() {
 
 run_runtime() {
   local runtime=$1 parent_test=$2 docker_selected=0 test_seconds
-  if [[ ${runtime} == docker ]]; then docker_selected=1; fi
+  local -a storage_mounts=()
+  if [[ ${runtime} == docker ]]; then
+    docker_selected=1
+    # Keep both Docker and containerd stores off the outer writable layer.
+    # Anonymous volumes belong to this fixture and are removed with it.
+    storage_mounts=(
+      --mount type=volume,target=/var/lib/docker,volume-nocopy
+      --mount type=volume,target=/var/lib/containerd,volume-nocopy
+    )
+  fi
   # Keep Docker's cgroup mount scoped to this private namespace. A bind of the
   # host hierarchy would disagree with /proc/1/cgroup and expose sibling groups.
   record_runtime_phase "${runtime}" container_create
   container_id="$(run_bounded docker create --privileged --cgroupns=private --network none \
     --cpus 2 --memory 4g --pids-limit 1024 \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
+    "${storage_mounts[@]}" \
     --mount "type=bind,source=${evidence},target=/evidence" "${image}")" || return 1
   [[ ${container_id} =~ ^[0-9a-f]{64}$ ]] || return 1
   record_runtime_phase "${runtime}" container_start
@@ -263,7 +273,7 @@ BOOTSTRAP
   # Only the credential-screened public artifacts become runner-readable.
   # Private process logs and every runtime credential retain their own modes.
   run_bounded docker exec "${container_id}" chmod -R a+rX /evidence/artifacts || return 1
-  run_bounded docker rm --force -- "${container_id}" >/dev/null || return 1
+  run_bounded docker rm --force --volumes -- "${container_id}" >/dev/null || return 1
   container_id=''
   [[ ${statuses[0]} -eq 0 && ${statuses[1]} -eq 0 ]]
 }
@@ -274,7 +284,7 @@ systemd_status=0
 docker_status=0
 run_runtime systemd TestSTPortFullChain || systemd_status=$?
 if [[ -n ${container_id} ]]; then
-  if run_bounded docker rm --force -- "${container_id}" >/dev/null; then
+  if run_bounded docker rm --force --volumes -- "${container_id}" >/dev/null; then
     container_id=''
   else
     docker_status=1
