@@ -33,6 +33,7 @@ import (
 )
 
 const stPortChainRoot = "/run/autostream-st-port-full-chain"
+const stPortChainWorkerStateDir = "/var/lib/autostream/worker"
 
 type stPortChainCommand struct {
 	Command        string `json:"command"`
@@ -194,7 +195,7 @@ func newSTPortChainHarnessWithRuntime(t *testing.T, adapter stPortChainRuntimeAd
 	if os.Geteuid() != 0 || err != nil || string(marker) != "ST-PORT disposable integration namespace v1\n" || containerErr != nil || strings.TrimSpace(string(container)) == "" {
 		t.Fatal("real-process integration requires its disposable systemd container")
 	}
-	for _, path := range []string{HostAgentIdentityPath, localExecutorPortPolicyPath, LocalExecutorMutationStateDir, HostPullAgentStateDir, "/opt/autostream/worker/current"} {
+	for _, path := range []string{HostAgentIdentityPath, localExecutorPortPolicyPath, LocalExecutorMutationStateDir, HostPullAgentStateDir, "/opt/autostream/worker/current", stPortChainWorkerStateDir} {
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatal("integration refuses a pre-existing runtime installation")
 		}
@@ -209,18 +210,24 @@ func newSTPortChainHarnessWithRuntime(t *testing.T, adapter stPortChainRuntimeAd
 		t.Fatal("locate integration binary")
 	}
 	h.testBinary = "/opt/autostream/st-port-test/hostruntime.test"
-	for _, directory := range []string{"/opt/autostream/st-port-test", "/etc/autostream/updater", "/etc/autostream/worker", "/opt/autostream/local-executor/ports", "/var/lib/autostream-worker", h.evidence, filepath.Join(h.evidence, "processes"), filepath.Join(h.evidence, "artifacts")} {
+	for _, directory := range []string{"/opt/autostream/st-port-test", "/etc/autostream/updater", "/etc/autostream/worker", "/opt/autostream/local-executor/ports", "/var/lib/autostream", h.evidence, filepath.Join(h.evidence, "processes"), filepath.Join(h.evidence, "artifacts")} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal("prepare isolated fixture directories")
 		}
 	}
+	// Match the canonical Worker's installer-owned parent and service state path.
+	if err := os.Chmod("/var/lib/autostream", 0o755); err != nil {
+		t.Fatal("prepare canonical Worker state parent")
+	}
 	stPortChainCopy(t, self, h.testBinary, 0o755)
-	for _, directory := range []string{HostPullAgentStateDir, "/var/lib/autostream-worker"} {
+	for _, directory := range []string{HostPullAgentStateDir, stPortChainWorkerStateDir} {
 		owner := int(h.uid)
-		if directory == "/var/lib/autostream-worker" {
+		mode := os.FileMode(0o700)
+		if directory == stPortChainWorkerStateDir {
 			owner = 16532
+			mode = 0o750
 		}
-		if err := os.MkdirAll(directory, 0o700); err != nil || os.Chown(directory, owner, owner) != nil {
+		if err := os.MkdirAll(directory, mode); err != nil || os.Chown(directory, owner, owner) != nil || os.Chmod(directory, mode) != nil {
 			t.Fatal("prepare non-root fixture state")
 		}
 	}
@@ -428,7 +435,7 @@ sys.exit(1 if (c >= fault['revision'] if fault['mode']=='at_or_after' else c==fa
 	if os.WriteFile("/opt/autostream/st-port-test/worker-start-gate", []byte(gate), 0o755) != nil {
 		t.Fatal("write isolated runtime fault gate")
 	}
-	unit := "[Unit]\nDescription=ST-PORT canonical Worker integration fixture\nStartLimitIntervalSec=0\n[Service]\nType=simple\nUser=autostream\nGroup=autostream\nWorkingDirectory=/var/lib/autostream-worker\nEnvironment=AUTOSTREAM_NODE_CONFIG=/etc/autostream/worker/node.yaml\nEnvironment=SSL_CERT_FILE=/run/autostream-st-port-full-chain/tls.crt\nLoadCredential=node-listener.json:/opt/autostream/local-executor/ports/worker.json\nExecStartPre=/opt/autostream/st-port-test/worker-start-gate\nExecStart=" + target.Systemd.CurrentLink + "/" + target.Systemd.BinaryPath + "\nRestart=no\nTimeoutStartSec=15\nTimeoutStopSec=15\n"
+	unit := "[Unit]\nDescription=ST-PORT canonical Worker integration fixture\nStartLimitIntervalSec=0\n[Service]\nType=simple\nUser=autostream\nGroup=autostream\nWorkingDirectory=" + stPortChainWorkerStateDir + "\nEnvironment=AUTOSTREAM_NODE_CONFIG=/etc/autostream/worker/node.yaml\nEnvironment=SSL_CERT_FILE=/run/autostream-st-port-full-chain/tls.crt\nLoadCredential=node-listener.json:/opt/autostream/local-executor/ports/worker.json\nExecStartPre=/opt/autostream/st-port-test/worker-start-gate\nExecStart=" + target.Systemd.CurrentLink + "/" + target.Systemd.BinaryPath + "\nRestart=no\nTimeoutStartSec=15\nTimeoutStopSec=15\n"
 	if os.WriteFile("/run/systemd/system/autostream-worker.service", []byte(unit), 0o644) != nil {
 		t.Fatal("write isolated canonical Worker unit")
 	}

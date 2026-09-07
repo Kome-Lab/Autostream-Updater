@@ -74,6 +74,12 @@ prepare_registry() {
   # SAN ghcr.io is installed in Docker's normal per-registry trust directory.
   run_bounded docker exec --interactive "${container_id}" /bin/bash -eu <<'REGISTRY' || return 1
 umask 077
+# PID 1 may already have started dockerd. Stop it and socket activation before
+# preparing this fixture authority, so the subsequent start gets a fresh resolver.
+systemctl stop docker.service docker.socket
+[[ $(systemctl show --property=MainPID --value docker.service) == 0 ]]
+[[ $(systemctl show --property=ActiveState --value docker.socket) == inactive ]]
+printf '%s\n' 'st-port-registry-bootstrap: daemon_stopped_before_authority=true'
 install -d -m 0700 /run/autostream-st-port-full-chain/registry-private
 install -d -m 0755 /etc/docker/certs.d/ghcr.io
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
@@ -111,6 +117,8 @@ systemctl stop docker-registry.service
 systemctl daemon-reload
 systemctl start st-port-registry.service
 systemctl start docker.service
+[[ $(systemctl show --property=MainPID --value docker.service) =~ ^[1-9][0-9]*$ ]]
+printf '%s\n' 'st-port-registry-bootstrap: daemon_started_after_authority=true'
 docker info >/dev/null
 docker compose version >/dev/null
 REGISTRY

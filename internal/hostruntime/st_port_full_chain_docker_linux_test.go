@@ -585,6 +585,17 @@ func stPortChainDockerRegistryFailure(t *testing.T, ctx context.Context, output 
 	// registry responses, authentication data or the original command output.
 	lowerOutput := strings.ToLower(output)
 	t.Logf("ST-PORT Docker registry error shape: lookup=%t proxyconnect=%t dial_tcp=%t dial_udp=%t", strings.Contains(lowerOutput, "lookup "), strings.Contains(lowerOutput, "proxyconnect"), strings.Contains(lowerOutput, "dial tcp"), strings.Contains(lowerOutput, "dial udp"))
+	lookupNamePattern := regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	for _, match := range regexp.MustCompile(`\blookup(?:[ \t]+([^ \t\r\n]+))?`).FindAllStringSubmatch(lowerOutput, 4) {
+		name := strings.TrimSuffix(strings.TrimSuffix(match[1], ":"), ".")
+		lookupClass := "unparsed"
+		if name == "ghcr.io" {
+			lookupClass = "expected_authority"
+		} else if len(name) <= 253 && lookupNamePattern.MatchString(name) {
+			lookupClass = "other_authority"
+		}
+		t.Logf("ST-PORT Docker registry lookup: class=%s", lookupClass)
+	}
 	for _, raw := range regexp.MustCompile(`https?://[^\s"<>]+`).FindAllString(output, 4) {
 		endpoint, err := url.Parse(raw)
 		if err == nil {
