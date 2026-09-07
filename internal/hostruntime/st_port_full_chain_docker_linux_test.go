@@ -160,7 +160,8 @@ func (f *stPortChainDockerFixture) prepare(t *testing.T, h *stPortChainHarness) 
 	if err != nil {
 		t.Fatal("fixed canonical Docker profile is unavailable")
 	}
-	for _, directory := range []string{"/opt/autostream", "/opt/autostream/local-executor/docker", "/opt/autostream/local-executor/docker/ports", "/etc/autostream-local-executor/docker"} {
+	// Initial Compose preparation needs the canonical state root before the root runtime starts.
+	for _, directory := range []string{LocalExecutorMutationStateDir, "/opt/autostream", "/opt/autostream/local-executor/docker", "/opt/autostream/local-executor/docker/ports", "/etc/autostream-local-executor/docker"} {
 		if os.MkdirAll(directory, 0o700) != nil {
 			t.Fatal("prepare isolated canonical Docker directories")
 		}

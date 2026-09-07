@@ -50,6 +50,12 @@ type stPortChainCommand struct {
 type stPortChainResponse struct {
 	OK                       bool                                   `json:"ok"`
 	ErrorCode                string                                 `json:"error_code,omitempty"`
+	FailureStage             string                                 `json:"failure_stage,omitempty"`
+	FailureClass             string                                 `json:"failure_class,omitempty"`
+	FailureHTTPStatus        int                                    `json:"failure_http_status,omitempty"`
+	FirstRootFailure         string                                 `json:"first_root_failure,omitempty"`
+	LastRootFailure          string                                 `json:"last_root_failure,omitempty"`
+	ActivePlanPresent        bool                                   `json:"active_plan_present,omitempty"`
 	RootPolicy               json.RawMessage                        `json:"root_policy,omitempty"`
 	AgentIdentityYAML        string                                 `json:"agent_identity_yaml,omitempty"`
 	WorkerIdentityYAML       string                                 `json:"worker_identity_yaml,omitempty"`
@@ -90,13 +96,14 @@ type stPortChainJob struct {
 }
 
 type stPortChainProcess struct {
-	command *exec.Cmd
-	in      *os.File
-	out     *os.File
-	encoder *json.Encoder
-	decoder *json.Decoder
-	done    chan error
-	mu      sync.Mutex
+	command     *exec.Cmd
+	in          *os.File
+	out         *os.File
+	encoder     *json.Encoder
+	decoder     *json.Decoder
+	done        chan error
+	mu          sync.Mutex
+	diagnostics int
 }
 
 func (p *stPortChainProcess) call(t *testing.T, command stPortChainCommand) stPortChainResponse {
@@ -104,6 +111,34 @@ func (p *stPortChainProcess) call(t *testing.T, command stPortChainCommand) stPo
 	response, err := p.exchange(command)
 	if err != nil {
 		t.Fatal("private process command/observation failed")
+	}
+	if !response.OK {
+		p.mu.Lock()
+		if p.diagnostics < 24 {
+			p.diagnostics++
+			// Only fixed codes and bounded counts cross into public test output.
+			// The response also carries private credentials and hashes: never log it.
+			code := "other"
+			switch response.ErrorCode {
+			case "agent_operation_failed", "create_rejected", "baseline_not_ready", "response_lost", "canonical_get_failed", "canonical_get_invalid", "invalid_create_intent", "create_response_invalid", "snapshot_unavailable":
+				code = response.ErrorCode
+			}
+			stage := "none"
+			switch response.FailureStage {
+			case "register", "policy", "recovery_policy", "heartbeat", "execute", "flush":
+				stage = response.FailureStage
+			}
+			status := response.FailureHTTPStatus
+			if status < 100 || status > 599 {
+				status = 0
+			}
+			calls := response.RootCalls
+			if calls < 0 || calls > 1000000 {
+				calls = -1
+			}
+			t.Logf("ST-PORT process failure: code=%s stage=%s class=%s http_status=%d root_calls=%d first_root=%s last_root=%s active_job=%t active_plan=%t active_result=%t", code, stage, stPortChainSafeFailureClass(response.FailureClass), status, calls, stPortChainSafeFailureClass(response.FirstRootFailure), stPortChainSafeFailureClass(response.LastRootFailure), response.ActiveJobID != "", response.ActivePlanPresent, response.ActiveResult != nil)
+		}
+		p.mu.Unlock()
 	}
 	return response
 }
