@@ -85,8 +85,10 @@ func portClaimPolicyMatches(job UpdateJob, policy HostAgentPolicy, target HostAg
 		return false
 	}
 	refs := []*contracts.SystemUpdatePortSnapshotRef{job.PortReconfigure.Before}
-	if !job.RecoveryRequired && (target.EndpointRevision != job.PortReconfigure.Before.EndpointRevision && target.EndpointRevision != job.PortReconfigure.Target.EndpointRevision ||
-		target.DesiredEndpoint == nil || target.DesiredEndpoint.Port != job.PortReconfigure.Target.AdvertisedPort) {
+	// Before consumption CP projects the complete B snapshot, including the
+	// desired endpoint. The pending T desire belongs to the immutable job.
+	if !job.RecoveryRequired && (target.EndpointRevision != job.PortReconfigure.Before.EndpointRevision ||
+		target.DesiredEndpoint == nil || target.AppliedEndpoint == nil || *target.DesiredEndpoint != *target.AppliedEndpoint) {
 		return false
 	}
 	if job.RecoveryRequired {

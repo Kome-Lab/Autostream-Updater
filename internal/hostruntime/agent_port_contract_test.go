@@ -91,7 +91,7 @@ func agentPortV2Fixture(t *testing.T, mode contracts.SystemUpdatePortMode, noOp 
 		Targets: []HostAgentPolicyTarget{{ServiceID: "worker-01", ServiceType: "worker", DeploymentMode: ModeSystemd,
 			EndpointRevision: b.EndpointRevision, AppliedEndpointRevision: b.AppliedEndpointRevision,
 			AppliedConfigRevision: b.ConfigRevision, AppliedConfigSHA256: b.ConfigSHA256,
-			DesiredEndpoint:     &HostAgentEndpoint{Host: "worker.example.test", Port: target.AdvertisedPort, SSLEnabled: true, PublicURL: endpoint.PublicURL},
+			DesiredEndpoint:     &HostAgentEndpoint{Host: "worker.example.test", Port: b.AdvertisedPort, SSLEnabled: true, PublicURL: "https://worker.example.test/"},
 			AppliedEndpoint:     &HostAgentEndpoint{Host: "worker.example.test", Port: 443, SSLEnabled: true, PublicURL: "https://worker.example.test/"},
 			LocalListenEndpoint: &HostAgentEndpoint{Host: "127.0.0.1", Port: b.LocalListenPort, PublicURL: "http://127.0.0.1:18081"}}},
 	}
@@ -100,6 +100,88 @@ func agentPortV2Fixture(t *testing.T, mode contracts.SystemUpdatePortMode, noOp 
 		t.Fatal(err)
 	}
 	return lease, job, policy, plan
+}
+
+func TestSTPortAgentFreshClaimRequiresCompleteBeforeProjection(t *testing.T) {
+	for _, mode := range []contracts.SystemUpdatePortMode{contracts.SystemUpdatePortModeLocalOnly, contracts.SystemUpdatePortModeLocalAndAdvertised} {
+		for _, noOp := range []bool{false, true} {
+			name := string(mode) + "/changed"
+			if noOp {
+				name = string(mode) + "/unchanged"
+			}
+			t.Run(name, func(t *testing.T) {
+				_, job, policy, plan := agentPortV2Fixture(t, mode, noOp)
+				binding := HostAgentBinding{ExecutionHostID: job.HostID, OwnershipEpoch: job.OwnershipEpoch, TransportMode: HostTransportPullV2}
+				if err := policy.validateForService(job.AgentServiceID, 0); err != nil {
+					t.Fatal("before projection must be a valid host policy")
+				}
+				if err := validateHostPullClaim(job, job.AgentServiceID, binding, policy); err != nil {
+					t.Fatal("fresh claim rejected the complete before projection")
+				}
+				if job.PolicyRevision != job.PortReconfigure.Before.ProjectionRevision ||
+					!samePortSnapshot(plan.Before, job.PortReconfigure.Before) || !samePortSnapshot(plan.Target, job.PortReconfigure.Target) ||
+					!samePortSnapshot(plan.Rollback, job.PortReconfigure.Rollback) || plan.PortIntentSHA256 != job.PortReconfigure.PortPlanSHA256 {
+					t.Fatal("claim planning changed immutable intent")
+				}
+				if mode == contracts.SystemUpdatePortModeLocalAndAdvertised && !noOp {
+					target := policy.Targets[0]
+					// The former guard required pending T desire inside a B policy.
+					// This valid CP projection is its red contract example.
+					legacyMixedGuard := (target.EndpointRevision == job.PortReconfigure.Before.EndpointRevision || target.EndpointRevision == job.PortReconfigure.Target.EndpointRevision) &&
+						target.DesiredEndpoint != nil && target.DesiredEndpoint.Port == job.PortReconfigure.Target.AdvertisedPort
+					if legacyMixedGuard {
+						t.Fatal("fixture did not expose the former mixed projection guard")
+					}
+					t.Log("red_witness=legacy_mixed_guard_rejects_complete_before")
+					job.RecoveryRequired = true
+					for _, ref := range []*contracts.SystemUpdatePortSnapshotRef{plan.Before, plan.Target, plan.Rollback} {
+						candidate, err := portPolicyCandidate(policy, job.TargetID, *ref)
+						if err != nil || validateHostPullClaim(job, job.AgentServiceID, binding, candidate) != nil {
+							t.Fatal("recovery lost an original B/T/R projection")
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSTPortAgentFreshClaimRejectsMixedProjection(t *testing.T) {
+	_, job, policy, plan := agentPortV2Fixture(t, contracts.SystemUpdatePortModeLocalAndAdvertised, false)
+	targetPolicy, err := portPolicyCandidate(policy, job.TargetID, *plan.Target)
+	if err != nil {
+		t.Fatal("build target projection fixture")
+	}
+	binding := HostAgentBinding{ExecutionHostID: job.HostID, OwnershipEpoch: job.OwnershipEpoch, TransportMode: HostTransportPullV2}
+	for _, test := range []struct {
+		name   string
+		mutate func(*HostAgentPolicy)
+	}{
+		{"desired_missing", func(p *HostAgentPolicy) { p.Targets[0].DesiredEndpoint = nil }},
+		{"applied_missing", func(p *HostAgentPolicy) { p.Targets[0].AppliedEndpoint = nil }},
+		{"desired_port", func(p *HostAgentPolicy) { p.Targets[0].DesiredEndpoint.Port = plan.Target.AdvertisedPort }},
+		{"desired_host", func(p *HostAgentPolicy) { p.Targets[0].DesiredEndpoint.Host = "other.example.test" }},
+		{"desired_ssl", func(p *HostAgentPolicy) { p.Targets[0].DesiredEndpoint.SSLEnabled = false }},
+		{"desired_public_url", func(p *HostAgentPolicy) { p.Targets[0].DesiredEndpoint.PublicURL = "https://other.example.test/" }},
+		{"pending_endpoint_revision", func(p *HostAgentPolicy) { p.Targets[0].EndpointRevision = plan.Target.EndpointRevision }},
+		{"pending_desired_target", func(p *HostAgentPolicy) { p.Targets[0].DesiredEndpoint = targetPolicy.Targets[0].DesiredEndpoint }},
+		{"mixed_endpoint_bindings", func(p *HostAgentPolicy) {
+			p.Targets[0].AppliedEndpoint.Host = "other.example.test"
+			p.Targets[0].DesiredEndpoint.Host = "other.example.test"
+		}},
+		{"complete_target", func(p *HostAgentPolicy) { *p = clonePortAgentPolicy(targetPolicy) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := clonePortAgentPolicy(policy)
+			test.mutate(&candidate)
+			if validateHostPullClaim(job, job.AgentServiceID, binding, candidate) == nil {
+				t.Fatal("fresh claim accepted a mixed or altered before projection")
+			}
+			if _, err := portExecutionPlanFromJob(candidate, job, plan.SessionID); err == nil {
+				t.Fatal("mixed or altered projection reached root plan construction")
+			}
+		})
+	}
 }
 
 func agentPortObservedResult(plan SystemdPortReconfigurePlan, kind contracts.SystemUpdatePortReconfigurationResult, at time.Time, agentVerified bool) SystemdPortReconfigureResult {
