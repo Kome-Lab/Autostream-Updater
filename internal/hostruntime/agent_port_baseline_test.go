@@ -149,7 +149,8 @@ func TestSTPortAgentDockerBaselineRetainsInstalledProfileMetadata(t *testing.T) 
 	}
 	baseline := portPolicyBaseline(policy, observations)
 	if baseline == nil || baseline.Targets[0].DockerRoot == nil || baseline.Targets[0].DockerRoot.ComposeConfigSHA256 != probe.DockerRoot.ComposeConfigSHA256 ||
-		baseline.Targets[0].DockerRoot.CurrentVersion != "v1.2.3" || baseline.Targets[0].Docker.ComposePolicySHA256 != "sha256:"+strings.Repeat("a", 64) {
+		baseline.Targets[0].DockerRoot.CurrentVersion != "v1.2.3" || baseline.Targets[0].Docker.ComposePolicySHA256 != "sha256:"+strings.Repeat("a", 64) ||
+		observations[0].Docker == nil || observations[0].Docker.ComposeConfigSHA256 != probe.Docker.ComposeConfigSHA256 {
 		t.Fatal("dynamic Docker observation replaced installed root profile metadata")
 	}
 	observations[0].DockerRoot = nil

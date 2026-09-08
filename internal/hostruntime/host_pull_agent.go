@@ -56,6 +56,7 @@ type HostDockerPortObservation struct {
 	ContainerPort       int
 	HealthPort          int
 	ComposePolicySHA256 string
+	ComposeConfigSHA256 string
 	ComposeRevision     int64
 	VersionEnvSHA256    string
 	ContainerID         string
@@ -895,6 +896,7 @@ func (a *HostPullAgent) capabilities(binding HostAgentBinding, policy *HostAgent
 		capabilities["reported_docker_container_ports"] = map[string]int{}
 		capabilities["reported_docker_health_ports"] = map[string]int{}
 		capabilities["reported_docker_compose_sha256"] = map[string]string{}
+		capabilities["reported_docker_compose_config_sha256"] = map[string]string{}
 		capabilities["reported_docker_compose_revisions"] = map[string]int64{}
 		capabilities["reported_docker_version_env_sha256"] = map[string]string{}
 		capabilities["reported_docker_container_ids"] = map[string]string{}
@@ -922,6 +924,7 @@ func (a *HostPullAgent) capabilities(binding HostAgentBinding, policy *HostAgent
 	reportedDockerContainerPorts := make(map[string]int, len(policy.Targets))
 	reportedDockerHealthPorts := make(map[string]int, len(policy.Targets))
 	reportedDockerComposeDigests := make(map[string]string, len(policy.Targets))
+	reportedDockerComposeConfigDigests := make(map[string]string, len(policy.Targets))
 	reportedDockerComposeRevisions := make(map[string]int64, len(policy.Targets))
 	reportedDockerVersionEnvDigests := make(map[string]string, len(policy.Targets))
 	reportedDockerContainerIDs := make(map[string]string, len(policy.Targets))
@@ -952,6 +955,11 @@ func (a *HostPullAgent) capabilities(binding HostAgentBinding, policy *HostAgent
 			reportedDockerContainerPorts[target.ServiceID] = observation.Docker.ContainerPort
 			reportedDockerHealthPorts[target.ServiceID] = observation.Docker.HealthPort
 			reportedDockerComposeDigests[target.ServiceID] = observation.Docker.ComposePolicySHA256
+			// The resolved runtime model differs from the installed policy profile
+			// after a port transition. Publish only a verified available observation.
+			if observation.Availability == TargetAvailabilityAvailable && mutationPlanHashPattern.MatchString(observation.Docker.ComposeConfigSHA256) {
+				reportedDockerComposeConfigDigests[target.ServiceID] = observation.Docker.ComposeConfigSHA256
+			}
 			reportedDockerComposeRevisions[target.ServiceID] = observation.Docker.ComposeRevision
 			reportedDockerVersionEnvDigests[target.ServiceID] = observation.Docker.VersionEnvSHA256
 			reportedDockerContainerIDs[target.ServiceID] = observation.Docker.ContainerID
@@ -999,6 +1007,7 @@ func (a *HostPullAgent) capabilities(binding HostAgentBinding, policy *HostAgent
 	capabilities["reported_docker_container_ports"] = reportedDockerContainerPorts
 	capabilities["reported_docker_health_ports"] = reportedDockerHealthPorts
 	capabilities["reported_docker_compose_sha256"] = reportedDockerComposeDigests
+	capabilities["reported_docker_compose_config_sha256"] = reportedDockerComposeConfigDigests
 	capabilities["reported_docker_compose_revisions"] = reportedDockerComposeRevisions
 	capabilities["reported_docker_version_env_sha256"] = reportedDockerVersionEnvDigests
 	capabilities["reported_docker_container_ids"] = reportedDockerContainerIDs

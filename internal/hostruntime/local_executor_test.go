@@ -1561,7 +1561,8 @@ func TestLocalExecutorHostObserverReportsVerifiedDockerPortMapping(t *testing.T)
 		observations[0].Availability != TargetAvailabilityAvailable ||
 		observations[0].ReportedPort != 18081 ||
 		observations[0].Docker == nil ||
-		observations[0].Docker.AdvertisedPort != 443 {
+		observations[0].Docker.AdvertisedPort != 443 ||
+		observations[0].Docker.ComposeConfigSHA256 != probe.Docker.ComposeConfigSHA256 {
 		t.Fatalf("observations=%+v", observations)
 	}
 	capabilities := (&HostPullAgent{}).capabilities(
@@ -1573,6 +1574,7 @@ func TestLocalExecutorHostObserverReportsVerifiedDockerPortMapping(t *testing.T)
 		capabilities["reported_docker_container_ports"].(map[string]int)["worker-01"] != 8084 ||
 		capabilities["reported_docker_health_ports"].(map[string]int)["worker-01"] != 18081 ||
 		capabilities["reported_docker_compose_sha256"].(map[string]string)["worker-01"] != composePolicyDigest ||
+		capabilities["reported_docker_compose_config_sha256"].(map[string]string)["worker-01"] != probe.Docker.ComposeConfigSHA256 ||
 		capabilities["reported_docker_compose_revisions"].(map[string]int64)["worker-01"] != 9 ||
 		capabilities["reported_docker_version_env_sha256"].(map[string]string)["worker-01"] != probe.Docker.VersionEnvSHA256 ||
 		capabilities["reported_docker_container_ids"].(map[string]string)["worker-01"] != probe.Docker.ContainerID ||
@@ -1583,6 +1585,36 @@ func TestLocalExecutorHostObserverReportsVerifiedDockerPortMapping(t *testing.T)
 	if drift := capabilities["port_drift"].(map[string]bool)["worker-01"]; drift {
 		t.Fatalf("local Docker listener was reported as drifted: %+v", capabilities)
 	}
+
+	t.Run("unverified full Compose digest is not advertised", func(t *testing.T) {
+		for _, test := range []struct {
+			name         string
+			availability string
+			digest       string
+			failed       bool
+		}{
+			{"missing", TargetAvailabilityAvailable, "", false},
+			{"malformed", TargetAvailabilityAvailable, "not-a-digest", false},
+			{"unavailable", TargetAvailabilityUnavailable, probe.Docker.ComposeConfigSHA256, false},
+			{"unknown", TargetAvailabilityUnknown, probe.Docker.ComposeConfigSHA256, false},
+			{"failed", TargetAvailabilityAvailable, probe.Docker.ComposeConfigSHA256, true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				changed := observations[0]
+				docker := *changed.Docker
+				docker.ComposeConfigSHA256 = test.digest
+				changed.Docker, changed.Availability = &docker, test.availability
+				caps := (&HostPullAgent{}).capabilities(HostAgentBinding{}, &policy, []HostTargetObservation{changed}, test.failed)
+				if len(caps["reported_docker_compose_config_sha256"].(map[string]string)) != 0 {
+					t.Fatal("unverified runtime Compose digest was advertised")
+				}
+			})
+		}
+		caps := (&HostPullAgent{}).capabilities(HostAgentBinding{}, nil, nil, false)
+		if len(caps["reported_docker_compose_config_sha256"].(map[string]string)) != 0 {
+			t.Fatal("missing policy retained a runtime Compose observation")
+		}
+	})
 
 	t.Run("missing advertised endpoint fails closed", func(t *testing.T) {
 		incomplete := policy

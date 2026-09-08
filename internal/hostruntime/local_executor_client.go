@@ -210,6 +210,7 @@ func NewLocalExecutorTargetObserver(client LocalExecutorProbeClient) HostTargetO
 					ContainerPort:       probe.Docker.ContainerPort,
 					HealthPort:          probe.Docker.HealthPort,
 					ComposePolicySHA256: probe.Docker.ComposePolicySHA256,
+					ComposeConfigSHA256: probe.Docker.ComposeConfigSHA256,
 					ComposeRevision:     probe.Docker.ComposeRevision,
 					VersionEnvSHA256:    probe.Docker.VersionEnvSHA256,
 					ContainerID:         probe.Docker.ContainerID,

@@ -389,6 +389,9 @@ func (f *stPortChainDockerFixture) observe(t *testing.T, h *stPortChainHarness, 
 		f.nonPort = &nonPort
 	} else if !reflect.DeepEqual(*f.nonPort, nonPort) {
 		t.Logf("ST-PORT Docker non-port equality: %v", stPortChainDockerNonPortEquality(*f.nonPort, nonPort))
+		if !reflect.DeepEqual(f.nonPort.Env, nonPort.Env) {
+			t.Logf("ST-PORT Docker Env comparison: %v", stPortChainDockerEnvComparison(f.nonPort.Env, nonPort.Env))
+		}
 		t.Fatal("actual non-port Docker projection changed")
 	}
 	var node struct {
@@ -428,6 +431,96 @@ func stPortChainDockerNonPortEquality(before, after stPortChainDockerNonPort) ma
 		"CapAdd": reflect.DeepEqual(before.CapAdd, after.CapAdd), "SecurityOpt": reflect.DeepEqual(before.SecurityOpt, after.SecurityOpt),
 		"ReadonlyRootfs": before.ReadonlyRootfs == after.ReadonlyRootfs, "Privileged": before.Privileged == after.Privileged,
 		"PidsLimit": before.PidsLimit == after.PidsLimit,
+	}
+}
+
+// Raw environment entries remain in this private in-memory comparison. Neither
+// names nor values are returned, and these diagnostics never decide acceptance.
+func stPortChainDockerEnvComparison(before, after []string) map[string]bool {
+	parse := func(entries []string) (map[string]string, bool, bool) {
+		values := make(map[string]string, len(entries))
+		wellFormed, unique := true, true
+		for _, entry := range entries {
+			key, value, found := strings.Cut(entry, "=")
+			if !found || key == "" || strings.ContainsRune(entry, '\x00') {
+				wellFormed = false
+				continue
+			}
+			if _, exists := values[key]; exists {
+				unique = false
+			}
+			values[key] = value
+		}
+		return values, wellFormed, unique
+	}
+	left, leftValid, leftUnique := parse(before)
+	right, rightValid, rightUnique := parse(after)
+	keysEqual := leftValid && rightValid && len(left) == len(right)
+	for key := range left {
+		if _, exists := right[key]; !exists {
+			keysEqual = false
+		}
+	}
+	valuesEqual := keysEqual && leftUnique && rightUnique
+	for key, value := range left {
+		if value != right[key] {
+			valuesEqual = false
+		}
+	}
+	orderEqual := len(before) == len(after)
+	if orderEqual {
+		for i := range before {
+			if before[i] != after[i] {
+				orderEqual = false
+			}
+		}
+	}
+	return map[string]bool{
+		"before_well_formed": leftValid, "after_well_formed": rightValid,
+		"before_unique_keys": leftUnique, "after_unique_keys": rightUnique,
+		"key_set_equal": keysEqual, "values_equal": valuesEqual, "order_equal": orderEqual,
+		"nilness_equal": (before == nil) == (after == nil), "emptiness_equal": (len(before) == 0) == (len(after) == 0),
+	}
+}
+
+func TestSTPortDockerEnvDiagnosticSeparatesContentOrderAndRepresentation(t *testing.T) {
+	base := []string{"A=1", "B=two=3"}
+	for _, test := range []struct {
+		name          string
+		before, after []string
+		falseFields   []string
+	}{
+		{"same", base, base, nil},
+		{"order_only", base, []string{"B=two=3", "A=1"}, []string{"order_equal"}},
+		{"value", base, []string{"A=changed", "B=two=3"}, []string{"values_equal", "order_equal"}},
+		{"key", base, []string{"C=1", "B=two=3"}, []string{"key_set_equal", "values_equal", "order_equal"}},
+		{"duplicate_before", []string{"A=1", "A=1", "B=two=3"}, base, []string{"before_unique_keys", "values_equal", "order_equal"}},
+		{"duplicate_after", base, []string{"A=1", "B=two=3", "A=1"}, []string{"after_unique_keys", "values_equal", "order_equal"}},
+		{"malformed_before", []string{"A", "B=two=3"}, base, []string{"before_well_formed", "key_set_equal", "values_equal", "order_equal"}},
+		{"malformed_after", base, []string{"A=1", "=two=3"}, []string{"after_well_formed", "key_set_equal", "values_equal", "order_equal"}},
+		{"nil_empty", nil, []string{}, []string{"nilness_equal"}},
+		{"both_nil", nil, nil, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			facts := stPortChainDockerEnvComparison(test.before, test.after)
+			if len(facts) != 9 {
+				t.Fatal("environment diagnostic inventory changed")
+			}
+			for field, actual := range facts {
+				want := true
+				for _, unequal := range test.falseFields {
+					if field == unequal {
+						want = false
+					}
+				}
+				if actual != want {
+					t.Fatal("environment diagnostic did not separate the injected difference")
+				}
+			}
+			if test.name != "same" && test.name != "both_nil" && reflect.DeepEqual(test.before, test.after) {
+				t.Fatal("diagnostic normalized an unequal environment")
+			}
+		})
 	}
 }
 
