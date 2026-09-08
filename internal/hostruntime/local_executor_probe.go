@@ -134,6 +134,7 @@ func handleLocalExecutorRequestWithSystemdState(
 			policy, target, dockerState,
 		)
 		if err != nil {
+			observeLocalExecutionFailure(ctx, localFailureProbeProjection, err)
 			return localExecutorFailure("target_unavailable")
 		}
 		target = effectiveTarget
@@ -143,9 +144,11 @@ func handleLocalExecutorRequestWithSystemdState(
 	}
 	before, err := verifier.Observe(ctx, policy, target)
 	if err != nil || validateLocalProcessObservation(target, before) != nil {
+		observeLocalExecutionFailure(ctx, localFailureProbeBefore, err)
 		return localExecutorFailure("target_unavailable")
 	}
 	if err := verifyLocalExecutorHTTP(ctx, target, before.CurrentVersion, httpClient); err != nil {
+		observeLocalExecutionFailure(ctx, localFailureProbeHTTP, err)
 		return localExecutorFailure("target_unavailable")
 	}
 	var dockerProbe *LocalExecutorDockerPortProbe
@@ -154,12 +157,14 @@ func handleLocalExecutorRequestWithSystemdState(
 		target.Docker.PortEnvFile != "" {
 		dockerVerifier, ok := verifier.(localDockerPortProbeVerifier)
 		if !ok {
+			observeLocalExecutionFailure(ctx, localFailureProbeDockerMapping, nil)
 			return localExecutorFailure("target_unavailable")
 		}
 		observedDocker, err := dockerVerifier.ObserveDockerPort(
 			ctx, policy, target, httpClient,
 		)
 		if err != nil || observedDocker.Validate() != nil {
+			observeLocalExecutionFailure(ctx, localFailureProbeDockerMapping, err)
 			return localExecutorFailure("target_unavailable")
 		}
 		dockerProbe = &observedDocker
@@ -167,6 +172,7 @@ func handleLocalExecutorRequestWithSystemdState(
 	after, err := verifier.Observe(ctx, policy, target)
 	if err != nil || validateLocalProcessObservation(target, after) != nil ||
 		!sameLocalProcessObservation(before, after) {
+		observeLocalExecutionFailure(ctx, localFailureProbeAfter, err)
 		return localExecutorFailure("target_unavailable")
 	}
 	digest, err := policy.SHA256()
@@ -204,9 +210,12 @@ func handleLocalExecutorRequestWithSystemdState(
 				CurrentVersion:      installed.Docker.CurrentVersion,
 			}
 		}
+	} else {
+		observeLocalExecutionFailure(ctx, localFailureProbeBaseline, nil)
 	}
 	response := LocalExecutorResponse{Version: LocalExecutorProtocolVersion, Probe: probe}
 	if err := response.Validate(); err != nil {
+		observeLocalExecutionFailure(ctx, localFailureProbeResponse, err)
 		return localExecutorFailure("target_unavailable")
 	}
 	return response
@@ -234,6 +243,7 @@ func verifyStableLocalTarget(
 	}
 	before, err := verifier.Observe(ctx, policy, target)
 	if err != nil || validateLocalProcessObservation(target, before) != nil {
+		observeLocalExecutionFailure(ctx, localFailureProbeBefore, err)
 		return LocalProcessObservation{}, errStableLocalTargetProcessVerification
 	}
 	if err := verifyLocalExecutorHTTP(
@@ -242,12 +252,14 @@ func verifyStableLocalTarget(
 		before.CurrentVersion,
 		httpClient,
 	); err != nil {
+		observeLocalExecutionFailure(ctx, localFailureProbeHTTP, err)
 		return LocalProcessObservation{}, errStableLocalTargetEndpointVerification
 	}
 	after, err := verifier.Observe(ctx, policy, target)
 	if err != nil ||
 		validateLocalProcessObservation(target, after) != nil ||
 		!sameLocalProcessObservation(before, after) {
+		observeLocalExecutionFailure(ctx, localFailureProbeAfter, err)
 		return LocalProcessObservation{}, errStableLocalTargetProcessChanged
 	}
 	return after, nil
@@ -311,13 +323,16 @@ func verifyLocalExecutorHTTP(ctx context.Context, target LocalExecutorTarget, ba
 	}
 	base := "http://" + target.LocalListen.address()
 	if err := fetchLocalHealth(checkCtx, &client, base+"/health", target); err != nil {
+		observeLocalExecutionFailure(ctx, localFailureHTTPHealth, err)
 		return err
 	}
 	version, err := fetchLocalVersion(checkCtx, &client, base+"/updater/version", target)
 	if err != nil {
+		observeLocalExecutionFailure(ctx, localFailureHTTPVersion, err)
 		return err
 	}
 	if !versionsEqual(version, baseline) {
+		observeLocalExecutionFailure(ctx, localFailureHTTPVersion, nil)
 		return errors.New("endpoint version does not match managed runtime")
 	}
 	return nil

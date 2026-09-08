@@ -162,7 +162,7 @@ func executePortV2(ctx context.Context, policy LocalExecutorPolicy, request Loca
 	forwardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), portPolicyForwardTimeout)
 	defer cancel()
 	forwardDeadline := driver.now().Add(portPolicyForwardTimeout)
-	if err := applyPortV2Policy(driver, journal, *plan.Target, startDeadline); err != nil {
+	if err := applyPortV2Policy(forwardCtx, driver, journal, *plan.Target, startDeadline); err != nil {
 		if errors.Is(err, errSystemdPortSimulatedCrash) {
 			return failure("reconcile_required")
 		}
@@ -174,8 +174,12 @@ func executePortV2(ctx context.Context, policy LocalExecutorPolicy, request Loca
 		return rollbackPortV2(ctx, driver, journal, plan)
 	}
 	targetPolicy, _ := decodePortPolicy(journal.Transition.TargetPolicy)
-	if !driver.now().Before(forwardDeadline) || forwardCtx.Err() != nil ||
-		driver.write(forwardCtx, targetPolicy, *plan.Target) != nil {
+	if !driver.now().Before(forwardDeadline) || forwardCtx.Err() != nil {
+		observeLocalExecutionFailure(forwardCtx, localFailureForwardBudget, context.DeadlineExceeded)
+		return rollbackPortV2(ctx, driver, journal, plan)
+	}
+	if err := driver.write(forwardCtx, targetPolicy, *plan.Target); err != nil {
+		observeLocalExecutionFailure(forwardCtx, localFailureForwardWrite, err)
 		return rollbackPortV2(ctx, driver, journal, plan)
 	}
 	journal.State = systemdPortLedgerSidecarWritten
@@ -185,7 +189,12 @@ func executePortV2(ctx context.Context, policy LocalExecutorPolicy, request Loca
 	if driver.crash("after_sidecar_write") != nil {
 		return failure("reconcile_required")
 	}
-	if !driver.now().Before(forwardDeadline) || forwardCtx.Err() != nil || driver.restart(forwardCtx, targetPolicy, *plan.Target) != nil {
+	if !driver.now().Before(forwardDeadline) || forwardCtx.Err() != nil {
+		observeLocalExecutionFailure(forwardCtx, localFailureForwardBudget, context.DeadlineExceeded)
+		return rollbackPortV2(ctx, driver, journal, plan)
+	}
+	if err := driver.restart(forwardCtx, targetPolicy, *plan.Target); err != nil {
+		observeLocalExecutionFailure(forwardCtx, localFailureForwardRestart, err)
 		return rollbackPortV2(ctx, driver, journal, plan)
 	}
 	journal.State = systemdPortLedgerRestarted
@@ -195,7 +204,12 @@ func executePortV2(ctx context.Context, policy LocalExecutorPolicy, request Loca
 	if driver.crash("after_restart") != nil {
 		return failure("reconcile_required")
 	}
-	if !driver.now().Before(forwardDeadline) || forwardCtx.Err() != nil || verifyPortV2Root(forwardCtx, driver, journal, *plan.Target) != nil {
+	if !driver.now().Before(forwardDeadline) || forwardCtx.Err() != nil {
+		observeLocalExecutionFailure(forwardCtx, localFailureForwardBudget, context.DeadlineExceeded)
+		return rollbackPortV2(ctx, driver, journal, plan)
+	}
+	if err := verifyPortV2Root(forwardCtx, driver, journal, *plan.Target); err != nil {
+		observeLocalExecutionFailure(forwardCtx, localFailureForwardProbe, err)
 		return rollbackPortV2(ctx, driver, journal, plan)
 	}
 	return finishPortV2(forwardCtx, driver, journal, plan, systemdPortResultApplied)
@@ -226,7 +240,12 @@ func portV2PolicyBytes(journal *portV2Journal, ref contracts.SystemUpdatePortSna
 func verifyPortV2Root(ctx context.Context, driver portV2Driver, journal *portV2Journal, ref contracts.SystemUpdatePortSnapshotRef) error {
 	payload := portV2PolicyBytes(journal, ref)
 	policy, err := decodePortPolicy(payload)
-	if err != nil || driver.policyStore().Verify(payload) != nil {
+	if err != nil {
+		observeLocalExecutionFailure(ctx, localFailurePolicyVerify, err)
+		return errors.New("port policy is not verified")
+	}
+	if err := driver.policyStore().Verify(payload); err != nil {
+		observeLocalExecutionFailure(ctx, localFailurePolicyVerify, err)
 		return errors.New("port policy is not verified")
 	}
 	_, err = driver.verify(ctx, policy, ref)
@@ -238,13 +257,15 @@ type portPolicyPhasedStore interface {
 	Reload([]byte) error
 }
 
-func applyPortV2Policy(driver portV2Driver, journal *portV2Journal, ref contracts.SystemUpdatePortSnapshotRef, firstWriteDeadline time.Time) error {
+func applyPortV2Policy(ctx context.Context, driver portV2Driver, journal *portV2Journal, ref contracts.SystemUpdatePortSnapshotRef, firstWriteDeadline time.Time) error {
 	payload := portV2PolicyBytes(journal, ref)
 	if len(payload) == 0 {
+		observeLocalExecutionFailure(ctx, localFailurePolicySelect, nil)
 		return errors.New("port policy target is not in the immutable plan")
 	}
 	journal.State = portPolicyWritePending
 	if err := driver.save(journal, false); err != nil {
+		observeLocalExecutionFailure(ctx, localFailurePolicySave, err)
 		return err
 	}
 	if err := driver.crash("before_policy_write"); err != nil {
@@ -253,33 +274,43 @@ func applyPortV2Policy(driver portV2Driver, journal *portV2Journal, ref contract
 	// Saving the latch can itself be delayed. Check at the actual first
 	// privileged write boundary, using the original pre-consume M0.
 	if !firstWriteDeadline.IsZero() && !driver.now().Before(firstWriteDeadline) {
+		observeLocalExecutionFailure(ctx, localFailureForwardBudget, context.DeadlineExceeded)
 		return errPortPolicyStartExpired
 	}
 	if phased, ok := driver.policyStore().(portPolicyPhasedStore); ok {
 		if err := phased.Write(journal.Transition.candidates(), payload); err != nil {
+			observeLocalExecutionFailure(ctx, localFailurePolicyWrite, err)
 			return err
 		}
 		journal.State = portPolicyWritten
 		if err := driver.save(journal, false); err != nil {
+			observeLocalExecutionFailure(ctx, localFailurePolicySave, err)
 			return err
 		}
 		if err := driver.crash("after_policy_write"); err != nil {
 			return err
 		}
 		if err := phased.Reload(payload); err != nil {
+			observeLocalExecutionFailure(ctx, localFailurePolicyReload, err)
 			return err
 		}
 	} else if err := driver.policyStore().Replace(journal.Transition.candidates(), payload); err != nil {
+		observeLocalExecutionFailure(ctx, localFailurePolicyWrite, err)
 		return err
 	}
 	journal.State = portPolicyLoaded
 	if err := driver.save(journal, false); err != nil {
+		observeLocalExecutionFailure(ctx, localFailurePolicySave, err)
 		return err
 	}
 	if err := driver.crash("after_policy_reload"); err != nil {
 		return err
 	}
-	return driver.policyStore().Verify(payload)
+	err := driver.policyStore().Verify(payload)
+	if err != nil {
+		observeLocalExecutionFailure(ctx, localFailurePolicyVerify, err)
+	}
+	return err
 }
 
 func rollbackPortV2(ctx context.Context, driver portV2Driver, journal *portV2Journal, plan SystemdPortReconfigurePlan) LocalExecutorResponse {
@@ -298,7 +329,7 @@ func rollbackPortV2(ctx context.Context, driver portV2Driver, journal *portV2Jou
 	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), portPolicyRollbackTimeout)
 	defer cancel()
 	deadline := driver.now().Add(portPolicyRollbackTimeout)
-	if err := applyPortV2Policy(driver, journal, *plan.Rollback, time.Time{}); err != nil {
+	if err := applyPortV2Policy(rollbackCtx, driver, journal, *plan.Rollback, time.Time{}); err != nil {
 		if errors.Is(err, errSystemdPortSimulatedCrash) {
 			return failure("reconcile_required")
 		}

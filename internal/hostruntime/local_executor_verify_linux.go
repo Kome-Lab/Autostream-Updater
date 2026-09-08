@@ -114,7 +114,13 @@ func (v linuxLocalTargetVerifier) observeSystemd(
 	ctx context.Context,
 	target LocalExecutorTarget,
 	runtimeTarget Target,
-) (LocalProcessObservation, error) {
+) (observation LocalProcessObservation, resultErr error) {
+	phase := localFailureSystemdRelease
+	defer func() {
+		if resultErr != nil {
+			observeLocalExecutionFailure(ctx, phase, resultErr)
+		}
+	}()
 	systemd := runtimeTarget.Systemd
 	release, _, version, err := currentRelease(systemd.CurrentLink, systemd.ReleaseRoot)
 	if err != nil || release == "" || !versionPattern.MatchString(version) {
@@ -123,9 +129,11 @@ func (v linuxLocalTargetVerifier) observeSystemd(
 	if err := verifyManagedReleaseChecksums(release); err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureSystemdProcess
 	if err := verifySystemdProcess(ctx, runtimeTarget, release, v.runner); err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureSystemdPID
 	pidOutput, err := v.runner.Run(ctx, "", nil, systemd.SystemctlPath,
 		"show", "--property=MainPID", "--value", systemd.Unit)
 	if err != nil {
@@ -135,6 +143,7 @@ func (v linuxLocalTargetVerifier) observeSystemd(
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureSystemdCgroup
 	cgroupOutput, err := v.runner.Run(ctx, "", nil, systemd.SystemctlPath,
 		"show", "--property=ControlGroup", "--value", systemd.Unit)
 	controlGroup := strings.TrimSpace(cgroupOutput)
@@ -144,6 +153,7 @@ func (v linuxLocalTargetVerifier) observeSystemd(
 	if err := requireProcessCgroup(mainPID, controlGroup); err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureSystemdListener
 	listenerPID, listenerGroup, err := findLocalExecutorListenerPID(target.LocalListen, controlGroup)
 	if err != nil {
 		return LocalProcessObservation{}, err
@@ -164,11 +174,18 @@ func (v linuxLocalTargetVerifier) observeDocker(
 	ctx context.Context,
 	target LocalExecutorTarget,
 	runtimeTarget Target,
-) (LocalProcessObservation, error) {
+) (observation LocalProcessObservation, resultErr error) {
+	phase := localFailureDockerContainer
+	defer func() {
+		if resultErr != nil {
+			observeLocalExecutionFailure(ctx, phase, resultErr)
+		}
+	}()
 	containerID, err := managedContainerID(ctx, v.runner, runtimeTarget.Docker)
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureDockerPID
 	pidOutput, err := v.runner.Run(ctx, runtimeTarget.Docker.ProjectDir, dockerCommandEnv(),
 		runtimeTarget.Docker.DockerPath, "inspect", "--format={{.State.Pid}}", containerID)
 	if err != nil {
@@ -178,14 +195,17 @@ func (v linuxLocalTargetVerifier) observeDocker(
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureDockerCgroup
 	controlGroup, err := processUnifiedControlGroup(mainPID)
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureDockerVersion
 	version := probeRemoteTargetVersion(runtimeTarget)
 	if !versionPattern.MatchString(version) {
 		return LocalProcessObservation{}, errors.New("managed Docker version is unavailable")
 	}
+	phase = localFailureDockerListener
 	listenerPID, listenerGroup, err := findLocalExecutorListenerPID(target.LocalListen, controlGroup)
 	if err != nil {
 		return LocalProcessObservation{}, err

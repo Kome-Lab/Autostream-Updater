@@ -108,7 +108,7 @@ func (p *stPortChainObservedPanel) failures() []stPortChainPanelFailure {
 func stPortChainSafePanelFailure(v stPortChainPanelFailure) stPortChainPanelFailure {
 	v.Operation = stPortChainPanelEnum(v.Operation, "claim", "progress", "grant_issue", "result", "root_apply", "root_reconcile")
 	v.Route = stPortChainPanelEnum(v.Route, "claim", "report", "mutation_grants", "root_socket")
-	v.Step = stPortChainPanelEnum(v.Step, "none", "claimed", "installing", "reconciling", "succeeded", "failed", "rolled_back", "port_reconfigure", "port_reconfigure_reconcile", "root_apply", "root_reconcile")
+	v.Step = stPortChainPanelEnum(v.Step, "none", "claimed", "installing", "rolling_back", "reconciling", "succeeded", "failed", "rolled_back", "port_reconfigure", "port_reconfigure_reconcile", "root_apply", "root_reconcile")
 	v.Class = stPortChainSafeFailureClass(v.Class)
 	if v.HTTPStatus < 100 || v.HTTPStatus > 599 {
 		v.HTTPStatus = 0

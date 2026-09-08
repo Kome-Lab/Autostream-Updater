@@ -31,6 +31,7 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 		if os.Geteuid() != 0 {
 			t.Fatal("root Executor child has the wrong identity")
 		}
+		ctx = stPortChainRootFailureContext(ctx)
 		if err := ServeLocalExecutor(ctx, localExecutorPortPolicyPath); err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatal("production root Executor stopped unexpectedly")
 		}
@@ -86,6 +87,7 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 		portClient.resetFailures()
 		observedPanel.resetFailures()
 		targetVerified := false
+		var baselineObservation *stPortChainBaselineObservation
 		switch command.Command {
 		case "poll", "observe":
 			stage = "register"
@@ -104,6 +106,7 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 					selected, operationErr = agent.portRecoveryPolicy(*policy)
 					if operationErr == nil {
 						observations, failed := agent.observe(stepCtx, selected)
+						baselineObservation = stPortChainCaptureBaseline(observations, failed)
 						targetVerified = !failed && len(observations) == 1 && observations[0].ServiceID == "worker-smoke" && observations[0].Availability == TargetAvailabilityAvailable && observations[0].PortContractVersion == 2 && observations[0].PolicyTransitionVersion == 1
 						stage = "heartbeat"
 						operationErr = agent.ControlPlane.HeartbeatHostAgent(stepCtx, identity, "online", agent.capabilities(binding, &selected, observations, failed))
@@ -130,7 +133,7 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 			operationErr = errors.New("unsupported private Agent fixture command")
 		}
 		stop()
-		response := stPortChainResponse{OK: operationErr == nil, RootCalls: int(portClient.calls.Load()), TargetVerified: targetVerified, PanelFailures: observedPanel.failures()}
+		response := stPortChainResponse{OK: operationErr == nil, RootCalls: int(portClient.calls.Load()), TargetVerified: targetVerified, BaselineObservation: baselineObservation, PanelFailures: observedPanel.failures()}
 		response.FirstRootFailure, response.LastRootFailure = portClient.failures()
 		if operationErr == nil && len(response.PanelFailures) != 0 {
 			response.ErrorCode = "agent_operation_recovered"
@@ -154,6 +157,21 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 			t.Fatal("private Agent observation channel closed")
 		}
 	}
+}
+
+func stPortChainCaptureBaseline(observations []HostTargetObservation, failed bool) *stPortChainBaselineObservation {
+	evidence := stPortChainBaselineObservation{Failed: failed, Count: len(observations), Availability: "not_single", AvailabilityCode: "not_single", PortContractVersion: -1, PolicyTransitionVersion: -1}
+	if len(observations) == 1 {
+		observation := observations[0]
+		evidence.ExactTarget = observation.ServiceID == "worker-smoke"
+		evidence.Availability = observation.Availability
+		evidence.AvailabilityCode = observation.AvailabilityCode
+		evidence.PortContractVersion = observation.PortContractVersion
+		evidence.PolicyTransitionVersion = observation.PolicyTransitionVersion
+	}
+	// Only the safe projection crosses the existing private response pipe.
+	evidence = evidence.safe()
+	return &evidence
 }
 
 type stPortChainCountingClient struct {

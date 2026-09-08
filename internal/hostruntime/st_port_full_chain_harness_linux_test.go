@@ -70,6 +70,7 @@ type stPortChainResponse struct {
 	DroppedCount             int                                    `json:"dropped_count,omitempty"`
 	RootCalls                int                                    `json:"root_calls,omitempty"`
 	TargetVerified           bool                                   `json:"target_verified,omitempty"`
+	BaselineObservation      *stPortChainBaselineObservation        `json:"baseline_observation,omitempty"`
 	ActiveJobID              string                                 `json:"active_job_id,omitempty"`
 	ActiveResult             *contracts.SystemUpdatePortResultV2    `json:"active_result,omitempty"`
 	TerminalResult           *contracts.SystemUpdatePortResultV2    `json:"terminal_result,omitempty"`
@@ -84,6 +85,48 @@ type stPortChainResponse struct {
 	DBSourcePolicyRevision   int64                                  `json:"db_source_policy_revision,omitempty"`
 	DBProjectionRevision     int64                                  `json:"db_projection_revision,omitempty"`
 	DBExecutorPolicyRevision int64                                  `json:"db_executor_policy_revision,omitempty"`
+}
+
+type stPortChainBaselineObservation struct {
+	Failed                  bool   `json:"failed"`
+	Count                   int    `json:"count"`
+	CountCapped             bool   `json:"count_capped"`
+	ExactTarget             bool   `json:"exact_target"`
+	Availability            string `json:"availability"`
+	AvailabilityCode        string `json:"availability_code"`
+	PortContractVersion     int    `json:"port_contract_version"`
+	PolicyTransitionVersion int    `json:"policy_transition_version"`
+}
+
+func (o stPortChainBaselineObservation) safe() stPortChainBaselineObservation {
+	if o.Count < 0 || o.Count > 64 {
+		o.CountCapped = true
+		if o.Count < 0 {
+			o.Count = 0
+		} else {
+			o.Count = 64
+		}
+	}
+	switch o.Availability {
+	case "not_single", TargetAvailabilityAvailable, TargetAvailabilityUnavailable, TargetAvailabilityUnknown:
+	default:
+		o.Availability = "other"
+	}
+	switch o.AvailabilityCode {
+	case "not_single", "none", "other", "executor_policy_unpinned", "executor_policy_incomplete", "executor_unavailable", "executor_probe_mismatch", "executor_policy_mismatch", "executor_verified", "observation_failed":
+	case "":
+		o.AvailabilityCode = "none"
+	default:
+		o.AvailabilityCode = "other"
+	}
+	// -1 means unselected or outside this closed protocol-version vocabulary.
+	if o.PortContractVersion < 0 || o.PortContractVersion > 2 {
+		o.PortContractVersion = -1
+	}
+	if o.PolicyTransitionVersion < 0 || o.PolicyTransitionVersion > 1 {
+		o.PolicyTransitionVersion = -1
+	}
+	return o
 }
 
 type stPortChainJob struct {
@@ -354,6 +397,13 @@ func newSTPortChainHarnessWithRuntime(t *testing.T, adapter stPortChainRuntimeAd
 	h.waitRoot(t)
 	h.agent = h.start(t, "agent", h.testBinary, "TestSTPortFullChainRuntimeProcess", h.uid, h.gid)
 	if response := h.agent.call(t, stPortChainCommand{Command: "observe"}); !response.OK || !response.TargetVerified {
+		if response.BaselineObservation == nil {
+			t.Log("ST-PORT Agent baseline: observation=not_reached")
+		} else {
+			observation := response.BaselineObservation.safe()
+			t.Logf("ST-PORT Agent baseline: observation=observed failed=%t count=%d count_capped=%t exact_target=%t availability=%s availability_code=%s port_contract_version=%d policy_transition_version=%d",
+				observation.Failed, observation.Count, observation.CountCapped, observation.ExactTarget, observation.Availability, observation.AvailabilityCode, observation.PortContractVersion, observation.PolicyTransitionVersion)
+		}
 		t.Fatal("real Agent registration/probe/heartbeat baseline failed")
 	}
 	baseline := h.cp.call(t, stPortChainCommand{Command: "observe"})
@@ -378,9 +428,17 @@ func (h *stPortChainHarness) start(t *testing.T, role, binary, test string, uid,
 	command.ExtraFiles = []*os.File{readCommand, writeResponse}
 	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: gid}, Setpgid: true}
 	h.processSerial++
-	log, err := os.OpenFile(filepath.Join(h.evidence, "processes", fmt.Sprintf("process-%s-%02d-%s.log", h.runtimeMode, h.processSerial, role)), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	logPath := filepath.Join(h.evidence, "processes", fmt.Sprintf("process-%s-%02d-%s.log", h.runtimeMode, h.processSerial, role))
+	log, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		t.Fatal("open bounded process evidence")
+	}
+	if role == "root" {
+		t.Cleanup(func() {
+			if t.Failed() {
+				stPortChainLogRootFailures(t, logPath)
+			}
+		})
 	}
 	command.Stdout, command.Stderr = log, log
 	if err := command.Start(); err != nil {

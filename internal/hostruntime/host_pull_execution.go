@@ -507,9 +507,15 @@ func (a *HostPullAgent) processPortReconfigurationJob(
 			// one merely because the durable plan cannot yet be recovered.
 			return err
 		}
+		progress := 99
+		if isPortContractV2(job) {
+			// A fresh lease omits CP progress. A previous recovery observation
+			// or legal progress report may already have reached the ceiling.
+			progress = 100
+		}
 		if _, err := a.emitPortExecutionReport(
 			ctx, panel, job, "reconciling", "",
-			"inspecting interrupted port change without reapplying", 99, nil,
+			"inspecting interrupted port change without reapplying", progress, nil,
 		); err != nil {
 			return err
 		}
@@ -519,7 +525,7 @@ func (a *HostPullAgent) processPortReconfigurationJob(
 		if err != nil {
 			return err
 		}
-		return a.finishPortExecutionResult(ctx, panel, job, plan, result)
+		return a.finishPortExecutionResult(ctx, panel, job, plan, result, true)
 	}
 
 	if _, err := a.emitPortExecutionReport(
@@ -549,6 +555,7 @@ func (a *HostPullAgent) processPortReconfigurationJob(
 	); err != nil {
 		return err
 	}
+	reconciling := false
 	result, err := a.invokePortExecutionMutation(
 		ctx, panel, binding, policy, job, plan, "port_reconfigure",
 	)
@@ -563,6 +570,7 @@ func (a *HostPullAgent) processPortReconfigurationJob(
 		); reportErr != nil {
 			return reportErr
 		}
+		reconciling = true
 		result, err = a.invokePortExecutionMutation(
 			ctx, panel, binding, policy, job, plan, "port_reconfigure_reconcile",
 		)
@@ -570,7 +578,7 @@ func (a *HostPullAgent) processPortReconfigurationJob(
 			return err
 		}
 	}
-	return a.finishPortExecutionResult(ctx, panel, job, plan, result)
+	return a.finishPortExecutionResult(ctx, panel, job, plan, result, reconciling)
 }
 
 func (a *HostPullAgent) preparePortExecutionPlan(
@@ -772,6 +780,7 @@ func (a *HostPullAgent) finishPortExecutionResult(
 	job UpdateJob,
 	plan SystemdPortReconfigurePlan,
 	result SystemdPortReconfigureResult,
+	reconciling bool,
 ) error {
 	if err := validatePortExecutionResult(plan, result); err != nil {
 		return err
@@ -790,6 +799,14 @@ func (a *HostPullAgent) finishPortExecutionResult(
 			"requested port is running and verified", &result,
 		)
 	case "rolled_back":
+		// A direct forward result follows installing. Recovery already reported
+		// reconciling, whose next report must remain terminal.
+		if isPortContractV2(job) && !reconciling {
+			if _, err := a.emitPortExecutionReport(ctx, panel, job, "rolling_back", "",
+				"previous port was restored and verified", 95, nil); err != nil {
+				return err
+			}
+		}
 		return a.emitPortExecutionTerminal(
 			ctx, panel, job, "rolled_back", "post_update_verification_failed",
 			"previous port is running and verified", &result,

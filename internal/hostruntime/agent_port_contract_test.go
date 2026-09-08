@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -476,6 +477,284 @@ func TestSTPortAgentUnknownAndPremutationFailureNeverFabricateResult(t *testing.
 			}
 			if status == "reconciling" && mapped.result.Outcome != contracts.UpdaterOutcomeAmbiguous {
 				t.Fatal("unknown outcome was converted to success")
+			}
+		})
+	}
+}
+
+type agentPortTransitionExecutor struct {
+	hostPullExecutionTestExecutor
+	observedAt time.Time
+	invalid    bool
+}
+
+func (e *agentPortTransitionExecutor) PortReconfigureV2(_ context.Context, plan SystemdPortReconfigurePlan, _ LocalExecutorMutationFence, _ V2MutationGrant) (SystemdPortReconfigureResult, error) {
+	e.v2PortApplyCalls++
+	if e.portApplyErr != nil {
+		return SystemdPortReconfigureResult{}, e.portApplyErr
+	}
+	return e.rollbackResult(plan), nil
+}
+
+func (e *agentPortTransitionExecutor) PortReconfigureReconcileV2(_ context.Context, plan SystemdPortReconfigurePlan, _ LocalExecutorMutationFence, _ V2MutationGrant) (SystemdPortReconfigureResult, error) {
+	e.v2PortReconCalls++
+	return e.rollbackResult(plan), nil
+}
+
+func (e *agentPortTransitionExecutor) rollbackResult(plan SystemdPortReconfigurePlan) SystemdPortReconfigureResult {
+	result := agentPortObservedResult(plan, contracts.SystemUpdatePortReconfigurationRolledBack, e.observedAt, false)
+	if e.invalid {
+		result.PortResult.Observation.PolicyDiskVerified = false
+	}
+	return result
+}
+
+// The Agent, Journal, V2 adapter, and HTTP response loss are real. The issuer,
+// root result, and CP status/progress gates are bounded contract fixtures.
+func TestSTPortAgentRollbackReportsRespectCPTransitionAndProgress(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		mode            contracts.SystemUpdatePortMode
+		recovery        bool
+		previousFailure bool
+		ambiguous       bool
+		loseResponse    string
+		invalidResult   bool
+	}{
+		{name: "fresh_local", mode: contracts.SystemUpdatePortModeLocalOnly},
+		{name: "fresh_combined", mode: contracts.SystemUpdatePortModeLocalAndAdvertised},
+		{name: "recovery_at_progress_ceiling", recovery: true},
+		{name: "recovery_after_rollback_failed", recovery: true, previousFailure: true},
+		{name: "same_process_ambiguous_reconcile", ambiguous: true},
+		{name: "rolling_back_ack_loss", loseResponse: "rolling_back"},
+		{name: "terminal_ack_loss", loseResponse: "rolled_back"},
+		{name: "invalid_root_result", invalidResult: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mode := test.mode
+			if mode == "" {
+				mode = contracts.SystemUpdatePortModeLocalAndAdvertised
+			}
+			lease, originalJob, policy, originalPlan := agentPortV2Fixture(t, mode, false)
+			observedAt := lease.LeaseExpiresAt.Add(-4 * time.Minute)
+			now := observedAt.Add(time.Second)
+			expected := agentPortObservedResult(originalPlan, contracts.SystemUpdatePortReconfigurationRolledBack, observedAt, true).PortResult
+			dir := t.TempDir()
+			journal, err := OpenJournal(dir)
+			if err != nil {
+				t.Fatal("open transition journal")
+			}
+			if test.recovery {
+				for _, err := range []error{journal.SetActive(&originalJob), journal.SetActivePortPlan(originalPlan), journal.StagePortPolicy(policy, originalJob, originalPlan)} {
+					if err != nil {
+						t.Fatal("stage interrupted transition")
+					}
+				}
+				if test.previousFailure {
+					failed := agentPortObservedResult(originalPlan, contracts.SystemUpdatePortReconfigurationRollbackFailed, observedAt.Add(-time.Second), false)
+					if _, err := journal.QueuePort(originalJob.ID, originalJob.AgentServiceID, "", originalJob.LeaseGeneration, "failed", "port_rollback_failed", "recovery required", 100, &failed); err != nil {
+						t.Fatal("persist failed rollback observation")
+					}
+					journal, err = OpenJournal(dir)
+					if err != nil {
+						t.Fatal("reopen recovery journal")
+					}
+				}
+			}
+			cpStatus, cpProgress := "claimed", 0
+			if test.recovery {
+				cpProgress = 100 // CP retains this across a fresh recovery lease.
+			}
+			activeLease := lease
+			claims, grants, rolling, terminals, acceptances := 0, 0, 0, 0, 0
+			lost := false
+			var lostBody, acceptedBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+				if err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if r.URL.Path == "/services/update-jobs/claim" {
+					var request contracts.UpdateAgentClaimRequest
+					if json.Unmarshal(body, &request) != nil {
+						t.Error("invalid claim fixture request")
+					}
+					claims++
+					activeLease = lease
+					if request.ActiveJobID != "" {
+						if request.ActiveJobID != originalJob.ID {
+							t.Error("recovery changed the active job")
+						}
+						activeLease.LeaseGeneration++
+						cpStatus = "reconciling"
+					}
+					writeV2PanelJSON(t, w, http.StatusOK, activeLease)
+					return
+				}
+				if strings.HasSuffix(r.URL.Path, "/mutation-grants") {
+					if contracts.ValidateUpdaterMutationGrantIssueRequest(now, body) != nil {
+						t.Error("invalid transition grant request")
+					}
+					grants++
+					writeV2PanelJSON(t, w, http.StatusCreated, contracts.UpdaterMutationGrantIssueResponse{GrantToken: strings.Repeat("g", 32), ExpiresAt: now.Add(time.Minute)})
+					return
+				}
+				step, nextProgress, allowed := "", cpProgress, false
+				if contracts.ValidateUpdaterProgressEnvelope(activeLease, body) == nil {
+					var progress contracts.UpdaterProgressEnvelope
+					_ = json.Unmarshal(body, &progress)
+					nextProgress = progress.Progress
+					switch progress.Phase {
+					case "accepted":
+						step, allowed = "claimed", cpStatus == "claimed"
+					case "executing":
+						step, allowed = "installing", cpStatus == "claimed"
+					case "rolling_back":
+						step, allowed = "rolling_back", cpStatus == "installing" || cpStatus == "rolling_back"
+					case "reconciling":
+						step, allowed = "reconciling", cpStatus == "reconciling" || cpStatus == "rolling_back"
+					}
+				} else if contracts.ValidateUpdaterResultEnvelope(activeLease, body) == nil {
+					var result contracts.UpdaterResultEnvelope
+					_ = json.Unmarshal(body, &result)
+					if result.Outcome == contracts.UpdaterOutcomeAmbiguous {
+						step, allowed = "reconciling", cpStatus == "installing"
+					} else if result.PortReconfigure != nil && contracts.EqualSystemUpdatePortResults(*expected, *result.PortReconfigure) {
+						step, nextProgress = "rolled_back", 100
+						allowed = cpStatus == "rolling_back" || cpStatus == "reconciling" || cpStatus == "rolled_back" && string(acceptedBody) == string(body)
+					}
+				}
+				if !allowed || nextProgress < cpProgress {
+					writeV2PanelJSON(t, w, http.StatusConflict, map[string]string{"code": "system_update_transition_invalid"})
+					return
+				}
+				cpStatus, cpProgress = step, nextProgress
+				if step == "rolling_back" {
+					rolling++
+					candidate, err := journal.portPolicyCandidate("")
+					if err != nil || !portAgentPolicyMatchesSnapshot(*candidate, originalJob.TargetID, originalPlan.Rollback) {
+						t.Error("rollback progress preceded verified durable R adoption")
+					}
+				}
+				if step == "rolled_back" {
+					terminals++
+					if acceptedBody == nil {
+						acceptedBody = append([]byte(nil), body...)
+						acceptances++
+					}
+				}
+				if step == test.loseResponse {
+					if !lost {
+						lost, lostBody = true, append([]byte(nil), body...)
+						conn, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							t.Error("inject committed response loss")
+							return
+						}
+						_ = conn.Close()
+						return
+					}
+					if string(lostBody) != string(body) {
+						t.Error("same-lease retry rewrote the committed report")
+					}
+				}
+				writeV2PanelJSON(t, w, http.StatusOK, nil)
+			}))
+			defer server.Close()
+			client := NewV2PanelClient(PanelClient{BaseURL: server.URL, Token: "runtime-token", HTTP: server.Client()})
+			client.Now = func() time.Time { return now }
+			request := v2PanelClaimRequest("")
+			if test.recovery {
+				request.ActiveJobID = originalJob.ID
+			}
+			job, _, err := client.ClaimHost(context.Background(), request)
+			if err != nil {
+				t.Fatal("claim transition fixture")
+			}
+			executor := &agentPortTransitionExecutor{observedAt: observedAt, invalid: test.invalidResult}
+			if test.ambiguous {
+				executor.portApplyErr = io.ErrUnexpectedEOF
+			}
+			agent := &HostPullAgent{Bootstrap: Config{NodeID: job.AgentServiceID}, Journal: journal, StateDir: dir, PortExecutor: executor,
+				NewSessionID: func() (string, error) { return originalPlan.SessionID, nil }}
+			probes := 0
+			agent.ObserveTargets = func(_ context.Context, candidate HostAgentPolicy) ([]HostTargetObservation, error) {
+				probes++
+				ref := originalPlan.Rollback
+				if !portAgentPolicyMatchesSnapshot(candidate, job.TargetID, ref) {
+					return nil, io.ErrUnexpectedEOF
+				}
+				return []HostTargetObservation{{ServiceID: job.TargetID, Availability: TargetAvailabilityAvailable,
+					PolicyRevision: ref.ExecutorPolicyRevision, PolicySHA256: ref.ExecutorPolicySHA256, ConfigRevision: ref.ConfigRevision, ConfigSHA256: ref.ConfigSHA256,
+					PortContractVersion: 2, PolicyTransitionVersion: 1, SourcePolicyRevision: ref.SourcePolicyRevision, ProjectionRevision: ref.ProjectionRevision,
+					EndpointRevision: ref.AppliedEndpointRevision, AgentUID: 1201, AgentGID: 1202, ObservedAt: observedAt,
+					ReportedPort: ref.LocalListenPort, ReportedServiceType: job.EffectiveType(), ReportedDeploymentMode: job.DeploymentMode}}, nil
+			}
+			binding := HostAgentBinding{ExecutionHostID: job.HostID, OwnershipEpoch: job.OwnershipEpoch, TransportMode: HostTransportPullV2}
+			err = agent.processPortReconfigurationJob(context.Background(), client, binding, policy, *job)
+			if test.invalidResult {
+				if err == nil || grants != 1 || executor.v2PortApplyCalls != 1 || probes != 0 || rolling != 0 || terminals != 0 || journal.Active().PortResult != nil {
+					t.Fatal("invalid root result advanced rollback reporting")
+				}
+				return
+			}
+			if test.loseResponse != "" {
+				if err == nil || !lost || journal.Active() == nil || len(journal.Pending()) != 1 {
+					t.Fatal("committed response loss did not retain the durable cursor")
+				}
+				payload, readErr := os.ReadFile(journal.path)
+				var persisted journalData
+				if readErr != nil || json.Unmarshal(payload, &persisted) != nil || persisted.ActiveJob == nil || len(persisted.Pending) != 1 {
+					t.Fatal("response loss was not persisted")
+				}
+				if test.loseResponse == "rolled_back" {
+					if persisted.ActiveJob.PortResult == nil || !contracts.EqualSystemUpdatePortResults(*expected, *persisted.ActiveJob.PortResult) {
+						t.Fatal("terminal response loss changed the durable first result")
+					}
+				} else if persisted.ActiveJob.PortResult != nil {
+					t.Fatal("rollback progress filled the accepted result slot")
+				}
+				rootCalls := executor.v2PortApplyCalls + executor.v2PortReconCalls
+				if err := agent.flushExecutionReports(context.Background(), client); err != nil || executor.v2PortApplyCalls+executor.v2PortReconCalls != rootCalls {
+					t.Fatal("report retry failed or repeated a root invocation")
+				}
+				if test.loseResponse == "rolling_back" {
+					journal, err = OpenJournal(dir)
+					if err != nil {
+						t.Fatal("reopen acknowledged rollback progress")
+					}
+					agent.Journal = journal
+					request.ActiveJobID = job.ID
+					job, _, err = client.ClaimHost(context.Background(), request)
+					candidate, candidateErr := journal.portPolicyCandidate("")
+					if err != nil || candidateErr != nil || !job.RecoveryRequired {
+						t.Fatal("progress response loss did not obtain same-job recovery")
+					}
+					err = agent.processPortReconfigurationJob(context.Background(), client, binding, *candidate, *job)
+				} else {
+					err = nil
+				}
+			}
+			if err != nil || cpStatus != "rolled_back" || cpProgress != 100 || acceptances != 1 || journal.Active() != nil || len(journal.Pending()) != 0 {
+				t.Fatal("verified rollback did not settle through legal monotonic reports")
+			}
+			wantRolling, wantClaims, wantRoot, wantTerminals := 1, 1, 1, 1
+			if test.recovery || test.ambiguous {
+				wantRolling = 0
+			}
+			if test.ambiguous {
+				wantRoot = 2
+			}
+			if test.loseResponse == "rolling_back" {
+				wantRolling, wantClaims, wantRoot = 2, 2, 2
+			}
+			if test.loseResponse == "rolled_back" {
+				wantTerminals = 2
+			}
+			if rolling != wantRolling || claims != wantClaims || grants != wantRoot || terminals != wantTerminals || executor.v2PortApplyCalls+executor.v2PortReconCalls != wantRoot ||
+				test.recovery && executor.v2PortApplyCalls != 0 || !test.recovery && executor.v2PortApplyCalls != 1 {
+				t.Fatal("rollback reporting changed claim or root execution counts")
 			}
 		})
 	}
