@@ -53,6 +53,7 @@ type stPortChainResponse struct {
 	FailureStage             string                                 `json:"failure_stage,omitempty"`
 	FailureClass             string                                 `json:"failure_class,omitempty"`
 	FailureHTTPStatus        int                                    `json:"failure_http_status,omitempty"`
+	FailureCode              string                                 `json:"failure_code,omitempty"`
 	FirstRootFailure         string                                 `json:"first_root_failure,omitempty"`
 	LastRootFailure          string                                 `json:"last_root_failure,omitempty"`
 	ActivePlanPresent        bool                                   `json:"active_plan_present,omitempty"`
@@ -169,18 +170,22 @@ func (p *stPortChainProcess) call(t *testing.T, command stPortChainCommand) stPo
 			}
 			stage := "none"
 			switch response.FailureStage {
-			case "register", "policy", "recovery_policy", "heartbeat", "execute", "flush":
+			case "register", "policy", "recovery_policy", "heartbeat", "execute", "flush", "create":
 				stage = response.FailureStage
 			}
 			status := response.FailureHTTPStatus
 			if status < 100 || status > 599 {
 				status = 0
 			}
+			wireCode := stPortChainSafeWireCode(response.FailureCode)
+			if wireCode == "" {
+				wireCode = "unknown"
+			}
 			calls := response.RootCalls
 			if calls < 0 || calls > 1000000 {
 				calls = -1
 			}
-			t.Logf("ST-PORT process failure: code=%s stage=%s class=%s http_status=%d root_calls=%d first_root=%s last_root=%s active_job=%t active_plan=%t active_result=%t", code, stage, stPortChainSafeFailureClass(response.FailureClass), status, calls, stPortChainSafeFailureClass(response.FirstRootFailure), stPortChainSafeFailureClass(response.LastRootFailure), response.ActiveJobID != "", response.ActivePlanPresent, response.ActiveResult != nil)
+			t.Logf("ST-PORT process failure: code=%s stage=%s class=%s http_status=%d http_code=%s root_calls=%d first_root=%s last_root=%s active_job=%t active_plan=%t active_result=%t", code, stage, stPortChainSafeFailureClass(response.FailureClass), status, wireCode, calls, stPortChainSafeFailureClass(response.FirstRootFailure), stPortChainSafeFailureClass(response.LastRootFailure), response.ActiveJobID != "", response.ActivePlanPresent, response.ActiveResult != nil)
 			for i, failure := range response.PanelFailures {
 				if i >= stPortChainPanelFailureLimit {
 					break

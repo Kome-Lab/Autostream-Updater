@@ -190,7 +190,22 @@ func stPortChainSafeWireCode(code string) string {
 	// Literal errors at the real CP v2 lease, mutation and ownership boundaries.
 	switch code {
 	case "updater_v2_lease_binding_mismatch", "updater_v2_mutation_binding_mismatch",
-		"system_update_ownership_conflict", "system_update_endpoint_revision_conflict":
+		"system_update_ownership_conflict", "system_update_endpoint_revision_conflict",
+		"invalid_system_update_request",
+		"system_update_target_not_found",
+		"idempotency_key_conflict",
+		"system_update_target_active",
+		"service_port_reserved",
+		"system_update_port_store_mismatch",
+		"system_update_port_reconfigure_not_ready",
+		"create_system_update_failed",
+		"system_update_advertised_only_unsupported",
+		"system_update_port_contract_required",
+		"system_update_port_policy_snapshot_unavailable",
+		"system_update_port_snapshot_stale",
+		"system_update_port_idempotency_conflict",
+		"system_update_port_recovery_required",
+		"system_update_host_busy":
 		return code
 	default:
 		return ""
@@ -285,6 +300,8 @@ func TestSTPortAgentDiagnosticsPreserveWireCodeWithoutChangingProductionError(t 
 		partial             bool
 	}{
 		{"known_cp_boundary", `{"code":"updater_v2_lease_binding_mismatch"}`, "updater_v2_lease_binding_mismatch", false},
+		{"create_not_ready", `{"code":"system_update_port_reconfigure_not_ready"}`, "system_update_port_reconfigure_not_ready", false},
+		{"create_snapshot_stale", `{"code":"system_update_port_snapshot_stale"}`, "system_update_port_snapshot_stale", false},
 		{"unknown_code", `{"code":"untrusted_marker"}`, "", false},
 		{"invalid_body", `{"code":`, "", false},
 		{"oversize_body", strings.Repeat(" ", (1<<20)+1), "", false},

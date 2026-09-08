@@ -23,6 +23,10 @@ func TestSTPortAgentTerminalAcknowledgementLossResendsIdenticalResult(t *testing
 		for _, kind := range []contracts.SystemUpdatePortReconfigurationResult{contracts.SystemUpdatePortReconfigurationApplied, contracts.SystemUpdatePortReconfigurationUnchanged, contracts.SystemUpdatePortReconfigurationRolledBack} {
 			t.Run(string(mode)+"/"+string(kind), func(t *testing.T) {
 				lease, job, policy, plan := agentPortV2Fixture(t, mode, kind == contracts.SystemUpdatePortReconfigurationUnchanged)
+				expectedGrants := 1
+				if kind == contracts.SystemUpdatePortReconfigurationUnchanged {
+					expectedGrants = 0
+				}
 				dir := t.TempDir()
 				journal, err := OpenJournal(dir)
 				if err != nil {
@@ -131,7 +135,7 @@ func TestSTPortAgentTerminalAcknowledgementLossResendsIdenticalResult(t *testing
 				if err := agent.executeOnce(context.Background(), binding, policy); err == nil || IsPermanentReportError(err) {
 					t.Fatal("lost HTTP 200 did not leave a retryable transport failure")
 				}
-				if claims != 1 || grants != 1 || receipts != 1 || acceptances != 1 || executor.v2PortReconCalls != 1 {
+				if claims != 1 || grants != expectedGrants || receipts != 1 || acceptances != 1 || executor.v2PortReconCalls != 1 {
 					t.Fatal("initial recovery did not reach exactly one accepted terminal")
 				}
 				// This is a same-process transport retry. OpenJournal models a
@@ -159,7 +163,7 @@ func TestSTPortAgentTerminalAcknowledgementLossResendsIdenticalResult(t *testing
 				if err := agent.flushExecutionReports(context.Background(), panel); err != nil {
 					t.Fatal(err)
 				}
-				if claims != 1 || grants != 1 || receipts != 2 || acceptances != 1 || executor.v2PortReconCalls != 1 ||
+				if claims != 1 || grants != expectedGrants || receipts != 2 || acceptances != 1 || executor.v2PortReconCalls != 1 ||
 					executor.v2PortApplyCalls != 0 || executor.portReconCalls != 0 || executor.portApplyCalls != 0 || executor.applyCalls != 0 || executor.v2ApplyCalls != 0 {
 					t.Fatal("terminal resend acquired a new job or repeated a root execution")
 				}

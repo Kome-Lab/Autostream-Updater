@@ -35,6 +35,10 @@ func TestSTPortAgentRestartBeforeProjectionAdoptionReachesSameJobClaim(t *testin
 	for _, test := range fixtures {
 		t.Run(test.name, func(t *testing.T) {
 			lease, job, policy, plan := agentPortV2Fixture(t, test.mode, test.kind == contracts.SystemUpdatePortReconfigurationUnchanged)
+			expectedIssues := 1
+			if test.kind == contracts.SystemUpdatePortReconfigurationUnchanged {
+				expectedIssues = 0
+			}
 			if err := policy.validateForService(job.AgentServiceID, 0); err != nil {
 				t.Fatal("fixture must use the valid production policy union")
 			}
@@ -148,7 +152,7 @@ func TestSTPortAgentRestartBeforeProjectionAdoptionReachesSameJobClaim(t *testin
 			agent.ObserveTargets = NewLocalExecutorTargetObserver(agentPortProbeStub{probe})
 			err = agent.executeOnce(context.Background(), binding, *cpTarget)
 			if test.negative == "" {
-				if err != nil || claims != 1 || issues != 1 || terminals != 1 || executor.v2PortReconCalls != 1 || journal.Active() != nil {
+				if err != nil || claims != 1 || issues != expectedIssues || terminals != 1 || executor.v2PortReconCalls != 1 || journal.Active() != nil {
 					t.Fatalf("same-job recovery did not complete: %v", err)
 				}
 				if executor.portFences[0] != (LocalExecutorMutationFence{SourcePolicyRevision: plan.Before.SourcePolicyRevision, OwnershipPolicyRevision: plan.Before.ProjectionRevision,
