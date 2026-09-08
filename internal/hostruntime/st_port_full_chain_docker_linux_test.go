@@ -387,7 +387,7 @@ func (f *stPortChainDockerFixture) observe(t *testing.T, h *stPortChainHarness, 
 			t.Fatal("initial Docker process confinement differs from the fixed fixture")
 		}
 		f.nonPort = &nonPort
-	} else if !reflect.DeepEqual(*f.nonPort, nonPort) {
+	} else if !stPortChainDockerNonPortEquivalent(*f.nonPort, nonPort) {
 		t.Logf("ST-PORT Docker non-port equality: %v", stPortChainDockerNonPortEquality(*f.nonPort, nonPort))
 		if !reflect.DeepEqual(f.nonPort.Env, nonPort.Env) {
 			t.Logf("ST-PORT Docker Env comparison: %v", stPortChainDockerEnvComparison(f.nonPort.Env, nonPort.Env))
@@ -420,8 +420,50 @@ type stPortChainDockerNonPort struct {
 	PidsLimit                                          int64
 }
 
+// Env order is immaterial only for valid, unique names with exact values.
+// The copies retain exact comparison of every other field without changing
+// either input or the environment supplied to the actual container.
+func stPortChainDockerNonPortEquivalent(before, after stPortChainDockerNonPort) bool {
+	if !stPortChainDockerEnvEquivalent(before.Env, after.Env) {
+		return false
+	}
+	before.Env, after.Env = nil, nil
+	return reflect.DeepEqual(before, after)
+}
+
+func stPortChainDockerEnvEquivalent(before, after []string) bool {
+	if (before == nil) != (after == nil) || len(before) != len(after) {
+		return false
+	}
+	parse := func(entries []string) (map[string]string, bool) {
+		values := make(map[string]string, len(entries))
+		for _, entry := range entries {
+			key, value, found := strings.Cut(entry, "=")
+			if !found || key == "" || strings.ContainsRune(entry, '\x00') {
+				return nil, false
+			}
+			if _, duplicate := values[key]; duplicate {
+				return nil, false
+			}
+			values[key] = value
+		}
+		return values, true
+	}
+	left, leftOK := parse(before)
+	right, rightOK := parse(after)
+	if !leftOK || !rightOK {
+		return false
+	}
+	for key, value := range left {
+		if other, present := right[key]; !present || value != other {
+			return false
+		}
+	}
+	return true
+}
+
 // Only fixed field names and equality booleans may enter the public test log.
-// DeepEqual deliberately retains sequence ordering and nil/empty distinctions.
+// Raw diagnostics retain sequence ordering and nil/empty distinctions.
 func stPortChainDockerNonPortEquality(before, after stPortChainDockerNonPort) map[string]bool {
 	return map[string]bool{
 		"Image": before.Image == after.Image, "User": before.User == after.User,
@@ -522,6 +564,112 @@ func TestSTPortDockerEnvDiagnosticSeparatesContentOrderAndRepresentation(t *test
 			}
 		})
 	}
+}
+
+func TestSTPortDockerNonPortSemanticEnvComparison(t *testing.T) {
+	base := []string{"A=1", "B=two=3"}
+	clone := func(env []string) []string {
+		if env == nil {
+			return nil
+		}
+		return append(make([]string, 0, len(env)), env...)
+	}
+	for _, test := range []struct {
+		name          string
+		before, after []string
+		want          bool
+	}{
+		{"same", base, clone(base), true},
+		{"permutation", base, []string{"B=two=3", "A=1"}, true},
+		{"value_equals_preserved", []string{"A=one=two", "B==three"}, []string{"B==three", "A=one=two"}, true},
+		{"empty_values", []string{"A=", "B="}, []string{"B=", "A="}, true},
+		{"both_nil", nil, nil, true},
+		{"both_empty", []string{}, []string{}, true},
+		{"value_changed", base, []string{"A=changed", "B=two=3"}, false},
+		{"key_added", base, []string{"A=1", "B=two=3", "C=4"}, false},
+		{"key_missing", base, []string{"A=1"}, false},
+		{"empty_value_key_changed", []string{"A="}, []string{"B="}, false},
+		{"duplicate_same_value", base, []string{"A=1", "A=1"}, false},
+		{"duplicate_different_value", base, []string{"A=1", "A=2"}, false},
+		{"duplicate_on_both_sides", []string{"A=1", "A=1"}, []string{"A=1", "A=1"}, false},
+		{"missing_separator", base, []string{"A", "B=two=3"}, false},
+		{"missing_separator_on_both_sides", []string{"A"}, []string{"A"}, false},
+		{"empty_key", base, []string{"=1", "B=two=3"}, false},
+		{"empty_key_on_both_sides", []string{"=1"}, []string{"=1"}, false},
+		{"nul_in_key", base, []string{"A\x00=1", "B=two=3"}, false},
+		{"nul_in_value", base, []string{"A=1\x00", "B=two=3"}, false},
+		{"nul_on_both_sides", []string{"A=1\x00"}, []string{"A=1\x00"}, false},
+		{"nil_empty", nil, []string{}, false},
+		{"key_case", base, []string{"a=1", "B=two=3"}, false},
+		{"value_case", base, []string{"A=1", "B=Two=3"}, false},
+		{"key_whitespace", base, []string{"A =1", "B=two=3"}, false},
+		{"value_leading_whitespace", base, []string{"A= 1", "B=two=3"}, false},
+		{"value_trailing_whitespace", base, []string{"A=1 ", "B=two=3"}, false},
+		{"value_equals_changed", []string{"A=one=two"}, []string{"A=one=three"}, false},
+		{"value_equals_removed", []string{"A=one=two"}, []string{"A=one"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := stPortChainDockerNonPort{Image: "fixture-image", Env: test.before}
+			after := stPortChainDockerNonPort{Image: "fixture-image", Env: test.after}
+			beforeEnv, afterEnv := clone(before.Env), clone(after.Env)
+			if stPortChainDockerNonPortEquivalent(before, after) != test.want ||
+				stPortChainDockerNonPortEquivalent(after, before) != test.want {
+				t.Fatal("semantic comparison did not enforce the exact environment mapping")
+			}
+			if !reflect.DeepEqual(before.Env, beforeEnv) || !reflect.DeepEqual(after.Env, afterEnv) {
+				t.Fatal("semantic comparison mutated an input environment")
+			}
+		})
+	}
+}
+
+func TestSTPortDockerNonPortSemanticComparisonRetainsOtherFields(t *testing.T) {
+	before := stPortChainDockerNonPort{Image: "fixture-image", User: "65532:65532", NetworkMode: "fixture-network",
+		Env: []string{"FIRST=1", "SECOND=2"}, Entrypoint: []string{"fixture-entry", "--mode"}, Cmd: []string{"fixture-command", "--serve"},
+		CapDrop: []string{"ALL", "NET_RAW"}, CapAdd: []string{"CHOWN", "SETUID"}, SecurityOpt: []string{"no-new-privileges:true", "seccomp:default"}, ReadonlyRootfs: true, PidsLimit: 64}
+	for _, test := range []struct {
+		name   string
+		mutate func(*stPortChainDockerNonPort)
+	}{
+		{"image", func(v *stPortChainDockerNonPort) { v.Image = "changed" }},
+		{"user", func(v *stPortChainDockerNonPort) { v.User = "changed" }},
+		{"network", func(v *stPortChainDockerNonPort) { v.NetworkMode = "changed" }},
+		{"entrypoint", func(v *stPortChainDockerNonPort) { v.Entrypoint = nil }},
+		{"command", func(v *stPortChainDockerNonPort) { v.Cmd = nil }},
+		{"cap_drop", func(v *stPortChainDockerNonPort) { v.CapDrop = nil }},
+		{"cap_add", func(v *stPortChainDockerNonPort) { v.CapAdd = nil }},
+		{"security", func(v *stPortChainDockerNonPort) { v.SecurityOpt = nil }},
+		{"readonly", func(v *stPortChainDockerNonPort) { v.ReadonlyRootfs = false }},
+		{"privileged", func(v *stPortChainDockerNonPort) { v.Privileged = true }},
+		{"pids", func(v *stPortChainDockerNonPort) { v.PidsLimit++ }},
+		{"entrypoint_order", func(v *stPortChainDockerNonPort) { v.Entrypoint = []string{"--mode", "fixture-entry"} }},
+		{"command_order", func(v *stPortChainDockerNonPort) { v.Cmd = []string{"--serve", "fixture-command"} }},
+		{"cap_drop_order", func(v *stPortChainDockerNonPort) { v.CapDrop = []string{"NET_RAW", "ALL"} }},
+		{"cap_add_order", func(v *stPortChainDockerNonPort) { v.CapAdd = []string{"SETUID", "CHOWN"} }},
+		{"security_order", func(v *stPortChainDockerNonPort) {
+			v.SecurityOpt = []string{"seccomp:default", "no-new-privileges:true"}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			after := before
+			after.Env = []string{"SECOND=2", "FIRST=1"}
+			if !stPortChainDockerNonPortEquivalent(before, after) {
+				t.Fatal("valid environment permutation was rejected before the field mutation")
+			}
+			test.mutate(&after)
+			if stPortChainDockerNonPortEquivalent(before, after) || stPortChainDockerNonPortEquivalent(after, before) {
+				t.Fatal("semantic comparison accepted a changed non-environment field")
+			}
+		})
+	}
+	t.Run("non_environment_nil_empty", func(t *testing.T) {
+		before.CapAdd = nil
+		after := before
+		after.CapAdd = []string{}
+		if stPortChainDockerNonPortEquivalent(before, after) || stPortChainDockerNonPortEquivalent(after, before) {
+			t.Fatal("semantic comparison lost a non-environment nil/empty distinction")
+		}
+	})
 }
 
 func TestSTPortDockerNonPortDiagnosticRetainsExactComparison(t *testing.T) {
