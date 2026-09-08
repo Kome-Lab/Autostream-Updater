@@ -207,10 +207,19 @@ func (r *linuxDockerPortRuntime) Observe(
 	); err != nil {
 		return dockerPortObservation{}, err
 	}
+	verifier := linuxLocalTargetVerifier{runner: r.runner}
+	before, err := verifier.observeDocker(ctx, target, runtimeTarget)
+	if err != nil || before.CurrentVersion != baseline.Baseline.SourceVersion || before.dockerIdentity.containerID != fullContainerID {
+		return dockerPortObservation{}, errors.New("Docker port listener identity verification failed")
+	}
 	if err := verifyLocalExecutorHTTP(
 		ctx, target, baseline.Baseline.SourceVersion, r.httpClient,
 	); err != nil {
 		return dockerPortObservation{}, errors.New("Docker port endpoint verification failed")
+	}
+	after, err := verifier.observeDocker(ctx, target, runtimeTarget)
+	if err != nil || !sameLocalProcessObservation(before, after) {
+		return dockerPortObservation{}, errors.New("Docker port listener identity changed during endpoint verification")
 	}
 	observation := dockerPortObservation{
 		MappingEnv:          checkpoint,

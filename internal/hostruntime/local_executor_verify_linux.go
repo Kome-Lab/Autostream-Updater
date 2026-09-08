@@ -206,6 +206,9 @@ func (v linuxLocalTargetVerifier) observeDocker(
 		return LocalProcessObservation{}, errors.New("managed Docker version is unavailable")
 	}
 	phase = localFailureDockerListener
+	if target.Docker != nil && target.Docker.PortEnvFile != "" {
+		return v.observeDockerPortListener(ctx, target, runtimeTarget, containerID, mainPID, controlGroup, version)
+	}
 	listenerPID, listenerGroup, err := findLocalExecutorListenerPID(target.LocalListen, controlGroup)
 	if err != nil {
 		return LocalProcessObservation{}, err
@@ -274,9 +277,24 @@ func localExecutorListenerInodes(endpoint LocalExecutorEndpoint) (map[string]str
 		return nil, err
 	}
 	defer file.Close()
-	reader := bufio.NewReader(io.LimitReader(file, localExecutorMaxProcNetBytes+1))
+	inodes, err := localExecutorListenerInodesFromReader(file, address, endpoint.Port, false)
+	if err == nil && len(inodes) == 0 {
+		return nil, errors.New("expected local listener is unavailable")
+	}
+	return inodes, err
+}
+
+func localExecutorListenerInodesFromReader(input io.Reader, address netip.Addr, port int, strict bool) (map[string]struct{}, error) {
+	expected := procNetAddress(address)
+	return localExecutorListenerInodesMatchingReader(input, address, port, strict, func(host string) bool {
+		return strings.EqualFold(host, expected)
+	})
+}
+
+func localExecutorListenerInodesMatchingReader(input io.Reader, address netip.Addr, port int, strict bool, matchesAddress func(string) bool) (map[string]struct{}, error) {
+	reader := bufio.NewReader(io.LimitReader(input, localExecutorMaxProcNetBytes+1))
 	expectedAddress := procNetAddress(address)
-	expectedPort := fmt.Sprintf("%04X", endpoint.Port)
+	expectedPort := fmt.Sprintf("%04X", port)
 	inodes := make(map[string]struct{})
 	total := 0
 	for {
@@ -286,11 +304,27 @@ func localExecutorListenerInodes(endpoint LocalExecutorEndpoint) (map[string]str
 			return nil, errors.New("proc network table exceeds the size limit")
 		}
 		fields := strings.Fields(line)
+		if strict && len(fields) > 0 && fields[0] != "sl" {
+			if len(fields) < 10 {
+				return nil, errors.New("proc network table has an incomplete socket record")
+			}
+			host, socketPort, ok := strings.Cut(fields[1], ":")
+			_, hostErr := hex.DecodeString(host)
+			_, portErr := strconv.ParseUint(socketPort, 16, 16)
+			_, stateErr := strconv.ParseUint(fields[3], 16, 8)
+			_, inodeErr := strconv.ParseUint(fields[9], 10, 64)
+			if !ok || len(host) != len(expectedAddress) || hostErr != nil || len(socketPort) != 4 || portErr != nil ||
+				len(fields[3]) != 2 || stateErr != nil || inodeErr != nil {
+				return nil, errors.New("proc network table has an invalid socket record")
+			}
+		}
 		if len(fields) >= 10 && fields[3] == "0A" {
 			host, port, ok := strings.Cut(fields[1], ":")
-			if ok && strings.EqualFold(host, expectedAddress) && strings.EqualFold(port, expectedPort) {
-				if _, err := strconv.ParseUint(fields[9], 10, 64); err == nil {
+			if ok && strings.EqualFold(port, expectedPort) && matchesAddress(host) {
+				if inode, err := strconv.ParseUint(fields[9], 10, 64); err == nil && (!strict || inode != 0) {
 					inodes[fields[9]] = struct{}{}
+				} else if strict {
+					return nil, errors.New("proc network listener identity is unavailable")
 				}
 			}
 		}
@@ -300,9 +334,6 @@ func localExecutorListenerInodes(endpoint LocalExecutorEndpoint) (map[string]str
 		if readErr != nil {
 			return nil, readErr
 		}
-	}
-	if len(inodes) == 0 {
-		return nil, errors.New("expected local listener is unavailable")
 	}
 	return inodes, nil
 }

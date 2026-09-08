@@ -1,6 +1,7 @@
 package hostruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -14,6 +15,171 @@ import (
 
 	contracts "github.com/example/autostream-contracts/pkg/contracts"
 )
+
+type agentPortNoOpExecutor struct {
+	hostPullExecutionTestExecutor
+	now, observedAt time.Time
+	invalid         bool
+}
+
+func (e *agentPortNoOpExecutor) PortReconfigureV2(_ context.Context, plan SystemdPortReconfigurePlan, fence LocalExecutorMutationFence, grant V2MutationGrant) (SystemdPortReconfigureResult, error) {
+	e.v2PortApplyCalls++
+	return e.observe(plan, fence, grant, "port_reconfigure")
+}
+
+func (e *agentPortNoOpExecutor) PortReconfigureReconcileV2(_ context.Context, plan SystemdPortReconfigurePlan, fence LocalExecutorMutationFence, grant V2MutationGrant) (SystemdPortReconfigureResult, error) {
+	e.v2PortReconCalls++
+	return e.observe(plan, fence, grant, "port_reconfigure_reconcile")
+}
+
+func (e *agentPortNoOpExecutor) observe(plan SystemdPortReconfigurePlan, fence LocalExecutorMutationFence, grant V2MutationGrant, operation string) (SystemdPortReconfigureResult, error) {
+	if !grant.Token.Empty() || !contracts.SystemUpdatePortPlanIsNoOp(plan.SharedPortPlan()) ||
+		validateV2PortMutationGrantBinding(e.now, grant.Binding, operation, plan, fence, nil, nil) != nil {
+		return SystemdPortReconfigureResult{}, io.ErrUnexpectedEOF
+	}
+	request := LocalExecutorRequest{Version: 2, Operation: operation, ServiceID: plan.TargetID, PortPlan: &plan,
+		SourcePolicyRevision: fence.SourcePolicyRevision, OwnershipEpoch: fence.OwnershipEpoch,
+		OwnershipPolicyRevision: fence.OwnershipPolicyRevision, ExecutorPolicyRevision: fence.ExecutorPolicyRevision,
+		MutationGrant: grant.Token, MutationGrantV2Binding: &grant.Binding}
+	var wire bytes.Buffer
+	if EncodeLocalExecutorRequest(&wire, request) != nil {
+		return SystemdPortReconfigureResult{}, io.ErrUnexpectedEOF
+	}
+	decoded, err := DecodeLocalExecutorRequest(&wire)
+	if err != nil || !decoded.MutationGrant.Empty() || decoded.MutationGrantV2Binding == nil {
+		return SystemdPortReconfigureResult{}, io.ErrUnexpectedEOF
+	}
+	result := agentPortObservedResult(*decoded.PortPlan, contracts.SystemUpdatePortReconfigurationUnchanged, e.observedAt, false)
+	if e.invalid {
+		result.PortResult.Observation.PolicyDiskVerified = false
+	}
+	return result, nil
+}
+
+// Exercise the real Agent, adapter, codec, and result projection with a CP
+// fixture that refuses every mutation-grant HTTP request for its no-op job.
+func TestSTPortAgentNoOpOmitsGrantHTTPAndRequiresFreshProof(t *testing.T) {
+	for _, test := range []struct {
+		name                       string
+		mode                       contracts.SystemUpdatePortMode
+		recovery, changed, invalid bool
+		staleAgent                 bool
+	}{
+		{name: "local_only", mode: contracts.SystemUpdatePortModeLocalOnly},
+		{name: "combined", mode: contracts.SystemUpdatePortModeLocalAndAdvertised},
+		{name: "fresh_recovery_lease", recovery: true},
+		{name: "changed_plan_requires_grant", changed: true},
+		{name: "invalid_root_proof", invalid: true},
+		{name: "stale_agent_projection", staleAgent: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mode := test.mode
+			if mode == "" {
+				mode = contracts.SystemUpdatePortModeLocalOnly
+			}
+			lease, originalJob, policy, originalPlan := agentPortV2Fixture(t, mode, !test.changed)
+			observedAt := lease.LeaseExpiresAt.Add(-4 * time.Minute)
+			now := observedAt.Add(time.Second)
+			dir := t.TempDir()
+			journal, err := OpenJournal(dir)
+			if err != nil {
+				t.Fatal("open no-op journal")
+			}
+			if test.recovery {
+				for _, err := range []error{journal.SetActive(&originalJob), journal.SetActivePortPlan(originalPlan), journal.StagePortPolicy(policy, originalJob, originalPlan)} {
+					if err != nil {
+						t.Fatal("stage no-op recovery")
+					}
+				}
+				journal, err = OpenJournal(dir)
+				if err != nil {
+					t.Fatal("reopen no-op recovery")
+				}
+				lease.LeaseGeneration++
+			}
+			grants, terminals := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/services/update-jobs/claim" {
+					writeV2PanelJSON(t, w, http.StatusOK, lease)
+					return
+				}
+				if strings.Contains(r.URL.Path, "mutation-grants") {
+					grants++
+					writeV2PanelJSON(t, w, http.StatusConflict, map[string]string{"code": "system_update_mutation_grant_state_invalid"})
+					return
+				}
+				payload, err := io.ReadAll(r.Body)
+				var result contracts.UpdaterResultEnvelope
+				if err != nil || json.Unmarshal(payload, &result) != nil {
+					t.Error("read no-op report")
+				} else if result.PortReconfigure != nil {
+					terminals++
+					expected := agentPortObservedResult(originalPlan, contracts.SystemUpdatePortReconfigurationUnchanged, observedAt, true)
+					if contracts.ValidateUpdaterResultEnvelope(lease, payload) != nil ||
+						!contracts.EqualSystemUpdatePortResults(*expected.PortResult, *result.PortReconfigure) || result.AppliedRevision != originalPlan.Before.ConfigRevision {
+						t.Error("no-op terminal lacks exact fresh B proof")
+					}
+				} else if contracts.ValidateUpdaterProgressEnvelope(lease, payload) != nil && !test.changed {
+					t.Error("invalid no-op progress")
+				}
+				writeV2PanelJSON(t, w, http.StatusOK, nil)
+			}))
+			defer server.Close()
+			client := NewV2PanelClient(PanelClient{BaseURL: server.URL, Token: "runtime-token", HTTP: server.Client()})
+			client.Now = func() time.Time { return now }
+			claim := v2PanelClaimRequest("")
+			if test.recovery {
+				claim.ActiveJobID = originalJob.ID
+			}
+			job, _, err := client.ClaimHost(context.Background(), claim)
+			if err != nil {
+				t.Fatal("claim no-op fixture")
+			}
+			executor := &agentPortNoOpExecutor{now: now, observedAt: observedAt, invalid: test.invalid}
+			agent := &HostPullAgent{Bootstrap: Config{NodeID: job.AgentServiceID}, StateDir: dir, Journal: journal, PortExecutor: executor,
+				NewSessionID: func() (string, error) { return originalPlan.SessionID, nil }}
+			probes := 0
+			agent.ObserveTargets = func(_ context.Context, candidate HostAgentPolicy) ([]HostTargetObservation, error) {
+				probes++
+				ref := originalPlan.Before
+				if test.staleAgent || !portAgentPolicyMatchesSnapshot(candidate, job.TargetID, ref) {
+					return nil, io.ErrUnexpectedEOF
+				}
+				return []HostTargetObservation{{ServiceID: job.TargetID, Availability: TargetAvailabilityAvailable,
+					PolicyRevision: ref.ExecutorPolicyRevision, PolicySHA256: ref.ExecutorPolicySHA256, ConfigRevision: ref.ConfigRevision, ConfigSHA256: ref.ConfigSHA256,
+					PortContractVersion: 2, PolicyTransitionVersion: 1, SourcePolicyRevision: ref.SourcePolicyRevision, ProjectionRevision: ref.ProjectionRevision,
+					EndpointRevision: ref.AppliedEndpointRevision, AgentUID: 1201, AgentGID: 1202, ObservedAt: observedAt,
+					ReportedPort: ref.LocalListenPort, ReportedServiceType: job.EffectiveType(), ReportedDeploymentMode: job.DeploymentMode}}, nil
+			}
+			binding := HostAgentBinding{ExecutionHostID: job.HostID, OwnershipEpoch: job.OwnershipEpoch, TransportMode: HostTransportPullV2}
+			beforeGrants, beforeTerminals, beforeProbes := grants, terminals, probes
+			beforeApply, beforeReconcile := executor.v2PortApplyCalls, executor.v2PortReconCalls
+			beforeLegacyApply, beforeLegacyReconcile := executor.portApplyCalls, executor.portReconCalls
+			err = agent.processPortReconfigurationJob(context.Background(), client, binding, policy, *job)
+			rootCalls := executor.v2PortApplyCalls - beforeApply + executor.v2PortReconCalls - beforeReconcile
+			grantCalls, terminalCalls, probeCalls := grants-beforeGrants, terminals-beforeTerminals, probes-beforeProbes
+			if test.changed {
+				if err == nil || grantCalls != 2 || rootCalls != 0 || terminalCalls != 0 {
+					t.Fatal("changed plan bypassed the CP mutation grant")
+				}
+				return
+			}
+			if grantCalls != 0 || rootCalls != 1 || executor.portApplyCalls-beforeLegacyApply != 0 || executor.portReconCalls-beforeLegacyReconcile != 0 ||
+				(test.recovery && executor.v2PortReconCalls-beforeReconcile != 1) {
+				t.Fatal("no-op issued a grant, lost its v2 binding, or invoked root twice")
+			}
+			if test.invalid || test.staleAgent {
+				if err == nil || terminalCalls != 0 || journal.Active() == nil || journal.Active().PortResult != nil {
+					t.Fatal("unverified no-op became accepted")
+				}
+				return
+			}
+			if err != nil || terminalCalls != 1 || probeCalls != 1 || journal.Active() != nil || len(journal.Pending()) != 0 {
+				t.Fatal("fresh no-op proof did not complete through the public result path")
+			}
+		})
+	}
+}
 
 func agentPortV2Fixture(t *testing.T, mode contracts.SystemUpdatePortMode, noOp bool) (contracts.UpdaterLeaseEnvelope, UpdateJob, HostAgentPolicy, SystemdPortReconfigurePlan) {
 	t.Helper()

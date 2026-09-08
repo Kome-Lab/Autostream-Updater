@@ -69,6 +69,7 @@ type stPortTestRuntime struct {
 	live                                      []byte
 	events                                    []string
 	consumeDelay                              time.Duration
+	verifyCalls                               int
 	consumeError                              error
 	consumeHook                               func()
 	failForwardRestart, failRollbackRestart   bool
@@ -119,6 +120,7 @@ func (r *stPortTestRuntime) CrashPoint(phase string) error {
 	return r.fakeSystemdPortRuntime.CrashPoint(phase)
 }
 func (r *stPortTestRuntime) Verify(ctx context.Context, policy LocalExecutorPolicy, target LocalExecutorTarget) (string, error) {
+	r.verifyCalls++
 	if ctx.Err() != nil || systemdPortSidecarSHA256(r.live) != target.ConfigSHA256 {
 		return "", errors.New("runtime does not match the expected snapshot")
 	}
@@ -242,6 +244,7 @@ func TestSTPortRootModesApplyPolicyBeforeRuntime(t *testing.T) {
 	for _, mode := range []contracts.SystemUpdatePortMode{contracts.SystemUpdatePortModeLocalOnly, contracts.SystemUpdatePortModeLocalAndAdvertised} {
 		t.Run(string(mode), func(t *testing.T) {
 			h := newSTPortV2Harness(t, mode, false)
+			before := h.runtime.mutationCounts()
 			result := h.run(t, "port_reconfigure")
 			if result.PortResult == nil || result.PortResult.Result != systemdPortResultApplied {
 				t.Fatalf("expected applied result; safe error=%v", result.Error)
@@ -249,38 +252,135 @@ func TestSTPortRootModesApplyPolicyBeforeRuntime(t *testing.T) {
 			if !reflect.DeepEqual(h.runtime.events, []string{"consume", "policy_write", "policy_reload", "runtime_write", "restart"}) {
 				t.Fatalf("wrong policy/runtime order: %v", h.runtime.events)
 			}
-			if h.runtime.store.writes != 1 || h.runtime.store.reloads != 1 || h.runtime.writeCalls != 1 || h.runtime.restartCalls != 1 {
+			after := h.runtime.mutationCounts()
+			for i := range after {
+				after[i] -= before[i]
+			}
+			if after != ([5]int{1, 1, 1, 1, 1}) {
 				t.Fatal("forward mutation count mismatch")
 			}
 			if result.PortResult.PortResult.Observation.AgentProjectionVerified {
 				t.Fatal("root asserted Agent projection")
 			}
 			first := clonePortResult(result.PortResult.PortResult)
+			beforeReplay := h.runtime.mutationCounts()
 			h.plan.LeaseGeneration++
 			h.plan.SessionID = "new-lease-session-0123456789abcdef"
 			h.plan.PortPlanSHA256 = mustSystemdPortPlanSHA256(t, h.plan)
 			h.runtime.clock = h.runtime.clock.Add(time.Minute)
 			replay := h.run(t, "port_reconfigure_reconcile")
-			if replay.PortResult == nil || !reflect.DeepEqual(first, replay.PortResult.PortResult) || h.runtime.consumeCalls != 1 || h.runtime.restartCalls != 1 {
+			if replay.PortResult == nil || !reflect.DeepEqual(first, replay.PortResult.PortResult) || h.runtime.mutationCounts() != beforeReplay {
 				t.Fatal("accepted result or first observation changed on replay")
 			}
 		})
 	}
 }
 
+func (r *stPortTestRuntime) mutationCounts() [5]int {
+	return [5]int{r.consumeCalls, r.store.writes, r.store.reloads, r.writeCalls, r.restartCalls}
+}
+
 func TestSTPortRootNoOpRequiresFreshProofAndHasNoMutation(t *testing.T) {
-	h := newSTPortV2Harness(t, contracts.SystemUpdatePortModeLocalOnly, true)
-	result := h.run(t, "port_reconfigure")
-	if result.PortResult == nil || result.PortResult.Result != systemdPortResultUnchanged {
-		t.Fatalf("expected unchanged; safe error=%v", result.Error)
+	for _, mode := range []contracts.SystemUpdatePortMode{contracts.SystemUpdatePortModeLocalOnly, contracts.SystemUpdatePortModeLocalAndAdvertised} {
+		for _, operation := range []string{"port_reconfigure", "port_reconfigure_reconcile"} {
+			t.Run(string(mode)+"/"+operation, func(t *testing.T) {
+				h := newSTPortV2Harness(t, mode, true)
+				before, beforeVerify := h.runtime.mutationCounts(), h.runtime.verifyCalls
+				request := h.request(t, operation)
+				request.MutationGrant = BoundedSecret{}
+				if validBoundedSecret(request.MutationGrant.Reveal()) {
+					t.Fatal("fixture did not expose the former mandatory credential guard")
+				}
+				t.Log("red_witness=mandatory_credential_guard_rejects_valid_noop")
+				var wire bytes.Buffer
+				if err := EncodeLocalExecutorRequest(&wire, request); err != nil {
+					t.Fatal("encode credential-free exact no-op")
+				}
+				decoded, err := DecodeLocalExecutorRequest(&wire)
+				if err != nil || !decoded.MutationGrant.Empty() || decoded.MutationGrantV2Binding == nil {
+					t.Fatal("decode credential-free lease binding")
+				}
+				result := executeSystemdPortRequest(context.Background(), h.policy, decoded, h.runtime, h.state)
+				if result.PortResult == nil || result.PortResult.Result != systemdPortResultUnchanged ||
+					result.PortResult.PortResult.ObservedSnapshotID != h.plan.Before.SnapshotID ||
+					result.PortResult.PortResult.Observation.AgentProjectionVerified {
+					t.Fatal("exact no-op did not return root-only B proof")
+				}
+				first := clonePortResult(result.PortResult.PortResult)
+				h.runtime.clock = h.runtime.clock.Add(time.Second)
+				replay := executeSystemdPortRequest(context.Background(), h.policy, decoded, h.runtime, h.state)
+				if replay.PortResult == nil || !contracts.EqualSystemUpdatePortResults(*first, *replay.PortResult.PortResult) {
+					t.Fatal("no-op replay changed its first accepted observation")
+				}
+				if h.runtime.mutationCounts() != before || h.runtime.verifyCalls-beforeVerify < 1 {
+					t.Fatal("no-op mutated state or omitted fresh runtime verification")
+				}
+			})
+		}
 	}
-	if h.runtime.consumeCalls != 0 || h.runtime.store.writes != 0 || h.runtime.writeCalls != 0 || h.runtime.restartCalls != 0 {
-		t.Fatal("no-op mutated state")
-	}
-	bad := newSTPortV2Harness(t, contracts.SystemUpdatePortModeLocalOnly, true)
-	bad.runtime.live = []byte("unverified")
-	if response := bad.run(t, "port_reconfigure"); response.PortResult != nil || response.Error == nil {
-		t.Fatal("unverified runtime became unchanged")
+}
+
+func TestSTPortRootNoGrantRejectsNonNoOpAndInvalidProof(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		changed bool
+		mutate  func(*stPortV2Harness, *LocalExecutorRequest)
+	}{
+		{name: "changed_plan", changed: true},
+		{name: "missing_binding", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) { r.MutationGrantV2Binding = nil }},
+		{name: "missing_before", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) { r.PortPlan.Before = nil }},
+		{name: "missing_target", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) { r.PortPlan.Target = nil }},
+		{name: "missing_rollback", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) { r.PortPlan.Rollback = nil }},
+		{name: "zero_snapshots", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) {
+			r.PortPlan.Before, r.PortPlan.Target, r.PortPlan.Rollback = &contracts.SystemUpdatePortSnapshotRef{}, &contracts.SystemUpdatePortSnapshotRef{}, &contracts.SystemUpdatePortSnapshotRef{}
+		}},
+		{name: "unequal_snapshot", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) {
+			r.PortPlan.Rollback.SnapshotID = "ps1:" + strings.Repeat("f", 64)
+		}},
+		{name: "wrong_jp", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) { r.OwnershipPolicyRevision++ }},
+		{name: "wrong_fence", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) { r.OwnershipEpoch++ }},
+		{name: "wrong_job", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) {
+			r.MutationGrantV2Binding.Lease.Command.MutationAuthorization.JobID = "other-job"
+		}},
+		{name: "wrong_host", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) {
+			r.MutationGrantV2Binding.Lease.Command.MutationAuthorization.HostID = "other-host"
+		}},
+		{name: "wrong_target", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) {
+			r.MutationGrantV2Binding.Lease.Command.MutationAuthorization.Target.ServiceID = "other-target"
+		}},
+		{name: "wrong_session", mutate: func(_ *stPortV2Harness, r *LocalExecutorRequest) {
+			r.MutationGrantV2Binding.SessionID = "different-session-0123456789abcdef"
+		}},
+		{name: "expired_lease", mutate: func(h *stPortV2Harness, r *LocalExecutorRequest) {
+			r.MutationGrantV2Binding.Lease.LeaseExpiresAt = h.runtime.clock.Add(-time.Second)
+		}},
+		{name: "stale_policy_disk", mutate: func(h *stPortV2Harness, _ *LocalExecutorRequest) { h.runtime.store.disk = []byte("unverified") }},
+		{name: "stale_policy_memory", mutate: func(h *stPortV2Harness, _ *LocalExecutorRequest) { h.runtime.store.memory = []byte("unverified") }},
+		{name: "stale_runtime", mutate: func(h *stPortV2Harness, _ *LocalExecutorRequest) { h.runtime.live = []byte("unverified") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newSTPortV2Harness(t, contracts.SystemUpdatePortModeLocalOnly, !test.changed)
+			before := h.runtime.mutationCounts()
+			request := h.request(t, "port_reconfigure")
+			request.MutationGrant = BoundedSecret{}
+			if test.mutate != nil {
+				test.mutate(h, &request)
+			}
+			var wire bytes.Buffer
+			if err := EncodeLocalExecutorRequest(&wire, request); err == nil {
+				decoded, err := DecodeLocalExecutorRequest(&wire)
+				if err != nil {
+					t.Fatal("validly encoded fixture did not decode")
+				}
+				result := executeSystemdPortRequest(context.Background(), h.policy, decoded, h.runtime, h.state)
+				if result.Error == nil || result.PortResult != nil {
+					t.Fatal("non-no-op or unverified state obtained a credential-free result")
+				}
+			}
+			if h.runtime.mutationCounts() != before {
+				t.Fatal("rejected credential-free request reached mutation")
+			}
+		})
 	}
 }
 

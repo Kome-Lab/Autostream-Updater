@@ -28,6 +28,19 @@ type LocalProcessObservation struct {
 	ListenerPID          int
 	ControlGroup         string
 	ListenerControlGroup string
+	// Docker ownership stays private, but participates in the HTTP sandwich's
+	// comparable process identity. It never becomes a protocol or log field.
+	dockerIdentity localDockerProcessIdentity
+}
+
+type localDockerProcessIdentity struct {
+	containerID string
+	mainStart   uint64
+	netDevice   uint64
+	netInode    uint64
+	mapping     dockerPortMapping
+	bindAddress string
+	owners      [32]byte
 }
 
 type localTargetVerifier interface {

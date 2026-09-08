@@ -112,11 +112,17 @@ func (r LocalExecutorRequest) Validate() error {
 			r.SourcePolicyRevision != r.PortPlan.sourcePolicyRevision() ||
 			r.OwnershipEpoch != r.PortPlan.OwnershipEpoch ||
 			r.OwnershipPolicyRevision != r.PortPlan.projectionRevision() ||
-			r.ExecutorPolicyRevision != r.PortPlan.executorPolicyRevision() ||
-			!validBoundedSecret(r.MutationGrant.Reveal()) {
+			r.ExecutorPolicyRevision != r.PortPlan.executorPolicyRevision() {
 			return errors.New("local executor port mutation binding is invalid")
 		}
-		return r.PortPlan.Validate()
+		if err := r.PortPlan.Validate(); err != nil {
+			return err
+		}
+		if !validBoundedSecret(r.MutationGrant.Reveal()) &&
+			(!r.MutationGrant.Empty() || r.MutationGrantV2Binding == nil || !contracts.SystemUpdatePortPlanIsNoOp(r.PortPlan.SharedPortPlan())) {
+			return errors.New("local executor port mutation requires a grant unless its validated plan is an exact no-op")
+		}
+		return nil
 	case localExecutorHostSelfUpdateWatchdogOperation:
 		if r.Version != LocalExecutorMutationProtocolVersion ||
 			r.ServiceID != localExecutorHostSelfUpdateWatchdogServiceID ||

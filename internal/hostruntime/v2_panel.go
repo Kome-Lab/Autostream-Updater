@@ -168,6 +168,12 @@ func (c *V2PanelClient) IssueMutationGrant(
 	if err != nil {
 		return MutationGrant{}, err
 	}
+	if plan := binding.Lease.Command.DesiredOperation.PortReconfigure; plan != nil && contracts.SystemUpdatePortPlanIsNoOp(*plan) {
+		// Exact B=T=R needs fresh root observation, not a CP mutation grant.
+		// Keep the validated lease binding on the authenticated root socket;
+		// only the short-lived mutation credential and HTTP issue are omitted.
+		return MutationGrant{V2Binding: &binding}, nil
+	}
 	response, err := c.v2ControlPlane().IssueMutationGrant(
 		ctx,
 		jobID,
