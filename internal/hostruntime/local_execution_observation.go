@@ -41,6 +41,21 @@ const (
 	localFailureSystemdListener
 	localFailureHTTPHealth
 	localFailureHTTPVersion
+	localFailureDockerPrepareTarget
+	localFailureDockerPrepareApplied
+	localFailureDockerPrepareObserve
+	localFailureDockerPrepareObservation
+	localFailureDockerPrepareSnapshot
+	localFailureDockerPrepareContainer
+	localFailureDockerPrepareImage
+	localFailureDockerPrepareRepository
+	localFailureDockerPrepareVersionEnv
+	localFailureDockerPrepareCompose
+	localFailureDockerPrepareTargetPayload
+	localFailureDockerPrepareRollbackPayload
+	localFailureDockerPrepareTargetModel
+	localFailureDockerPrepareRollbackModel
+	localFailureDockerPrepareAvailability
 )
 
 const (

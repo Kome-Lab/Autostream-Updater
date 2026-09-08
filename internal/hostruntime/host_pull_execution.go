@@ -306,7 +306,7 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 
 func sameRecoveredJobIntent(active, recovered UpdateJob) bool {
 	if active.ProtocolVersion != recovered.ProtocolVersion ||
-		active.CommandID != recovered.CommandID ||
+		!sameRecoveredJobLease(active, recovered) ||
 		active.ID != recovered.ID ||
 		active.Operation != recovered.Operation ||
 		active.AgentServiceID != recovered.AgentServiceID ||
@@ -330,6 +330,27 @@ func sameRecoveredJobIntent(active, recovered UpdateJob) bool {
 		active.PortReconfigure,
 		recovered.PortReconfigure,
 	)
+}
+
+// ClaimHost validates the complete fresh lease and authorization before this
+// comparison. Only a v2 port recovery may replace its transport identity; the
+// caller still compares every immutable job and port-intent field separately.
+func sameRecoveredJobLease(active, recovered UpdateJob) bool {
+	if active.ProtocolVersion != 2 || recovered.ProtocolVersion != 2 ||
+		!isPortContractV2(active) || !isPortContractV2(recovered) {
+		return active.CommandID == recovered.CommandID
+	}
+	if active.LeaseGeneration == recovered.LeaseGeneration {
+		return active.CommandID == recovered.CommandID && active.LeaseExpiresAt == recovered.LeaseExpiresAt
+	}
+	if !recovered.RecoveryRequired || active.LeaseGeneration == 0 || active.LeaseGeneration >= math.MaxInt64 ||
+		recovered.LeaseGeneration != active.LeaseGeneration+1 || active.CommandID == recovered.CommandID ||
+		!identifierPattern.MatchString(active.CommandID) || !identifierPattern.MatchString(recovered.CommandID) {
+		return false
+	}
+	activeExpiry, activeErr := time.Parse(time.RFC3339Nano, active.LeaseExpiresAt)
+	recoveredExpiry, recoveredErr := time.Parse(time.RFC3339Nano, recovered.LeaseExpiresAt)
+	return activeErr == nil && recoveredErr == nil && !activeExpiry.IsZero() && !recoveredExpiry.IsZero()
 }
 
 func samePortMutationGrantBinding(

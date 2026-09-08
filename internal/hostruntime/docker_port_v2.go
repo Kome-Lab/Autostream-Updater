@@ -65,12 +65,14 @@ func (d *dockerPortV2Driver) load(plan SystemdPortReconfigurePlan) (*portV2Journ
 func (d *dockerPortV2Driver) prepare(ctx context.Context, policy LocalExecutorPolicy, plan SystemdPortReconfigurePlan, candidates portPolicyCandidates) (*portV2Journal, error) {
 	target, ok := policy.Target(plan.TargetID)
 	if !ok {
+		observeLocalExecutionFailure(ctx, localFailureDockerPrepareTarget, nil)
 		return nil, errors.New("Docker port target is missing")
 	}
 	// Existing applied overlays carry the verified resolved Compose hash.
 	// The immutable policy retains its non-port canonical profile authority.
 	target, err := resolveDockerPortAppliedTarget(policy, target, d.state)
 	if err != nil {
+		observeLocalExecutionFailure(ctx, localFailureDockerPrepareApplied, err)
 		return nil, err
 	}
 	before, err := d.runtime.Observe(ctx, policy, target)
@@ -80,30 +82,59 @@ func (d *dockerPortV2Driver) prepare(ctx context.Context, policy LocalExecutorPo
 		before.Runtime.RepositoryDigest != plan.DockerBaseline.ExpectedRepositoryDigest ||
 		before.Runtime.VersionEnvSHA256 != plan.DockerBaseline.ExpectedVersionEnvSHA256 ||
 		before.ComposeConfigSHA256 != plan.DockerBaseline.ApprovedComposeConfigSHA256 {
+		phase := localFailureDockerPrepareObserve
+		if err == nil {
+			switch {
+			case before.validate() != nil:
+				phase = localFailureDockerPrepareObservation
+			case !dockerPortV2ObservationMatches(before, *plan.Before):
+				phase = localFailureDockerPrepareSnapshot
+			case before.Runtime.ContainerID != plan.DockerBaseline.ExpectedContainerID:
+				phase = localFailureDockerPrepareContainer
+			case before.Runtime.ImageID != plan.DockerBaseline.ExpectedImageID:
+				phase = localFailureDockerPrepareImage
+			case before.Runtime.RepositoryDigest != plan.DockerBaseline.ExpectedRepositoryDigest:
+				phase = localFailureDockerPrepareRepository
+			case before.Runtime.VersionEnvSHA256 != plan.DockerBaseline.ExpectedVersionEnvSHA256:
+				phase = localFailureDockerPrepareVersionEnv
+			default:
+				phase = localFailureDockerPrepareCompose
+			}
+		}
+		observeLocalExecutionFailure(ctx, phase, err)
 		return nil, errors.New("Docker runtime baseline does not match the immutable plan")
 	}
 	targetBytes, err := dockerPortEnvBytes(d.adapter, plan.Target.Docker.PublishedPort, plan.Target.Docker.ContainerPort, plan.Target.ConfigRevision)
 	if err != nil {
+		observeLocalExecutionFailure(ctx, localFailureDockerPrepareTargetPayload, err)
 		return nil, err
 	}
 	rollbackBytes, err := dockerPortEnvBytes(d.adapter, plan.Rollback.Docker.PublishedPort, plan.Rollback.Docker.ContainerPort, plan.Rollback.ConfigRevision)
 	if err != nil || !portV2SnapshotPayloadMatches(targetBytes, *plan.Target) || !portV2SnapshotPayloadMatches(rollbackBytes, *plan.Rollback) {
+		phase := localFailureDockerPrepareRollbackPayload
+		if err == nil && !portV2SnapshotPayloadMatches(targetBytes, *plan.Target) {
+			phase = localFailureDockerPrepareTargetPayload
+		}
+		observeLocalExecutionFailure(ctx, phase, err)
 		return nil, errors.New("Docker port candidate payload mismatch")
 	}
 	targetPolicy, _ := decodePortPolicy(candidates.Target)
 	targetCandidate, _ := targetPolicy.Target(plan.TargetID)
 	prepared, err := d.runtime.Prepare(ctx, targetCandidate, targetBytes)
 	if err != nil || !dockerPortV2PreparedMatches(prepared, *plan.Target) {
+		observeLocalExecutionFailure(ctx, localFailureDockerPrepareTargetModel, err)
 		return nil, errors.New("Docker target canonical model mismatch")
 	}
 	rollbackPolicy, _ := decodePortPolicy(candidates.Rollback)
 	rollbackTarget, _ := rollbackPolicy.Target(plan.TargetID)
 	rollbackPrepared, err := d.runtime.Prepare(ctx, rollbackTarget, rollbackBytes)
 	if err != nil || !dockerPortV2PreparedMatches(rollbackPrepared, *plan.Rollback) {
+		observeLocalExecutionFailure(ctx, localFailureDockerPrepareRollbackModel, err)
 		return nil, errors.New("Docker rollback canonical model mismatch")
 	}
 	if !reflect.DeepEqual(plan.Before, plan.Target) {
 		if err := d.runtime.EnsureAvailable(ctx, target, prepared, before.Runtime.ContainerID); err != nil {
+			observeLocalExecutionFailure(ctx, localFailureDockerPrepareAvailability, err)
 			return nil, err
 		}
 	}

@@ -388,6 +388,7 @@ func (f *stPortChainDockerFixture) observe(t *testing.T, h *stPortChainHarness, 
 		}
 		f.nonPort = &nonPort
 	} else if !reflect.DeepEqual(*f.nonPort, nonPort) {
+		t.Logf("ST-PORT Docker non-port equality: %v", stPortChainDockerNonPortEquality(*f.nonPort, nonPort))
 		t.Fatal("actual non-port Docker projection changed")
 	}
 	var node struct {
@@ -414,6 +415,62 @@ type stPortChainDockerNonPort struct {
 	Env, Entrypoint, Cmd, CapDrop, CapAdd, SecurityOpt []string
 	ReadonlyRootfs, Privileged                         bool
 	PidsLimit                                          int64
+}
+
+// Only fixed field names and equality booleans may enter the public test log.
+// DeepEqual deliberately retains sequence ordering and nil/empty distinctions.
+func stPortChainDockerNonPortEquality(before, after stPortChainDockerNonPort) map[string]bool {
+	return map[string]bool{
+		"Image": before.Image == after.Image, "User": before.User == after.User,
+		"NetworkMode": before.NetworkMode == after.NetworkMode,
+		"Env":         reflect.DeepEqual(before.Env, after.Env), "Entrypoint": reflect.DeepEqual(before.Entrypoint, after.Entrypoint),
+		"Cmd": reflect.DeepEqual(before.Cmd, after.Cmd), "CapDrop": reflect.DeepEqual(before.CapDrop, after.CapDrop),
+		"CapAdd": reflect.DeepEqual(before.CapAdd, after.CapAdd), "SecurityOpt": reflect.DeepEqual(before.SecurityOpt, after.SecurityOpt),
+		"ReadonlyRootfs": before.ReadonlyRootfs == after.ReadonlyRootfs, "Privileged": before.Privileged == after.Privileged,
+		"PidsLimit": before.PidsLimit == after.PidsLimit,
+	}
+}
+
+func TestSTPortDockerNonPortDiagnosticRetainsExactComparison(t *testing.T) {
+	before := stPortChainDockerNonPort{Image: "fixture-image", User: "65532:65532", NetworkMode: "fixture-network",
+		Env: []string{"FIRST=1", "SECOND=2"}, Entrypoint: []string{"fixture-entry"}, Cmd: []string{"fixture-command"},
+		CapDrop: []string{"ALL"}, CapAdd: []string{}, SecurityOpt: []string{"no-new-privileges:true"}, ReadonlyRootfs: true, PidsLimit: 64}
+	for _, test := range []struct {
+		name, field string
+		mutate      func(*stPortChainDockerNonPort)
+	}{
+		{"image", "Image", func(v *stPortChainDockerNonPort) { v.Image = "changed" }},
+		{"user", "User", func(v *stPortChainDockerNonPort) { v.User = "changed" }},
+		{"network", "NetworkMode", func(v *stPortChainDockerNonPort) { v.NetworkMode = "changed" }},
+		{"env", "Env", func(v *stPortChainDockerNonPort) { v.Env = []string{"CHANGED=1"} }},
+		{"env_order", "Env", func(v *stPortChainDockerNonPort) { v.Env = []string{"SECOND=2", "FIRST=1"} }},
+		{"entrypoint", "Entrypoint", func(v *stPortChainDockerNonPort) { v.Entrypoint = nil }},
+		{"command", "Cmd", func(v *stPortChainDockerNonPort) { v.Cmd = nil }},
+		{"cap_drop", "CapDrop", func(v *stPortChainDockerNonPort) { v.CapDrop = nil }},
+		{"cap_add", "CapAdd", func(v *stPortChainDockerNonPort) { v.CapAdd = []string{"CHOWN"} }},
+		{"nil_empty", "CapAdd", func(v *stPortChainDockerNonPort) { v.CapAdd = nil }},
+		{"security", "SecurityOpt", func(v *stPortChainDockerNonPort) { v.SecurityOpt = nil }},
+		{"readonly", "ReadonlyRootfs", func(v *stPortChainDockerNonPort) { v.ReadonlyRootfs = false }},
+		{"privileged", "Privileged", func(v *stPortChainDockerNonPort) { v.Privileged = true }},
+		{"pids", "PidsLimit", func(v *stPortChainDockerNonPort) { v.PidsLimit++ }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			after := before
+			test.mutate(&after)
+			if reflect.DeepEqual(before, after) {
+				t.Fatal("changed non-port projection was accepted")
+			}
+			equality := stPortChainDockerNonPortEquality(before, after)
+			if len(equality) != 12 {
+				t.Fatal("diagnostic field inventory changed")
+			}
+			for field, equal := range equality {
+				if equal != (field != test.field) {
+					t.Fatal("diagnostic did not identify the exact changed field")
+				}
+			}
+		})
+	}
 }
 
 type stPortChainDockerInspect struct {

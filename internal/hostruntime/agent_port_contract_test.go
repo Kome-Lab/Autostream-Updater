@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -95,7 +96,7 @@ func TestSTPortAgentNoOpOmitsGrantHTTPAndRequiresFreshProof(t *testing.T) {
 				if err != nil {
 					t.Fatal("reopen no-op recovery")
 				}
-				lease.LeaseGeneration++
+				advanceSTPortLease(t, &lease)
 			}
 			grants, terminals := 0, 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +180,31 @@ func TestSTPortAgentNoOpOmitsGrantHTTPAndRequiresFreshProof(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Model the CP's per-generation command, authorization, nonce, and lease
+// identities instead of incrementing only the generation of an old command.
+func advanceSTPortLease(t *testing.T, lease *contracts.UpdaterLeaseEnvelope) {
+	t.Helper()
+	lease.LeaseGeneration++
+	suffix := "recovery:" + lease.Command.MutationAuthorization.JobID + ":" + strconv.FormatInt(lease.LeaseGeneration, 10)
+	lease.LeaseID = "lease:" + suffix
+	lease.Command.CommandID = "command:" + suffix
+	lease.Command.IdempotencyKey = "lease:" + suffix
+	lease.Command.MutationAuthorization.AuthorizationID = "authorization:" + suffix
+	lease.Command.MutationAuthorization.NonceID = "nonce:" + suffix
+	lease.Command.AuditCorrelationID = "audit:" + suffix
+	lease.LeaseExpiresAt = lease.LeaseExpiresAt.Add(30 * time.Second)
+	lease.Command.MutationAuthorization.ExpiresAt = lease.LeaseExpiresAt
+	if contracts.ValidateUpdaterLease(lease.LeaseExpiresAt.Add(-time.Minute), *lease) != nil {
+		t.Fatal("fresh recovery lease fixture is invalid")
+	}
+}
+
+func advanceSTPortJobLease(job *UpdateJob) {
+	job.LeaseGeneration++
+	job.CommandID = "command:recovery:" + job.ID + ":" + strconv.FormatUint(job.LeaseGeneration, 10)
+	job.RecoveryRequired = true
 }
 
 func agentPortV2Fixture(t *testing.T, mode contracts.SystemUpdatePortMode, noOp bool) (contracts.UpdaterLeaseEnvelope, UpdateJob, HostAgentPolicy, SystemdPortReconfigurePlan) {
@@ -465,7 +491,7 @@ func TestSTPortAgentFailedRecoveryKeepsCursorAndAcceptsLaterRollback(t *testing.
 		t.Fatal(err)
 	}
 	agent.Journal = restarted
-	job.LeaseGeneration++
+	advanceSTPortJobLease(&job)
 	job.ReportSequence = 5
 	job.RecoveryRequired = true
 	if err := restarted.SetActive(&job); err != nil {
@@ -501,7 +527,7 @@ func TestSTPortAgentFailedRecoveryKeepsCursorAndAcceptsLaterRollback(t *testing.
 		t.Fatal("accepted result was not durable")
 	}
 	// A fresh lease changes transport identity only.
-	job.LeaseGeneration++
+	advanceSTPortJobLease(&job)
 	job.ReportSequence = 1
 	if err := reloaded.SetActive(&job); err != nil {
 		t.Fatal(err)
@@ -604,7 +630,7 @@ func TestSTPortAgentAcceptedResultsRemainImmutableAcrossFreshLeases(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			job.LeaseGeneration++
+			advanceSTPortJobLease(&job)
 			job.ReportSequence = 8
 			job.RecoveryRequired = true
 			if err := journal.SetActive(&job); err != nil {
@@ -752,7 +778,7 @@ func TestSTPortAgentRollbackReportsRespectCPTransitionAndProgress(t *testing.T) 
 						if request.ActiveJobID != originalJob.ID {
 							t.Error("recovery changed the active job")
 						}
-						activeLease.LeaseGeneration++
+						advanceSTPortLease(t, &activeLease)
 						cpStatus = "reconciling"
 					}
 					writeV2PanelJSON(t, w, http.StatusOK, activeLease)

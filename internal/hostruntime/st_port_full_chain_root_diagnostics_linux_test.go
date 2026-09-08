@@ -20,6 +20,11 @@ var stPortChainRootPhases = [...]string{
 	"docker_pid", "docker_cgroup", "docker_version", "docker_listener",
 	"systemd_release", "systemd_process", "systemd_pid", "systemd_cgroup", "systemd_listener",
 	"http_health", "http_version",
+	"docker_prepare_target", "docker_prepare_applied", "docker_prepare_observe",
+	"docker_prepare_observation", "docker_prepare_snapshot", "docker_prepare_container",
+	"docker_prepare_image", "docker_prepare_repository", "docker_prepare_version_env",
+	"docker_prepare_compose", "docker_prepare_target_payload", "docker_prepare_rollback_payload",
+	"docker_prepare_target_model", "docker_prepare_rollback_model", "docker_prepare_availability",
 }
 
 var stPortChainRootClasses = [...]string{"validation", "operation", "deadline", "canceled"}

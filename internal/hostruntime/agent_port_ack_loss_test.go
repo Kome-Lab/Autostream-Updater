@@ -57,8 +57,7 @@ func TestSTPortAgentTerminalAcknowledgementLossResendsIdenticalResult(t *testing
 					ConfigRevision: rootRef.ConfigRevision, ConfigSHA256: rootRef.ConfigSHA256,
 					CurrentVersion: "v1.2.3", MainPID: 51, ListenerPID: 51, ControlGroup: "/system.slice/worker.service",
 					ListenerAddress: "127.0.0.1:" + strconv.Itoa(rootRef.LocalListenPort)}
-				lease.LeaseGeneration++
-				lease.LeaseID = "lease-ack-recovery-01"
+				advanceSTPortLease(t, &lease)
 				claims, grants, receipts, acceptances := 0, 0, 0, 0
 				var firstBody []byte
 				var firstPath string

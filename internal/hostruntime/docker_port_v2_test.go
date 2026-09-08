@@ -178,6 +178,79 @@ func (h *stDockerPortHarness) run(t *testing.T, operation string) LocalExecutorR
 	return executeDockerPortRequest(context.Background(), policy, newSTPortV2Request(t, h.plan, h.runtime.clock, operation), h.runtime, h.state)
 }
 
+type stDockerPrepareFailureRuntime struct {
+	*stDockerPortRuntime
+	fail         localExecutionFailurePhase
+	prepareCalls int
+}
+
+func (r *stDockerPrepareFailureRuntime) Observe(ctx context.Context, policy LocalExecutorPolicy, target LocalExecutorTarget) (dockerPortObservation, error) {
+	if r.fail == localFailureDockerPrepareObserve {
+		return dockerPortObservation{}, errors.New("private injected runtime error")
+	}
+	observed, err := r.stDockerPortRuntime.Observe(ctx, policy, target)
+	if r.fail == localFailureDockerPrepareCompose {
+		observed.ComposeConfigSHA256 = strings.Repeat("9", 64)
+	}
+	return observed, err
+}
+
+func (r *stDockerPrepareFailureRuntime) Prepare(ctx context.Context, target LocalExecutorTarget, payload []byte) (dockerPortPreparedModel, error) {
+	r.prepareCalls++
+	if r.fail == localFailureDockerPrepareTargetModel && r.prepareCalls == 1 ||
+		r.fail == localFailureDockerPrepareRollbackModel && r.prepareCalls == 2 {
+		return dockerPortPreparedModel{}, errors.New("private injected canonical error")
+	}
+	return r.stDockerPortRuntime.Prepare(ctx, target, payload)
+}
+
+func (r *stDockerPrepareFailureRuntime) EnsureAvailable(ctx context.Context, target LocalExecutorTarget, prepared dockerPortPreparedModel, containerID string) error {
+	if r.fail == localFailureDockerPrepareAvailability {
+		return errors.New("private injected availability error")
+	}
+	return r.stDockerPortRuntime.EnsureAvailable(ctx, target, prepared, containerID)
+}
+
+func TestSTPortDockerPrepareDiagnosticsPrecedeStageAndConsume(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		phase localExecutionFailurePhase
+		class localExecutionFailureClass
+	}{
+		{"observe", localFailureDockerPrepareObserve, localFailureOperation},
+		{"compose", localFailureDockerPrepareCompose, localFailureValidation},
+		{"target_model", localFailureDockerPrepareTargetModel, localFailureOperation},
+		{"rollback_model", localFailureDockerPrepareRollbackModel, localFailureOperation},
+		{"availability", localFailureDockerPrepareAvailability, localFailureOperation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newSTDockerPortHarness(t, contracts.SystemUpdatePortModeLocalOnly, false)
+			runtime := &stDockerPrepareFailureRuntime{stDockerPortRuntime: h.runtime, fail: test.phase}
+			policy, err := h.runtime.store.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			observations := 0
+			ctx := context.WithValue(context.Background(), localExecutionFailureContextKey{}, func(phase localExecutionFailurePhase, class localExecutionFailureClass) {
+				observations++
+				if phase != test.phase || class != test.class {
+					t.Error("prepare failure classification differs from the injected phase")
+				}
+			})
+			response := executeDockerPortRequest(ctx, policy, newSTPortV2Request(t, h.plan, h.runtime.clock, "port_reconfigure"), runtime, h.state)
+			if response.Error == nil || response.Error.Code != "mutation_precondition_failed" || observations != 1 {
+				t.Fatal("prepare diagnostic changed the primary rejection")
+			}
+			if h.runtime.consumeCalls != 0 || h.runtime.writeCalls != 0 || h.runtime.restoreCalls != 0 || h.runtime.recreateCalls != 0 || len(h.runtime.events) != 0 {
+				t.Fatal("prepare rejection consumed a grant or mutated runtime/policy")
+			}
+			if active, err := h.state.LoadActive(h.plan.TargetID); err != nil || active != nil {
+				t.Fatal("prepare rejection staged a root transaction")
+			}
+		})
+	}
+}
+
 func TestSTPortDockerModesPreserveImageAndCanonicalProfile(t *testing.T) {
 	for _, mode := range []contracts.SystemUpdatePortMode{contracts.SystemUpdatePortModeLocalOnly, contracts.SystemUpdatePortModeLocalAndAdvertised} {
 		t.Run(string(mode), func(t *testing.T) {

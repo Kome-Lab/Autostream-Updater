@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,7 +30,8 @@ func TestSTPortAgentRestartBeforeProjectionAdoptionReachesSameJobClaim(t *testin
 			fixtures = append(fixtures, fixture{name: string(mode) + "/" + string(kind), mode: mode, kind: kind})
 		}
 	}
-	for _, name := range []string{"unknown CP snapshot", "ownership changed", "JP changed", "root proof mismatch", "unstable runtime"} {
+	for _, name := range []string{"unknown CP snapshot", "ownership changed", "JP changed", "root proof mismatch", "unstable runtime",
+		"stale generation", "skipped generation", "reused command", "expired lease", "lease beyond authorization"} {
 		fixtures = append(fixtures, fixture{name: name, mode: contracts.SystemUpdatePortModeLocalAndAdvertised, kind: contracts.SystemUpdatePortReconfigurationRolledBack, negative: name})
 	}
 	for _, test := range fixtures {
@@ -81,8 +83,7 @@ func TestSTPortAgentRestartBeforeProjectionAdoptionReachesSameJobClaim(t *testin
 				ServiceID: job.TargetID, ServiceType: job.EffectiveType(), DeploymentMode: job.DeploymentMode, ConfigRevision: rootRef.ConfigRevision, ConfigSHA256: rootRef.ConfigSHA256,
 				CurrentVersion: "v1.2.3", MainPID: 51, ListenerPID: 51, ControlGroup: "/system.slice/worker.service",
 				ListenerAddress: "127.0.0.1:" + strconv.Itoa(rootRef.LocalListenPort)}
-			lease.LeaseGeneration++
-			lease.LeaseID = "lease-recovery-01"
+			advanceSTPortLease(t, &lease)
 			claims, issues, terminals := 0, 0, 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/services/update-jobs/claim" {
@@ -101,7 +102,8 @@ func TestSTPortAgentRestartBeforeProjectionAdoptionReachesSameJobClaim(t *testin
 				if strings.HasSuffix(r.URL.Path, "/mutation-grants") {
 					var issue contracts.UpdaterMutationGrantIssueRequest
 					if contracts.ValidateUpdaterMutationGrantIssueRequest(now, body) != nil || json.Unmarshal(body, &issue) != nil ||
-						issue.Binding.Operation != contracts.UpdaterMutationPortReconfigureReconcile || issue.Binding.SessionID != plan.SessionID {
+						issue.Binding.Operation != contracts.UpdaterMutationPortReconfigureReconcile || issue.Binding.SessionID != plan.SessionID ||
+						!reflect.DeepEqual(issue.Binding.Lease, lease) {
 						t.Error("recovery grant did not retain original intent and session")
 					}
 					issues++
@@ -142,6 +144,16 @@ func TestSTPortAgentRestartBeforeProjectionAdoptionReachesSameJobClaim(t *testin
 				binding.OwnershipEpoch++
 			case "JP changed":
 				journal.data.ActiveJob.PolicyRevision++
+			case "stale generation":
+				lease.LeaseGeneration--
+			case "skipped generation":
+				lease.LeaseGeneration++
+			case "reused command":
+				lease.Command.CommandID = job.CommandID
+			case "expired lease":
+				lease.LeaseExpiresAt = now.Add(-time.Second)
+			case "lease beyond authorization":
+				lease.LeaseExpiresAt = lease.Command.MutationAuthorization.ExpiresAt.Add(time.Second)
 			case "root proof mismatch":
 				probe.PolicySHA256 = "sha256:" + strings.Repeat("9", 64)
 			case "unstable runtime":
@@ -175,4 +187,78 @@ func TestSTPortAgentRestartBeforeProjectionAdoptionReachesSameJobClaim(t *testin
 			}
 		})
 	}
+}
+
+func TestSTPortFreshLeasePreservesJournalAndImmutableIntent(t *testing.T) {
+	lease, original, policy, plan := agentPortV2Fixture(t, contracts.SystemUpdatePortModeLocalAndAdvertised, false)
+	advanceSTPortLease(t, &lease)
+	fresh, err := mapV2LeaseToUpdateJob(lease, original.ID)
+	if err != nil || !sameRecoveredJobIntent(original, fresh) {
+		t.Fatal("validated next-generation transport identity was rejected")
+	}
+	dir := t.TempDir()
+	journal, err := OpenJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range []error{journal.SetActive(&original), journal.SetActivePortPlan(plan), journal.StagePortPolicy(policy, original, plan)} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	journal, err = OpenJournal(dir)
+	if err != nil || journal.SetActive(&fresh) != nil {
+		t.Fatal("restarted journal rejected the fresh same-job lease")
+	}
+	if !reflect.DeepEqual(journal.ActivePortPlan(), &plan) || journal.Active().CommandID != fresh.CommandID {
+		t.Fatal("fresh lease replaced the saved plan or failed to adopt transport identity")
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*UpdateJob)
+	}{
+		{"job", func(v *UpdateJob) { v.ID = "different-job" }},
+		{"target", func(v *UpdateJob) { v.TargetID = "different-target" }},
+		{"updater", func(v *UpdateJob) { v.AgentServiceID = "different-updater" }},
+		{"host", func(v *UpdateJob) { v.HostID = "different-host" }},
+		{"fence", func(v *UpdateJob) { v.OwnershipEpoch++ }},
+		{"job_policy", func(v *UpdateJob) { v.PolicyRevision++ }},
+		{"before", func(v *UpdateJob) { v.PortReconfigure.Before.LocalListenPort++ }},
+		{"target_snapshot", func(v *UpdateJob) { v.PortReconfigure.Target.LocalListenPort++ }},
+		{"rollback", func(v *UpdateJob) { v.PortReconfigure.Rollback.LocalListenPort++ }},
+		{"reused_command", func(v *UpdateJob) { v.CommandID = original.CommandID }},
+		{"stale_generation", func(v *UpdateJob) { v.LeaseGeneration = original.LeaseGeneration }},
+		{"skipped_generation", func(v *UpdateJob) { v.LeaseGeneration++ }},
+		{"not_recovery", func(v *UpdateJob) { v.RecoveryRequired = false }},
+		{"invalid_expiry", func(v *UpdateJob) { v.LeaseExpiresAt = "invalid" }},
+		{"same_lease_extension", func(v *UpdateJob) { v.CommandID = original.CommandID; v.LeaseGeneration = original.LeaseGeneration }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := cloneV2PanelJob(fresh)
+			test.mutate(&changed)
+			if sameRecoveredJobIntent(original, changed) {
+				t.Fatal("recovery replaced immutable intent or reused/retimed a lease")
+			}
+			if changed.ID != original.ID {
+				return // executeOnce guards a different job before SetActive.
+			}
+			isolated, err := OpenJournal(t.TempDir())
+			if err != nil || isolated.SetActive(&original) != nil || isolated.SetActive(&changed) == nil ||
+				!reflect.DeepEqual(isolated.Active(), journalJobWithoutCredentials(original)) {
+				t.Fatal("journal did not retain the original job after rejecting recovery")
+			}
+		})
+	}
+	software, replaced := original, fresh
+	software.Operation, replaced.Operation = updateJobOperationSoftwareUpdate, updateJobOperationSoftwareUpdate
+	software.PortReconfigure, replaced.PortReconfigure = nil, nil
+	if sameRecoveredJobIntent(software, replaced) {
+		t.Fatal("port recovery exception admitted a software command replacement")
+	}
+}
+
+func journalJobWithoutCredentials(job UpdateJob) *UpdateJob {
+	copy := cloneV2PanelJob(job)
+	copy.LeaseToken, copy.ReleaseToken = "", ""
+	return &copy
 }
