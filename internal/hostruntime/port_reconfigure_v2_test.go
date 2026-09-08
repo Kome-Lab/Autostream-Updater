@@ -287,7 +287,7 @@ func TestSTPortRootNoOpRequiresFreshProofAndHasNoMutation(t *testing.T) {
 				h := newSTPortV2Harness(t, mode, true)
 				before, beforeVerify := h.runtime.mutationCounts(), h.runtime.verifyCalls
 				request := h.request(t, operation)
-				request.MutationGrant = BoundedSecret{}
+				request.MutationGrant = NewBoundedSecret("")
 				if validBoundedSecret(request.MutationGrant.Reveal()) {
 					t.Fatal("fixture did not expose the former mandatory credential guard")
 				}
@@ -362,7 +362,7 @@ func TestSTPortRootNoGrantRejectsNonNoOpAndInvalidProof(t *testing.T) {
 			h := newSTPortV2Harness(t, contracts.SystemUpdatePortModeLocalOnly, !test.changed)
 			before := h.runtime.mutationCounts()
 			request := h.request(t, "port_reconfigure")
-			request.MutationGrant = BoundedSecret{}
+			request.MutationGrant = NewBoundedSecret("")
 			if test.mutate != nil {
 				test.mutate(h, &request)
 			}
