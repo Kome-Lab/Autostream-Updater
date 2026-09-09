@@ -63,6 +63,7 @@ type dockerPortSmokeChildPayload struct {
 	GrantRecordPath    string                     `json:"grant_record_path"`
 	ExpectGrant        bool                       `json:"expect_grant"`
 	CrashAfterRecreate bool                       `json:"crash_after_recreate"`
+	CrashPhase         string                     `json:"crash_phase,omitempty"`
 }
 
 // TestDockerPortDaemonSmoke is intentionally a Linux/root integration test.
@@ -512,12 +513,22 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 			return nil
 		},
 	}
+	crashPhase := payload.CrashPhase
+	if crashPhase == "" && payload.CrashAfterRecreate {
+		crashPhase = "after_docker_recreate"
+		if payload.Plan.PortContractVersion == 2 {
+			crashPhase = "after_restart"
+		}
+	}
+	switch crashPhase {
+	case "", "after_docker_recreate", "after_restart", "after_target_verify":
+	default:
+		t.Fatal("unknown Docker smoke crash phase")
+	}
 	remoteRuntime.dockerPortCrashPointForTest = func(point string) error {
 		_ = runner.observeSTPortPhase(point)
-		if payload.CrashAfterRecreate {
-			if point == "after_docker_recreate" || payload.Plan.PortContractVersion == 2 && point == "after_restart" {
-				os.Exit(dockerPortDaemonSmokeCrashExit)
-			}
+		if crashPhase != "" && point == crashPhase {
+			os.Exit(dockerPortDaemonSmokeCrashExit)
 		}
 		return nil
 	}
@@ -532,7 +543,11 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 	)
 	if payload.ExpectGrant != (grantCalls == 1) {
 		if payload.Plan.PortContractVersion == 2 {
-			runner.logSTPortResultFailure(t, "combined_recovery", response, payload.Plan, systemdPortResultApplied, grantCalls)
+			expected := systemdPortResultApplied
+			if payload.Operation == "port_reconfigure_reconcile" && payload.ExpectGrant {
+				expected = systemdPortResultRolledBack
+			}
+			runner.logSTPortResultFailure(t, "combined_recovery", response, payload.Plan, expected, grantCalls)
 			t.Logf("ST-PORT child first failure: phase=%d class=%d", failurePhase, failureClass)
 		}
 		t.Fatalf(
@@ -584,7 +599,7 @@ func dockerPortSmokeStep(step string) string {
 func (r *dockerPortSmokeRunner) observeSTPortPhase(phase string) error {
 	switch phase {
 	case "after_grant_consume", "before_policy_write", "after_policy_write", "after_policy_reload",
-		"after_sidecar_write", "after_restart", "after_rollback_latch", "after_rollback_runtime_write", "after_result_save":
+		"after_sidecar_write", "after_restart", "after_target_verify", "after_rollback_latch", "after_rollback_runtime_write", "after_result_save":
 	default:
 		phase = "unknown"
 	}

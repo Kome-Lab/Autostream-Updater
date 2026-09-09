@@ -40,11 +40,18 @@ func (v linuxLocalTargetVerifier) observeDockerPortListener(
 	containerID string,
 	mainPID int,
 	controlGroup, version string,
-) (LocalProcessObservation, error) {
+) (observation LocalProcessObservation, resultErr error) {
+	phase := localFailureDockerListenerBinding
+	defer func() {
+		if resultErr != nil {
+			observeLocalExecutionFailure(ctx, phase, resultErr)
+		}
+	}()
 	before, err := v.localDockerListenerBinding(ctx, target, runtimeTarget, containerID)
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureDockerListenerNamespace
 	namespace, err := os.Open(fmt.Sprintf("/proc/%d/ns/net", mainPID))
 	if err != nil {
 		return LocalProcessObservation{}, errors.New("managed Docker network namespace is unavailable")
@@ -62,22 +69,27 @@ func (v linuxLocalTargetVerifier) observeDockerPortListener(
 	if err != nil || process.netDevice != device || process.netInode != inode {
 		return LocalProcessObservation{}, errors.New("managed Docker process namespace changed")
 	}
+	phase = localFailureDockerListenerSocketTable
 	inodes, err := localDockerListenerInodes(mainPID, before.bind)
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureDockerListenerOwnerProof
 	listenerPID, owners, err := localDockerListenerOwnerProof(inodes, controlGroup, process)
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureDockerListenerSocketTable
 	afterInodes, err := localDockerListenerInodes(mainPID, before.bind)
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
+	phase = localFailureDockerListenerOwnerProof
 	afterPID, afterOwners, err := localDockerListenerOwnerProof(afterInodes, controlGroup, process)
 	if err != nil || listenerPID != afterPID || owners != afterOwners {
 		return LocalProcessObservation{}, errors.New("managed Docker listener ownership changed")
 	}
+	phase = localFailureDockerListenerRecheck
 	after, err := v.localDockerListenerBinding(ctx, target, runtimeTarget, containerID)
 	if err != nil || before.containerID != after.containerID || before.bind != after.bind ||
 		before.mapping != after.mapping || !sameDockerPortMappingCheckpoint(before.checkpoint, after.checkpoint) {

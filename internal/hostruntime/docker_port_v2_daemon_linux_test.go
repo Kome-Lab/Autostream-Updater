@@ -125,7 +125,7 @@ func runSTPortDockerDaemonSequence(t *testing.T, runner *dockerPortSmokeRunner, 
 		runner.beginSTPortDiagnostic("combined_recovery", false)
 		grantRecord := filepath.Join(stateDir, "st-port-crash-grant-"+suffix+".json")
 		runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: combined, Operation: "port_reconfigure", StateDir: stateDir,
-			CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, GrantRecordPath: grantRecord, ExpectGrant: true, CrashAfterRecreate: true}, true)
+			CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, GrantRecordPath: grantRecord, ExpectGrant: true, CrashPhase: "after_target_verify"}, true)
 		var consumedBinding contracts.UpdaterMutationGrantBinding
 		readDockerPortSmokeJSON(t, grantRecord, &consumedBinding)
 		if consumedBinding.Operation != contracts.UpdaterMutationPortReconfigure || consumedBinding.Lease.Command.MutationAuthorization.JobID != combined.JobID {
@@ -143,6 +143,40 @@ func runSTPortDockerDaemonSequence(t *testing.T, runner *dockerPortSmokeRunner, 
 		if pathExists(unconsumedPath) || current.advertisedPort != 8443 {
 			t.Fatal("root restart repeated forward consume or lost combined snapshot")
 		}
+	}
+
+	// after_restart alone does not prove T is observable. Preserve this earlier
+	// crash boundary with an actually unhealthy T and require a fresh reconcile
+	// grant plus exact R, rather than asserting a completed target unconditionally.
+	interrupted := planFor(contracts.SystemUpdatePortModeLocalAndAdvertised, 9443, 18086, 21080, "job-st-port-unverified-recovery")
+	forwardGrantPath := filepath.Join(stateDir, "st-port-unverified-forward-grant.json")
+	runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: interrupted, Operation: "port_reconfigure", StateDir: stateDir,
+		CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, GrantRecordPath: forwardGrantPath, ExpectGrant: true, CrashPhase: "after_restart"}, true)
+	waitForDockerPortFixture(t, interrupted.Target.Docker.PublishedPort, 443, interrupted.Target.Docker.ContainerPort, interrupted.Target.ConfigRevision, true)
+	interruptedLedger, err := state.LoadJob(interrupted.TargetID, interrupted.JobID)
+	if err != nil || interruptedLedger == nil || interruptedLedger.PolicyTransition == nil || interruptedLedger.Result != nil || interruptedLedger.State != systemdPortLedgerRestarted ||
+		!interruptedLedger.PolicyTransition.Consumed || interruptedLedger.PolicyTransition.RollbackLatched {
+		t.Fatal("unverified target did not retain its interrupted forward state")
+	}
+	interrupted.LeaseGeneration++
+	interrupted.SessionID = "st-port-daemon-rollback-session-0123456789"
+	interrupted.PortPlanSHA256, _ = interrupted.ComputePortPlanSHA256()
+	recoveryGrantPath := filepath.Join(stateDir, "st-port-unverified-reconcile-grant.json")
+	recoveryResponsePath := filepath.Join(stateDir, "st-port-unverified-reconcile-response.json")
+	runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: interrupted, Operation: "port_reconfigure_reconcile", StateDir: stateDir,
+		CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, ResponsePath: recoveryResponsePath,
+		GrantRecordPath: recoveryGrantPath, ExpectGrant: true}, false)
+	var recoveryBinding contracts.UpdaterMutationGrantBinding
+	readDockerPortSmokeJSON(t, recoveryGrantPath, &recoveryBinding)
+	if recoveryBinding.Operation != contracts.UpdaterMutationOperation("port_reconfigure_reconcile") ||
+		recoveryBinding.Lease.Command.MutationAuthorization.JobID != interrupted.JobID || recoveryBinding.Lease.LeaseGeneration != int64(interrupted.LeaseGeneration) {
+		t.Fatal("unverified target recovery did not consume the exact new reconcile authority")
+	}
+	readDockerPortSmokeJSON(t, recoveryResponsePath, &response)
+	current = assertResult("rollback", response, interrupted, systemdPortResultRolledBack, -1)
+	if current.advertisedPort != interrupted.Before.AdvertisedPort || current.publishedPort != interrupted.Before.Docker.PublishedPort ||
+		current.containerPort != interrupted.Before.Docker.ContainerPort || current.configRevision != interrupted.Before.ConfigRevision+2 {
+		t.Fatal("unverified target recovery did not preserve B functional values with fresh R revisions")
 	}
 
 	unhealthy := planFor(contracts.SystemUpdatePortModeLocalAndAdvertised, 9443, 18086, 21080, "job-st-port-rollback")
@@ -186,7 +220,19 @@ func runSTPortDockerDaemonMutation(t *testing.T, runner CommandRunner, stateDir 
 		rt.dockerPortCrashPointForTest = observed.observeSTPortPhase
 	}
 	ctx := context.WithValue(context.Background(), portPolicyContextKey{}, portPolicyStore(manager))
-	return handleLocalExecutorMutation(ctx, policy, request, rt), consumed
+	failureSeen := false
+	var failurePhase localExecutionFailurePhase
+	var failureClass localExecutionFailureClass
+	ctx = context.WithValue(ctx, localExecutionFailureContextKey{}, func(phase localExecutionFailurePhase, class localExecutionFailureClass) {
+		if !failureSeen {
+			failureSeen, failurePhase, failureClass = true, phase, class
+		}
+	})
+	response := handleLocalExecutorMutation(ctx, policy, request, rt)
+	if response.Error != nil {
+		t.Logf("ST-PORT mutation first failure: observed=%t phase=%d class=%d", failureSeen, failurePhase, failureClass)
+	}
+	return response, consumed
 }
 
 func stPortDockerDaemonPlan(t *testing.T, policy LocalExecutorPolicy, current dockerPortSmokeState, mode contracts.SystemUpdatePortMode,

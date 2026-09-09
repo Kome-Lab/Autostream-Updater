@@ -65,6 +65,11 @@ const (
 	localFailureDockerObserveOwnership
 	localFailureDockerObserveListener
 	localFailureDockerObserveEndpoint
+	localFailureDockerListenerBinding
+	localFailureDockerListenerNamespace
+	localFailureDockerListenerSocketTable
+	localFailureDockerListenerOwnerProof
+	localFailureDockerListenerRecheck
 )
 
 const (

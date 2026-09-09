@@ -212,6 +212,9 @@ func executePortV2(ctx context.Context, policy LocalExecutorPolicy, request Loca
 		observeLocalExecutionFailure(forwardCtx, localFailureForwardProbe, err)
 		return rollbackPortV2(ctx, driver, journal, plan)
 	}
+	if driver.crash("after_target_verify") != nil {
+		return failure("reconcile_required")
+	}
 	return finishPortV2(forwardCtx, driver, journal, plan, systemdPortResultApplied)
 }
 
