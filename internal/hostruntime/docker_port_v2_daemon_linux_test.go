@@ -229,7 +229,7 @@ func runSTPortDockerDaemonMutation(t *testing.T, runner CommandRunner, stateDir 
 		}
 	})
 	response := handleLocalExecutorMutation(ctx, policy, request, rt)
-	if response.Error != nil {
+	if failureSeen || response.Error != nil {
 		t.Logf("ST-PORT mutation first failure: observed=%t phase=%d class=%d", failureSeen, failurePhase, failureClass)
 	}
 	return response, consumed

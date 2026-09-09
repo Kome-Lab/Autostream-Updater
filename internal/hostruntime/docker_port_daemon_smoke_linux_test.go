@@ -541,6 +541,9 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 		request,
 		remoteRuntime,
 	)
+	if failurePhase >= 0 {
+		t.Logf("ST-PORT child first failure: phase=%d class=%d", failurePhase, failureClass)
+	}
 	if payload.ExpectGrant != (grantCalls == 1) {
 		if payload.Plan.PortContractVersion == 2 {
 			expected := systemdPortResultApplied
@@ -548,7 +551,6 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 				expected = systemdPortResultRolledBack
 			}
 			runner.logSTPortResultFailure(t, "combined_recovery", response, payload.Plan, expected, grantCalls)
-			t.Logf("ST-PORT child first failure: phase=%d class=%d", failurePhase, failureClass)
 		}
 		t.Fatalf(
 			"child grant calls=%d expect_grant=%t",

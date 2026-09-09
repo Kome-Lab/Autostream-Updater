@@ -70,6 +70,8 @@ const (
 	localFailureDockerListenerSocketTable
 	localFailureDockerListenerOwnerProof
 	localFailureDockerListenerRecheck
+	localFailureDockerOwnerProcessDisappeared
+	localFailureDockerOwnerDescriptorDisappeared
 )
 
 const (

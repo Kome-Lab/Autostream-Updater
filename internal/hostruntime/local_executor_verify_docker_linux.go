@@ -29,6 +29,9 @@ type localDockerProcIdentity struct {
 	netInode  uint64
 }
 
+var errLocalDockerOwnerProcessDisappeared = errors.New("Docker owner process disappeared during enumeration")
+var errLocalDockerOwnerDescriptorDisappeared = errors.New("Docker owner descriptor disappeared during enumeration")
+
 // Published sockets belong to the daemon's network namespace (or to NAT),
 // while the application's socket belongs to the managed container. Bind the
 // actual published mapping to the declared listener in that PID's namespace;
@@ -44,6 +47,11 @@ func (v linuxLocalTargetVerifier) observeDockerPortListener(
 	phase := localFailureDockerListenerBinding
 	defer func() {
 		if resultErr != nil {
+			if errors.Is(resultErr, errLocalDockerOwnerProcessDisappeared) {
+				phase = localFailureDockerOwnerProcessDisappeared
+			} else if errors.Is(resultErr, errLocalDockerOwnerDescriptorDisappeared) {
+				phase = localFailureDockerOwnerDescriptorDisappeared
+			}
 			observeLocalExecutionFailure(ctx, phase, resultErr)
 		}
 	}()
@@ -285,6 +293,9 @@ func localDockerSocketOwnersForPIDs(
 	for _, pid := range pids {
 		owned, err := readOwned(pid, inodes)
 		if err != nil {
+			if errors.Is(err, errLocalDockerOwnerProcessDisappeared) || errors.Is(err, errLocalDockerOwnerDescriptorDisappeared) {
+				return nil, err
+			}
 			// A known owner cannot make an unreadable possible co-owner safe.
 			return nil, errors.New("Docker listener owner enumeration is incomplete")
 		}
@@ -299,6 +310,9 @@ func localDockerProcessSocketInodes(pid int, inodes map[string]struct{}) (map[st
 	directory := fmt.Sprintf("/proc/%d/fd", pid)
 	handle, err := os.Open(directory)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+			return nil, errLocalDockerOwnerProcessDisappeared
+		}
 		return nil, errors.New("Docker process descriptors are unavailable")
 	}
 	// Keep the directory descriptor open while inspecting /proc/self/fd, too.
@@ -311,6 +325,9 @@ func localDockerProcessSocketInodes(pid int, inodes map[string]struct{}) (map[st
 	for _, entry := range entries {
 		target, err := os.Readlink(directory + "/" + entry.Name())
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+				return nil, errLocalDockerOwnerDescriptorDisappeared
+			}
 			return nil, errors.New("Docker process descriptor changed or is unreadable")
 		}
 		if strings.HasPrefix(target, "socket:[") && strings.HasSuffix(target, "]") {
