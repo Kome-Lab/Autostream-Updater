@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -291,7 +292,11 @@ func (r *linuxSystemdPortRuntime) Restart(
 	); err != nil {
 		return errors.New("restart systemd service")
 	}
-	return nil
+	// Type=simple reports a started process before its listener is bound. This
+	// wait is only readiness; the caller still verifies policy, PID/cgroup,
+	// stable listener ownership and HTTP identity before accepting any result.
+	dialer := net.Dialer{Timeout: 100 * time.Millisecond}
+	return waitForSystemdPortListener(ctx, target.LocalListen, dialer.DialContext)
 }
 
 func (r *linuxSystemdPortRuntime) Verify(

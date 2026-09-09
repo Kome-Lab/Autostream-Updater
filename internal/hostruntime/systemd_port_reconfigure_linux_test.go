@@ -281,6 +281,12 @@ func (r *linuxSystemdPortRunner) Run(
 
 func TestLinuxSystemdPortRuntimeRestartUsesOnlyFixedSystemctlAndUnit(t *testing.T) {
 	target := validLocalExecutorPolicy(t).Targets[0]
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	target.LocalListen.Port = listener.Addr().(*net.TCPAddr).Port
 	runner := &linuxSystemdPortRunner{}
 	portRuntime := &linuxSystemdPortRuntime{
 		adapter: systemdPortAdapter{
