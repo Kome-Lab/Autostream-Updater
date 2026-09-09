@@ -56,6 +56,15 @@ const (
 	localFailureDockerPrepareTargetModel
 	localFailureDockerPrepareRollbackModel
 	localFailureDockerPrepareAvailability
+	localFailureDockerVerifyTarget
+	localFailureDockerVerifyObserve
+	localFailureDockerVerifyIdentity
+	localFailureDockerObserveMapping
+	localFailureDockerObserveModel
+	localFailureDockerObserveBaseline
+	localFailureDockerObserveOwnership
+	localFailureDockerObserveListener
+	localFailureDockerObserveEndpoint
 )
 
 const (

@@ -465,7 +465,14 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 	grantCalls := 0
 	request := dockerPortSmokeRequest(payload.Plan, payload.Operation)
 	ctx := context.Background()
+	failurePhase, failureClass := -1, -1
+	ctx = context.WithValue(ctx, localExecutionFailureContextKey{}, func(phase localExecutionFailurePhase, class localExecutionFailureClass) {
+		if failurePhase == -1 {
+			failurePhase, failureClass = int(phase), int(class)
+		}
+	})
 	if payload.Plan.PortContractVersion == 2 {
+		runner.beginSTPortDiagnostic("combined_recovery", true)
 		request = newSTPortV2Request(t, payload.Plan, time.Now(), payload.Operation)
 		manager, err := newFilePortPolicyStore(dockerPortSmokePolicyPath, true)
 		if err != nil {
@@ -505,13 +512,14 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 			return nil
 		},
 	}
-	if payload.CrashAfterRecreate {
-		remoteRuntime.dockerPortCrashPointForTest = func(point string) error {
+	remoteRuntime.dockerPortCrashPointForTest = func(point string) error {
+		_ = runner.observeSTPortPhase(point)
+		if payload.CrashAfterRecreate {
 			if point == "after_docker_recreate" || payload.Plan.PortContractVersion == 2 && point == "after_restart" {
 				os.Exit(dockerPortDaemonSmokeCrashExit)
 			}
-			return nil
 		}
+		return nil
 	}
 	request.MutationGrant = NewBoundedSecret(
 		os.Getenv(dockerPortDaemonSmokeGrantEnv),
@@ -523,6 +531,10 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 		remoteRuntime,
 	)
 	if payload.ExpectGrant != (grantCalls == 1) {
+		if payload.Plan.PortContractVersion == 2 {
+			runner.logSTPortResultFailure(t, "combined_recovery", response, payload.Plan, systemdPortResultApplied, grantCalls)
+			t.Logf("ST-PORT child first failure: phase=%d class=%d", failurePhase, failureClass)
+		}
 		t.Fatalf(
 			"child grant calls=%d expect_grant=%t",
 			grantCalls, payload.ExpectGrant,

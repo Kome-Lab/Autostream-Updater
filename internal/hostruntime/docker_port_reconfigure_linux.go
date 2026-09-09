@@ -165,6 +165,7 @@ func (r *linuxDockerPortRuntime) Observe(
 		r.adapter.PortEnvFile, r.requireRootOwned,
 	)
 	if err != nil || !checkpoint.Existed {
+		observeLocalExecutionFailure(ctx, localFailureDockerObserveMapping, err)
 		return dockerPortObservation{}, errors.New("Docker port mapping checkpoint is unavailable")
 	}
 	publishedPort, containerPort, configRevision, err := parseDockerPortEnv(
@@ -174,6 +175,7 @@ func (r *linuxDockerPortRuntime) Observe(
 		checkpoint.SHA256 != target.ConfigSHA256 ||
 		configRevision != target.ConfigRevision ||
 		publishedPort != target.LocalListen.Port {
+		observeLocalExecutionFailure(ctx, localFailureDockerObserveMapping, err)
 		return dockerPortObservation{}, errors.New("Docker port mapping sidecar differs from root policy")
 	}
 
@@ -186,10 +188,12 @@ func (r *linuxDockerPortRuntime) Observe(
 		resolved.configRevision != configRevision ||
 		resolved.policySHA256 != target.Docker.PortComposePolicySHA256 ||
 		resolved.composeSHA256 != target.Docker.ComposeConfigSHA256 {
+		observeLocalExecutionFailure(ctx, localFailureDockerObserveModel, err)
 		return dockerPortObservation{}, errors.New("resolved Docker port model differs from root policy")
 	}
 	baseline, err := observeDockerMutationBaseline(ctx, runtimeTarget, r.runner)
 	if err != nil {
+		observeLocalExecutionFailure(ctx, localFailureDockerObserveBaseline, err)
 		return dockerPortObservation{}, err
 	}
 	fullContainerID, err := r.fullContainerID(
@@ -205,20 +209,24 @@ func (r *linuxDockerPortRuntime) Observe(
 		[]dockerPortMapping{resolved.mapping},
 		fullContainerID,
 	); err != nil {
+		observeLocalExecutionFailure(ctx, localFailureDockerObserveOwnership, err)
 		return dockerPortObservation{}, err
 	}
 	verifier := linuxLocalTargetVerifier{runner: r.runner}
 	before, err := verifier.observeDocker(ctx, target, runtimeTarget)
 	if err != nil || before.CurrentVersion != baseline.Baseline.SourceVersion || before.dockerIdentity.containerID != fullContainerID {
+		observeLocalExecutionFailure(ctx, localFailureDockerObserveListener, err)
 		return dockerPortObservation{}, errors.New("Docker port listener identity verification failed")
 	}
 	if err := verifyLocalExecutorHTTP(
 		ctx, target, baseline.Baseline.SourceVersion, r.httpClient,
 	); err != nil {
+		observeLocalExecutionFailure(ctx, localFailureDockerObserveEndpoint, err)
 		return dockerPortObservation{}, errors.New("Docker port endpoint verification failed")
 	}
 	after, err := verifier.observeDocker(ctx, target, runtimeTarget)
 	if err != nil || !sameLocalProcessObservation(before, after) {
+		observeLocalExecutionFailure(ctx, localFailureDockerObserveListener, err)
 		return dockerPortObservation{}, errors.New("Docker port listener identity changed during endpoint verification")
 	}
 	observation := dockerPortObservation{

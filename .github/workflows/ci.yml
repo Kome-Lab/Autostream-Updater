@@ -15,7 +15,7 @@ concurrency:
 env:
   GOMAXPROCS: "2"
   GOTOOLCHAIN: local
-  UPDATER_APPLICATION_SHA: 625c6bed09051b1013226996abccb1ba11074e11
+  UPDATER_APPLICATION_SHA: ${{ github.sha }}
 
 jobs:
   go:

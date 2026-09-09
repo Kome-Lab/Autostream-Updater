@@ -208,6 +208,7 @@ func (d *dockerPortV2Driver) effectiveTarget(policy LocalExecutorPolicy, ref con
 func (d *dockerPortV2Driver) verify(ctx context.Context, policy LocalExecutorPolicy, ref contracts.SystemUpdatePortSnapshotRef) (*contracts.SystemUpdatePortRuntimeInstance, error) {
 	target, err := d.effectiveTarget(policy, ref)
 	if err != nil {
+		observeLocalExecutionFailure(ctx, localFailureDockerVerifyTarget, err)
 		return nil, err
 	}
 	observed, err := d.runtime.Observe(ctx, policy, target)
@@ -216,6 +217,11 @@ func (d *dockerPortV2Driver) verify(ctx context.Context, policy LocalExecutorPol
 		observed.Runtime.VersionEnvSHA256 != d.ledger.Baseline.VersionEnvSHA256 || observed.Runtime.ImageID != d.ledger.Baseline.ImageID ||
 		observed.Runtime.RepositoryDigest != d.ledger.Baseline.RepositoryDigest ||
 		reflect.DeepEqual(d.ledger.Plan.Before, &ref) && observed.Runtime.ContainerID != d.ledger.Baseline.ContainerID {
+		phase := localFailureDockerVerifyIdentity
+		if err != nil {
+			phase = localFailureDockerVerifyObserve
+		}
+		observeLocalExecutionFailure(ctx, phase, err)
 		return nil, errors.New("Docker port mapping, image or runtime identity is not verified")
 	}
 	return &contracts.SystemUpdatePortRuntimeInstance{ContainerID: observed.Runtime.ContainerID, ImageID: observed.Runtime.ImageID, RepositoryDigest: observed.Runtime.RepositoryDigest}, nil
