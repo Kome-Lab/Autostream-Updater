@@ -15,7 +15,7 @@ concurrency:
 env:
   GOMAXPROCS: "2"
   GOTOOLCHAIN: local
-  UPDATER_APPLICATION_SHA: ${{ github.sha }}
+  UPDATER_APPLICATION_SHA: 1cf2e8d832d0fd7faca483149a53af1f80edc8cc
 
 jobs:
   go:
@@ -183,7 +183,7 @@ jobs:
         include:
           - service: control-panel
             repository: Kome-Lab/Autostream-ControlPanel
-            sha: c0c5c8ea810be86b42213fe3b8665d853125b804
+            sha: aa7af06bdf04cb34d6489b68bf1113c084afad8b
             required: scripts/ci/application-probes/control-panel.txt
           - service: worker
             repository: Kome-Lab/Autostream-Worker
@@ -353,7 +353,7 @@ jobs:
       - go
       - application-probe-denominator
     env:
-      CONTROL_PANEL_SHA: c0c5c8ea810be86b42213fe3b8665d853125b804
+      CONTROL_PANEL_SHA: aa7af06bdf04cb34d6489b68bf1113c084afad8b
     steps:
       - name: Check out exact Updater source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -836,7 +836,7 @@ jobs:
       - installers
       - docker-fixture
     env:
-      CONTROL_PANEL_SHA: c0c5c8ea810be86b42213fe3b8665d853125b804
+      CONTROL_PANEL_SHA: aa7af06bdf04cb34d6489b68bf1113c084afad8b
       PRE_REMOVAL_UPDATER_SHA: ce27d4b7c849b75735cbbdb7720bea71b70e4bc1
       PRE_REMOVAL_CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
       PRE_REMOVAL_WORKFLOW_RUN_ID: "33576522166"
