@@ -115,29 +115,34 @@ func runSTPortDockerDaemonSequence(t *testing.T, runner *dockerPortSmokeRunner, 
 		t.Fatal("container-only change did not retain its existing published port")
 	}
 
-	combined := planFor(contracts.SystemUpdatePortModeLocalAndAdvertised, 8443, 18084, 19080, "job-st-port-combined")
-	// The child owns its execution counters. Do not reuse the preceding
-	// same-process trace or claim an unobserved consume count for recovery.
-	runner.beginSTPortDiagnostic("combined_recovery", false)
-	grantRecord := filepath.Join(stateDir, "st-port-crash-grant.json")
-	runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: combined, Operation: "port_reconfigure", StateDir: stateDir,
-		CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, GrantRecordPath: grantRecord, ExpectGrant: true, CrashAfterRecreate: true}, true)
-	var consumedBinding contracts.UpdaterMutationGrantBinding
-	readDockerPortSmokeJSON(t, grantRecord, &consumedBinding)
-	if consumedBinding.Operation != contracts.UpdaterMutationPortReconfigure || consumedBinding.Lease.Command.MutationAuthorization.JobID != combined.JobID {
-		t.Fatal("real versioned crash grant is not bound to the original job")
-	}
-	combined.LeaseGeneration++
-	combined.SessionID = "st-port-daemon-restarted-session-0123456789"
-	combined.PortPlanSHA256, _ = combined.ComputePortPlanSHA256()
-	responsePath := filepath.Join(stateDir, "st-port-reconcile-response.json")
-	unconsumedPath := filepath.Join(stateDir, "st-port-reconcile-grant.json")
-	runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: combined, Operation: "port_reconfigure_reconcile", StateDir: stateDir,
-		CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, ResponsePath: responsePath, GrantRecordPath: unconsumedPath}, false)
-	readDockerPortSmokeJSON(t, responsePath, &response)
-	current = assertResult("combined_recovery", response, combined, systemdPortResultApplied, -1)
-	if pathExists(unconsumedPath) || current.advertisedPort != 8443 {
-		t.Fatal("root restart repeated forward consume or lost combined snapshot")
+	// Independent jobs and alternating mappings exercise fresh child recovery
+	// repeatedly without replacing a failed attempt with a replay of its result.
+	for attempt := 0; attempt < 3; attempt++ {
+		suffix := strconv.Itoa(attempt)
+		combined := planFor(contracts.SystemUpdatePortModeLocalAndAdvertised, 8443, 18084+attempt%2, 19080+attempt%2, "job-st-port-combined-"+suffix)
+		// The child owns its execution counters. Do not reuse the preceding
+		// same-process trace or claim an unobserved consume count for recovery.
+		runner.beginSTPortDiagnostic("combined_recovery", false)
+		grantRecord := filepath.Join(stateDir, "st-port-crash-grant-"+suffix+".json")
+		runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: combined, Operation: "port_reconfigure", StateDir: stateDir,
+			CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, GrantRecordPath: grantRecord, ExpectGrant: true, CrashAfterRecreate: true}, true)
+		var consumedBinding contracts.UpdaterMutationGrantBinding
+		readDockerPortSmokeJSON(t, grantRecord, &consumedBinding)
+		if consumedBinding.Operation != contracts.UpdaterMutationPortReconfigure || consumedBinding.Lease.Command.MutationAuthorization.JobID != combined.JobID {
+			t.Fatal("real versioned crash grant is not bound to the original job")
+		}
+		combined.LeaseGeneration++
+		combined.SessionID = "st-port-daemon-restarted-session-0123456789"
+		combined.PortPlanSHA256, _ = combined.ComputePortPlanSHA256()
+		responsePath := filepath.Join(stateDir, "st-port-reconcile-response-"+suffix+".json")
+		unconsumedPath := filepath.Join(stateDir, "st-port-reconcile-grant-"+suffix+".json")
+		runDockerPortSmokeChild(t, dockerPortSmokeChildPayload{Plan: combined, Operation: "port_reconfigure_reconcile", StateDir: stateDir,
+			CaptureDir: captureDir, ImageID: imageID, RepositoryDigest: repositoryDigest, ResponsePath: responsePath, GrantRecordPath: unconsumedPath}, false)
+		readDockerPortSmokeJSON(t, responsePath, &response)
+		current = assertResult("combined_recovery", response, combined, systemdPortResultApplied, -1)
+		if pathExists(unconsumedPath) || current.advertisedPort != 8443 {
+			t.Fatal("root restart repeated forward consume or lost combined snapshot")
+		}
 	}
 
 	unhealthy := planFor(contracts.SystemUpdatePortModeLocalAndAdvertised, 9443, 18086, 21080, "job-st-port-rollback")

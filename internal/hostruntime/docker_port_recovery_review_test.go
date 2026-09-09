@@ -1,6 +1,8 @@
 package hostruntime
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/example/autostream-contracts/pkg/contracts"
@@ -37,6 +39,14 @@ func TestSTPortDockerReopensInterruptedTargetWithoutRepeatingMutation(t *testing
 					t.Fatal(err)
 				}
 				h.state = state
+				policyPath := filepath.Join(t.TempDir(), "executor-policy.json")
+				if err := os.WriteFile(policyPath, h.runtime.store.disk, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				reloaded, err := newFilePortPolicyStore(policyPath, false)
+				if err != nil || reloaded.Verify(ledger.PolicyTransition.TargetPolicy) != nil {
+					t.Fatal("fresh policy store did not retain the interrupted target authority")
+				}
 			}
 			h.runtime.crashAt = ""
 			h.plan.LeaseGeneration++
