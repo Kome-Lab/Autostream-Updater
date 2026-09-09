@@ -183,7 +183,7 @@ jobs:
         include:
           - service: control-panel
             repository: Kome-Lab/Autostream-ControlPanel
-            sha: 18d6b21906b3ba3f34f97a82ebf0381cd04b9818
+            sha: c0c5c8ea810be86b42213fe3b8665d853125b804
             required: scripts/ci/application-probes/control-panel.txt
           - service: worker
             repository: Kome-Lab/Autostream-Worker
@@ -191,7 +191,7 @@ jobs:
             required: scripts/ci/application-probes/worker.txt
           - service: encoder-recorder
             repository: Kome-Lab/Autostream-Encoder-Recorder
-            sha: 9459967f7d98b3d40916b455a041612f96e91409
+            sha: ccbf0c338979a2ad3d7a3b1e1e002adbdec9865d
             required: scripts/ci/application-probes/encoder-recorder.txt
           - service: discord-bot
             repository: Kome-Lab/Autostream-DiscordBot
@@ -199,7 +199,7 @@ jobs:
             required: scripts/ci/application-probes/discord-bot.txt
           - service: observability
             repository: Kome-Lab/Autostream-Observability
-            sha: f483d8426393778387923b529fb66924f487085d
+            sha: 70743ed5b1e5a16f347b36bc6b4e8f593ca0b108
             required: scripts/ci/application-probes/observability.txt
     steps:
       - name: Check out Updater evidence verifier
@@ -353,7 +353,7 @@ jobs:
       - go
       - application-probe-denominator
     env:
-      CONTROL_PANEL_SHA: 18d6b21906b3ba3f34f97a82ebf0381cd04b9818
+      CONTROL_PANEL_SHA: c0c5c8ea810be86b42213fe3b8665d853125b804
     steps:
       - name: Check out exact Updater source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -836,7 +836,7 @@ jobs:
       - installers
       - docker-fixture
     env:
-      CONTROL_PANEL_SHA: 18d6b21906b3ba3f34f97a82ebf0381cd04b9818
+      CONTROL_PANEL_SHA: c0c5c8ea810be86b42213fe3b8665d853125b804
       PRE_REMOVAL_UPDATER_SHA: ce27d4b7c849b75735cbbdb7720bea71b70e4bc1
       PRE_REMOVAL_CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
       PRE_REMOVAL_WORKFLOW_RUN_ID: "33576522166"
