@@ -29,9 +29,6 @@ type localDockerProcIdentity struct {
 	netInode  uint64
 }
 
-var errLocalDockerOwnerProcessDisappeared = errors.New("Docker owner process disappeared during enumeration")
-var errLocalDockerOwnerDescriptorDisappeared = errors.New("Docker owner descriptor disappeared during enumeration")
-
 // Published sockets belong to the daemon's network namespace (or to NAT),
 // while the application's socket belongs to the managed container. Bind the
 // actual published mapping to the declared listener in that PID's namespace;
@@ -83,7 +80,7 @@ func (v linuxLocalTargetVerifier) observeDockerPortListener(
 		return LocalProcessObservation{}, err
 	}
 	phase = localFailureDockerListenerOwnerProof
-	listenerPID, owners, err := localDockerListenerOwnerProof(inodes, controlGroup, process)
+	listenerPID, owners, err := localDockerListenerOwnerProof(ctx, inodes, controlGroup, process)
 	if err != nil {
 		return LocalProcessObservation{}, err
 	}
@@ -93,7 +90,7 @@ func (v linuxLocalTargetVerifier) observeDockerPortListener(
 		return LocalProcessObservation{}, err
 	}
 	phase = localFailureDockerListenerOwnerProof
-	afterPID, afterOwners, err := localDockerListenerOwnerProof(afterInodes, controlGroup, process)
+	afterPID, afterOwners, err := localDockerListenerOwnerProof(ctx, afterInodes, controlGroup, process)
 	if err != nil || listenerPID != afterPID || owners != afterOwners {
 		return LocalProcessObservation{}, errors.New("managed Docker listener ownership changed")
 	}
@@ -266,7 +263,13 @@ func readLocalDockerProcIdentity(pid int, controlGroup string) (localDockerProcI
 	return localDockerProcIdentity{start: start, netDevice: device, netInode: inode}, nil
 }
 
-func localDockerListenerOwnerProof(inodes map[string]struct{}, controlGroup string, namespace localDockerProcIdentity) (int, [32]byte, error) {
+func localDockerListenerOwnerProof(ctx context.Context, inodes map[string]struct{}, controlGroup string, namespace localDockerProcIdentity) (int, [32]byte, error) {
+	return retryLocalDockerOwnerProof(ctx, func() (int, [32]byte, error) {
+		return localDockerListenerOwnerProofOnce(inodes, controlGroup, namespace)
+	})
+}
+
+func localDockerListenerOwnerProofOnce(inodes map[string]struct{}, controlGroup string, namespace localDockerProcIdentity) (int, [32]byte, error) {
 	entries, err := readBoundedDirectory("/proc", localExecutorMaxCgroupPIDs*4)
 	if err != nil {
 		return 0, [32]byte{}, errors.New("Docker process table is unavailable or oversized")
@@ -307,7 +310,10 @@ func localDockerSocketOwnersForPIDs(
 }
 
 func localDockerProcessSocketInodes(pid int, inodes map[string]struct{}) (map[string]struct{}, error) {
-	directory := fmt.Sprintf("/proc/%d/fd", pid)
+	return localDockerSocketInodesFromDirectory(fmt.Sprintf("/proc/%d/fd", pid), inodes, os.Readlink)
+}
+
+func localDockerSocketInodesFromDirectory(directory string, inodes map[string]struct{}, readlink func(string) (string, error)) (map[string]struct{}, error) {
 	handle, err := os.Open(directory)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
@@ -323,7 +329,7 @@ func localDockerProcessSocketInodes(pid int, inodes map[string]struct{}) (map[st
 	}
 	owned := make(map[string]struct{})
 	for _, entry := range entries {
-		target, err := os.Readlink(directory + "/" + entry.Name())
+		target, err := readlink(directory + "/" + entry.Name())
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
 				return nil, errLocalDockerOwnerDescriptorDisappeared
@@ -352,6 +358,7 @@ func localDockerSocketOwnerProof(
 		return 0, [32]byte{}, errors.New("Docker listener ownership proof is unavailable")
 	}
 	processes := make(map[int]localDockerProcIdentity)
+	var transientScanErr error
 	listenerPID, err := validateLocalExecutorSocketOwners(inodes, owners, controlGroup, func(pid int, group string) error {
 		if _, ok := processes[pid]; ok {
 			return nil
@@ -362,6 +369,9 @@ func localDockerSocketOwnerProof(
 		}
 		owned, err := readOwned(pid, inodes)
 		if err != nil {
+			if errors.Is(err, errLocalDockerOwnerProcessDisappeared) || errors.Is(err, errLocalDockerOwnerDescriptorDisappeared) {
+				transientScanErr = err
+			}
 			return errors.New("Docker listener socket ownership is unavailable")
 		}
 		for inode := range inodes {
@@ -382,6 +392,9 @@ func localDockerSocketOwnerProof(
 		return nil
 	})
 	if err != nil {
+		if transientScanErr != nil {
+			return 0, [32]byte{}, transientScanErr
+		}
 		return 0, [32]byte{}, err
 	}
 	keys := make([]string, 0, len(inodes))

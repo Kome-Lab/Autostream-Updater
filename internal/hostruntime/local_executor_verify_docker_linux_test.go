@@ -3,12 +3,62 @@
 package hostruntime
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestLocalExecutorDockerListenerRecapturesDisappearingDescriptor(t *testing.T) {
+	directory := t.TempDir()
+	inodes := map[string]struct{}{"1001": {}}
+	if err := os.Symlink("socket:[1001]", filepath.Join(directory, "11")); err != nil {
+		t.Fatal(err)
+	}
+	noise := filepath.Join(directory, "12")
+	resetNoise := func() {
+		t.Helper()
+		if err := os.Symlink("/dev/null", noise); err != nil {
+			t.Fatal(err)
+		}
+	}
+	disappeared := false
+	readOwned := func(_ int, wanted map[string]struct{}) (map[string]struct{}, error) {
+		return localDockerSocketInodesFromDirectory(directory, wanted, func(path string) (string, error) {
+			// Remove the entry after ReadDir, at the actual Readlink boundary.
+			if path == noise && !disappeared {
+				disappeared = true
+				if err := os.Remove(noise); err != nil {
+					return "", err
+				}
+			}
+			return os.Readlink(path)
+		})
+	}
+	resetNoise()
+	if owners, err := localDockerSocketOwnersForPIDs(inodes, []int{101}, readOwned); !errors.Is(err, errLocalDockerOwnerDescriptorDisappeared) || owners != nil {
+		t.Fatal("single-pass scan did not reject a descriptor disappearing after directory enumeration")
+	}
+	resetNoise()
+	disappeared = false
+	inventories := 0
+	namespace := localDockerProcIdentity{start: 10, netDevice: 4, netInode: 42}
+	pid, proof, err := retryLocalDockerOwnerProof(context.Background(), func() (int, [32]byte, error) {
+		inventories++
+		owners, err := localDockerSocketOwnersForPIDs(inodes, []int{101}, readOwned)
+		if err != nil {
+			return 0, [32]byte{}, err
+		}
+		return localDockerSocketOwnerProof(inodes, owners, "/docker/test-container", namespace,
+			func(int, string) (localDockerProcIdentity, error) { return namespace, nil }, readOwned)
+	})
+	if err != nil || inventories != 2 || !disappeared || pid != 101 || proof == [32]byte{} {
+		t.Fatal("fresh complete enumeration did not recover the retained stable socket owner")
+	}
+}
 
 func TestLocalExecutorDockerListenerSelectsDeclaredNamespaceEndpoint(t *testing.T) {
 	for _, test := range []struct {
