@@ -541,17 +541,11 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 		request,
 		remoteRuntime,
 	)
+	runner.logSTPortChildReturn(t, payload, crashPhase, response, grantCalls)
 	if failurePhase >= 0 {
 		t.Logf("ST-PORT child first failure: phase=%d class=%d", failurePhase, failureClass)
 	}
 	if payload.ExpectGrant != (grantCalls == 1) {
-		if payload.Plan.PortContractVersion == 2 {
-			expected := systemdPortResultApplied
-			if payload.Operation == "port_reconfigure_reconcile" && payload.ExpectGrant {
-				expected = systemdPortResultRolledBack
-			}
-			runner.logSTPortResultFailure(t, "combined_recovery", response, payload.Plan, expected, grantCalls)
-		}
 		t.Fatalf(
 			"child grant calls=%d expect_grant=%t",
 			grantCalls, payload.ExpectGrant,
@@ -564,7 +558,7 @@ func TestDockerPortDaemonSmokeChild(t *testing.T) {
 }
 
 type dockerPortSmokeRunner struct {
-	base             OSCommandRunner
+	base             CommandRunner
 	imageID          string
 	repositoryDigest string
 	captureDir       string
@@ -579,8 +573,32 @@ type dockerPortSmokeRunner struct {
 // It retains closed phase names and capped counters, never command data/errors.
 type dockerPortSmokeSTPortDiagnostic struct {
 	step, firstPhase, lastPhase, firstFailure string
+	firstFailureSubstage                      string
+	firstFailureIdentity                      dockerPortSmokeIdentityObservation
 	runnerCalls, phaseCalls                   int
 	runnerCapped, phaseCapped, active         bool
+	childReturnLogged                         bool
+}
+
+type dockerPortSmokeIdentityObservation struct {
+	compared, bytesMatch, deviceMatch, inodeMatch bool
+}
+
+type dockerPortSmokeRunnerObservation struct {
+	phase, substage string
+	identity        dockerPortSmokeIdentityObservation
+}
+
+func (o *dockerPortSmokeRunnerObservation) atListenerStage(stage string) {
+	if o != nil {
+		o.substage = stage
+	}
+}
+
+func (o *dockerPortSmokeRunnerObservation) observeListenerMatch(record dockerPortSmokeListenerRecord, digest string, device, inode uint64) {
+	if o != nil {
+		o.identity = dockerPortSmokeIdentityObservation{true, digest == record.SHA256, device == record.Device, inode == record.Inode}
+	}
 }
 
 func (r *dockerPortSmokeRunner) beginSTPortDiagnostic(step string, sameProcess bool) {
@@ -622,7 +640,7 @@ func (r *dockerPortSmokeRunner) observeSTPortPhase(phase string) error {
 	return nil
 }
 
-func (r *dockerPortSmokeRunner) observeSTPortRunner(phase string, failed bool) {
+func (r *dockerPortSmokeRunner) observeSTPortRunner(observation dockerPortSmokeRunnerObservation, failed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	diagnostic := &r.stPortDiagnostic
@@ -635,16 +653,65 @@ func (r *dockerPortSmokeRunner) observeSTPortRunner(phase string, failed bool) {
 		diagnostic.runnerCapped = true
 	}
 	if failed && diagnostic.firstFailure == "" {
-		switch phase {
+		switch observation.phase {
 		case "command", "compose_capture", "mapping_read", "mapping_parse", "listener_tcp", "listener_identity":
-			diagnostic.firstFailure = phase
+			diagnostic.firstFailure = observation.phase
 		default:
 			diagnostic.firstFailure = "unknown"
+		}
+		diagnostic.firstFailureSubstage = "none"
+		if diagnostic.firstFailure == "listener_identity" {
+			switch observation.substage {
+			case "execution_read", "execution_decode", "listener_source", "context", "listener_file", "fixture_http", "identity_match":
+				diagnostic.firstFailureSubstage = observation.substage
+			default:
+				diagnostic.firstFailureSubstage = "unknown"
+			}
+			diagnostic.firstFailureIdentity = observation.identity
+		} else if diagnostic.firstFailure == "unknown" {
+			diagnostic.firstFailureSubstage = "unknown"
 		}
 	}
 }
 
-func (r *dockerPortSmokeRunner) logSTPortResultFailure(t *testing.T, step string, response LocalExecutorResponse, plan SystemdPortReconfigurePlan, expected string, consumed int) {
+type dockerPortSmokeLogger interface {
+	Helper()
+	Logf(string, ...any)
+}
+
+// Called immediately after the handler returns, before either child fatal.
+// Keep the existing grant predicate and derive expectations only from the input.
+func (r *dockerPortSmokeRunner) logSTPortChildReturn(t dockerPortSmokeLogger, payload dockerPortSmokeChildPayload, crashPhase string, response LocalExecutorResponse, consumed int) {
+	t.Helper()
+	grantMatches := payload.ExpectGrant == (consumed == 1)
+	if payload.Plan.PortContractVersion != 2 || (grantMatches && payload.ResponsePath != "" && crashPhase == "") {
+		return
+	}
+	r.mu.Lock()
+	logged := r.stPortDiagnostic.childReturnLogged
+	r.stPortDiagnostic.childReturnLogged = true
+	r.mu.Unlock()
+	if logged {
+		return
+	}
+	expected := systemdPortResultApplied
+	if payload.Operation == "port_reconfigure_reconcile" && payload.ExpectGrant {
+		expected = systemdPortResultRolledBack
+	}
+	expectedCrash := crashPhase != ""
+	switch crashPhase {
+	case "":
+		crashPhase = "none"
+	case "after_docker_recreate", "after_restart", "after_target_verify":
+	default:
+		crashPhase = "unknown"
+	}
+	t.Logf("ST-PORT Docker smoke child return: handler_returned=true expected_crash=%t crash_phase=%s returned_before_expected_crash=%t response_path_present=%t expect_grant=%t grant_count_matches=%t",
+		expectedCrash, crashPhase, expectedCrash, payload.ResponsePath != "", payload.ExpectGrant, grantMatches)
+	r.logSTPortResultFailure(t, "combined_recovery", response, payload.Plan, expected, consumed)
+}
+
+func (r *dockerPortSmokeRunner) logSTPortResultFailure(t dockerPortSmokeLogger, step string, response LocalExecutorResponse, plan SystemdPortReconfigurePlan, expected string, consumed int) {
 	t.Helper()
 	resultName := func(value string) string {
 		switch value {
@@ -688,13 +755,15 @@ func (r *dockerPortSmokeRunner) logSTPortResultFailure(t *testing.T, step string
 	if diagnostic.step != dockerPortSmokeStep(step) {
 		diagnostic = dockerPortSmokeSTPortDiagnostic{}
 	}
-	for _, value := range []*string{&diagnostic.firstPhase, &diagnostic.lastPhase, &diagnostic.firstFailure} {
+	for _, value := range []*string{&diagnostic.firstPhase, &diagnostic.lastPhase, &diagnostic.firstFailure, &diagnostic.firstFailureSubstage} {
 		if *value == "" {
 			*value = "none"
 		}
 	}
-	t.Logf("ST-PORT Docker smoke boundary: same_process_observation=%t first_phase=%s last_phase=%s phase_calls=%d phase_capped=%t first_runner_failure=%s runner_calls=%d runner_capped=%t",
-		diagnostic.active, diagnostic.firstPhase, diagnostic.lastPhase, diagnostic.phaseCalls, diagnostic.phaseCapped, diagnostic.firstFailure, diagnostic.runnerCalls, diagnostic.runnerCapped)
+	t.Logf("ST-PORT Docker smoke boundary: same_process_observation=%t first_phase=%s last_phase=%s phase_calls=%d phase_capped=%t first_runner_failure=%s first_runner_substage=%s first_failure_identity_compared=%t first_failure_bytes_match=%t first_failure_device_match=%t first_failure_inode_match=%t runner_calls=%d runner_capped=%t",
+		diagnostic.active, diagnostic.firstPhase, diagnostic.lastPhase, diagnostic.phaseCalls, diagnostic.phaseCapped, diagnostic.firstFailure, diagnostic.firstFailureSubstage,
+		diagnostic.firstFailureIdentity.compared, diagnostic.firstFailureIdentity.bytesMatch, diagnostic.firstFailureIdentity.deviceMatch, diagnostic.firstFailureIdentity.inodeMatch,
+		diagnostic.runnerCalls, diagnostic.runnerCapped)
 }
 
 func newDockerPortSmokeRunner(
@@ -722,8 +791,8 @@ func (r *dockerPortSmokeRunner) Run(
 	name string,
 	args ...string,
 ) (output string, err error) {
-	phase := "command"
-	defer func() { r.observeSTPortRunner(phase, err != nil) }()
+	observation := dockerPortSmokeRunnerObservation{phase: "command"}
+	defer func() { r.observeSTPortRunner(observation, err != nil) }()
 	if len(args) == 4 &&
 		args[0] == "image" &&
 		args[1] == "inspect" &&
@@ -739,32 +808,32 @@ func (r *dockerPortSmokeRunner) Run(
 	}
 	frozenPath := dockerPortSmokeFrozenComposePath(args)
 	if frozenPath != "" {
-		phase = "compose_capture"
+		observation.phase = "compose_capture"
 		if err := r.captureExecution(frozenPath); err != nil {
 			return "", err
 		}
 	}
-	phase = "command"
+	observation.phase = "command"
 	output, err = r.base.Run(ctx, dir, env, name, args...)
 	if err == nil && frozenPath != "" {
-		phase = "mapping_read"
+		observation.phase = "mapping_read"
 		body, readErr := os.ReadFile(r.adapter.PortEnvFile)
 		if readErr != nil {
 			return output, readErr
 		}
-		phase = "mapping_parse"
+		observation.phase = "mapping_parse"
 		publishedPort, _, _, parseErr := parseDockerPortEnv(
 			r.adapter, body,
 		)
 		if parseErr != nil {
 			return output, parseErr
 		}
-		phase = "listener_tcp"
+		observation.phase = "listener_tcp"
 		if waitErr := waitForDockerPortTCP(ctx, publishedPort); waitErr != nil {
 			return output, waitErr
 		}
-		phase = "listener_identity"
-		if verifyErr := r.verifyMountedListener(ctx, frozenPath, publishedPort); verifyErr != nil {
+		observation.phase = "listener_identity"
+		if verifyErr := r.verifyMountedListener(ctx, frozenPath, publishedPort, &observation); verifyErr != nil {
 			return output, verifyErr
 		}
 	}
@@ -855,7 +924,8 @@ func (r *dockerPortSmokeRunner) captureExecution(path string) error {
 	return firstError(writeErr, syncErr, closeErr)
 }
 
-func (r *dockerPortSmokeRunner) verifyMountedListener(ctx context.Context, path string, publishedPort int) error {
+func (r *dockerPortSmokeRunner) verifyMountedListener(ctx context.Context, path string, publishedPort int, observation *dockerPortSmokeRunnerObservation) error {
+	observation.atListenerStage("execution_read")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -865,22 +935,30 @@ func (r *dockerPortSmokeRunner) verifyMountedListener(ctx context.Context, path 
 			File string `json:"file"`
 		} `json:"configs"`
 	}
+	observation.atListenerStage("execution_decode")
 	if json.Unmarshal(body, &model) != nil || len(model.Configs) != 1 {
 		return errors.New("smoke execution listener source is ambiguous")
 	}
 	for _, config := range model.Configs {
+		observation.atListenerStage("listener_source")
 		if filepath.Dir(config.File) != filepath.Join(filepath.Dir(r.captureDir), "docker-listener-configs", "worker") {
 			return errors.New("smoke listener source escaped task storage")
 		}
+		observation.atListenerStage("context")
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return verifyDockerPortSmokeListenerFile(config.File, publishedPort)
+		return verifyDockerPortSmokeListenerFileObserved(config.File, publishedPort, observation)
 	}
 	return errors.New("smoke execution listener is missing")
 }
 
 func verifyDockerPortSmokeListenerFile(path string, publishedPort int) error {
+	return verifyDockerPortSmokeListenerFileObserved(path, publishedPort, nil)
+}
+
+func verifyDockerPortSmokeListenerFileObserved(path string, publishedPort int, observation *dockerPortSmokeRunnerObservation) error {
+	observation.atListenerStage("listener_file")
 	record, err := dockerPortSmokeListenerIdentity(path)
 	if err != nil {
 		return err
@@ -890,9 +968,12 @@ func verifyDockerPortSmokeListenerFile(path string, publishedPort int) error {
 		Device uint64 `json:"listener_device"`
 		Inode  uint64 `json:"listener_inode"`
 	}
+	observation.atListenerStage("fixture_http")
 	if err := getDockerPortFixtureJSON(&http.Client{Timeout: time.Second}, fmt.Sprintf("http://127.0.0.1:%d/config", publishedPort), &actual); err != nil {
 		return err
 	}
+	observation.atListenerStage("identity_match")
+	observation.observeListenerMatch(record, actual.SHA256, actual.Device, actual.Inode)
 	if actual.SHA256 != record.SHA256 || actual.Device != record.Device || actual.Inode != record.Inode {
 		return errors.New("Docker daemon and executor do not observe the same listener bytes and inode")
 	}
