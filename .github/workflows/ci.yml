@@ -183,7 +183,7 @@ jobs:
         include:
           - service: control-panel
             repository: Kome-Lab/Autostream-ControlPanel
-            sha: 69a0757ccc1d968da46a190945d81b501ca4e999
+            sha: a0472ae6d48ae8646eec6dfcea2c56a8fab313c6
             required: scripts/ci/application-probes/control-panel.txt
           - service: worker
             repository: Kome-Lab/Autostream-Worker
@@ -199,7 +199,7 @@ jobs:
             required: scripts/ci/application-probes/discord-bot.txt
           - service: observability
             repository: Kome-Lab/Autostream-Observability
-            sha: 70743ed5b1e5a16f347b36bc6b4e8f593ca0b108
+            sha: e754ca2015c1640118dc9a446ea2658b1b62a6ab
             required: scripts/ci/application-probes/observability.txt
     steps:
       - name: Check out Updater evidence verifier
@@ -353,7 +353,7 @@ jobs:
       - go
       - application-probe-denominator
     env:
-      CONTROL_PANEL_SHA: 69a0757ccc1d968da46a190945d81b501ca4e999
+      CONTROL_PANEL_SHA: a0472ae6d48ae8646eec6dfcea2c56a8fab313c6
     steps:
       - name: Check out exact Updater source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -836,7 +836,7 @@ jobs:
       - installers
       - docker-fixture
     env:
-      CONTROL_PANEL_SHA: 69a0757ccc1d968da46a190945d81b501ca4e999
+      CONTROL_PANEL_SHA: a0472ae6d48ae8646eec6dfcea2c56a8fab313c6
       PRE_REMOVAL_UPDATER_SHA: ce27d4b7c849b75735cbbdb7720bea71b70e4bc1
       PRE_REMOVAL_CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
       PRE_REMOVAL_WORKFLOW_RUN_ID: "33576522166"
