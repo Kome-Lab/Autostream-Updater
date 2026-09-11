@@ -21,6 +21,8 @@ env:
   GOTOOLCHAIN: local
   U_APP: 794d0cd69dd1b3ca130101f7769aaf8ac1274ac8
   B_WORKFLOW: b7ea27bb503bf259abeb34652b41cce9351884d2
+  D_PREVIOUS: b123456f33f0c61974bb3300dfd59b909646404a
+  W_BASE: 2cc44bcbad857a103aa58cb30e89f97dcda8ffda
   DIAGNOSTIC_WORKFLOW_SHA: ${{ github.workflow_sha }}
 
 jobs:
@@ -54,8 +56,9 @@ jobs:
           CI = b".github/workflows/ci.yml"
           CHECKS = (
               "commit_ids", "checkout_sha", "workflow_sha", "baseline_commits",
-              "baseline_ancestry", "workflow_ancestry", "baseline_delta",
-              "workflow_delta", "application_delta", "ci_blob", "worktree_clean",
+              "baseline_ancestry", "previous_ancestry", "base_ancestry", "current_ancestry",
+              "current_parent", "baseline_delta", "previous_delta", "base_delta",
+              "current_delta", "application_delta", "historical_ci_blob", "current_ci_blob", "worktree_clean",
           )
 
           class GuardFailure(Exception):
@@ -68,12 +71,15 @@ jobs:
               return result.stdout
 
           def ancestor(base, head):
-              return subprocess.run(
+              result = subprocess.run(
                   ["git", "merge-base", "--is-ancestor", base, head],
                   capture_output=True,
-              ).returncode == 0
+              )
+              if result.returncode not in (0, 1):
+                  raise GuardFailure("git_query_failed")
+              return result.returncode == 0
 
-          def allowed_delta(base, head, allowed):
+          def allowed_delta(base, head, allowed, modified_only=False):
               raw = git("diff-tree", "-r", "--no-commit-id", "--no-renames",
                         "--no-abbrev", "--raw", "-z", base, head)
               entries = raw.split(b"\0")
@@ -91,31 +97,43 @@ jobs:
                       (b":000000", b"A"), (b":100644", b"M"),
                   }:
                       return False
+                  if modified_only and (old_mode, status) != (b":100644", b"M"):
+                      return False
                   changed.add(path)
               return changed == allowed
 
-          def verify_source(u_app, baseline, source, workflow, ci_blob, checks):
+          def verify_source(u_app, baseline, previous, base, source, workflow, historical_ci_blob, current_ci_blob, checks):
               def require(name, condition):
                   checks[name] = "pass" if condition else "fail"
                   if not condition:
                       raise GuardFailure(name)
 
               require("commit_ids", all(re.fullmatch(r"[0-9a-f]{40}", value)
-                                        for value in (u_app, baseline, source, workflow)))
+                                        for value in (u_app, baseline, previous, base, source, workflow)))
               require("checkout_sha", git("rev-parse", "HEAD").strip().decode() == source)
               require("workflow_sha", workflow == source)
               require("baseline_commits", all(
                   git("rev-parse", "--verify", ref + "^{commit}").strip().decode() == ref
-                  for ref in (u_app, baseline)
+                  for ref in (u_app, baseline, previous, base, source, workflow)
               ))
               require("baseline_ancestry", ancestor(u_app, baseline))
-              require("workflow_ancestry", ancestor(baseline, source))
+              require("previous_ancestry", ancestor(baseline, previous))
+              require("base_ancestry", ancestor(previous, base))
+              require("current_ancestry", ancestor(base, source))
+              require("current_parent", git("rev-list", "--parents", "-n", "1", source).split()
+                      == [source.encode(), base.encode()])
               require("baseline_delta", allowed_delta(u_app, baseline, {CI}))
-              require("workflow_delta", allowed_delta(baseline, source, ALLOWED))
+              require("previous_delta", allowed_delta(baseline, previous, ALLOWED))
+              require("base_delta", allowed_delta(previous, base, {CI}))
+              require("current_delta", allowed_delta(base, source, ALLOWED, modified_only=True))
               require("application_delta", allowed_delta(u_app, source, ALLOWED | {CI}))
-              require("ci_blob", all(
-                  git("rev-parse", ref + ":.github/workflows/ci.yml").strip().decode() == ci_blob
-                  for ref in (baseline, source)
+              require("historical_ci_blob", all(
+                  git("rev-parse", ref + ":.github/workflows/ci.yml").strip().decode() == historical_ci_blob
+                  for ref in (baseline, previous)
+              ))
+              require("current_ci_blob", all(
+                  git("rev-parse", ref + ":.github/workflows/ci.yml").strip().decode() == current_ci_blob
+                  for ref in (base, source)
               ))
               # Include ignored untracked files too; build inputs must be clean.
               require("worktree_clean", not git("status", "--porcelain=v1", "-z", "--untracked-files=all")
@@ -128,9 +146,9 @@ jobs:
               status, failure = "fail", "none"
               try:
                   verify_source(
-                      os.environ["U_APP"], os.environ["B_WORKFLOW"], os.environ["GITHUB_SHA"],
+                      os.environ["U_APP"], os.environ["B_WORKFLOW"], os.environ["D_PREVIOUS"], os.environ["W_BASE"], os.environ["GITHUB_SHA"],
                       os.environ["DIAGNOSTIC_WORKFLOW_SHA"],
-                      "7780fa3a21e20ba304d2301f9dde3b7e97ec79d1", checks,
+                      "7780fa3a21e20ba304d2301f9dde3b7e97ec79d1", "1236ba11843261deec085cb7396f1276e41f83d2", checks,
                   )
                   status = "pass"
               except GuardFailure as error:
@@ -261,6 +279,8 @@ jobs:
               "purpose": "diagnostic_only",
               "U_APP": os.environ["U_APP"],
               "B_WORKFLOW": os.environ["B_WORKFLOW"],
+              "D_PREVIOUS": os.environ["D_PREVIOUS"],
+              "W_BASE": os.environ["W_BASE"],
               "D_NEXT": os.environ["GITHUB_SHA"],
               "workflow_sha": os.environ["DIAGNOSTIC_WORKFLOW_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
