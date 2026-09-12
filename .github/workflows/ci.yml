@@ -183,23 +183,23 @@ jobs:
         include:
           - service: control-panel
             repository: Kome-Lab/Autostream-ControlPanel
-            sha: 792c6c56506c26ffd81b18c1793211e8e78be44d
+            sha: d63cc3e827f927e4b38ef97d60912b40176607cd
             required: scripts/ci/application-probes/control-panel.txt
           - service: worker
             repository: Kome-Lab/Autostream-Worker
-            sha: 956bd3464f2e91c0f4c7080b726f4e6e7e3fd30d
+            sha: 6f9c714ab8ed4bc8604157f1dc883c3f98ff2d8f
             required: scripts/ci/application-probes/worker.txt
           - service: encoder-recorder
             repository: Kome-Lab/Autostream-Encoder-Recorder
-            sha: 7b29346f0dd118323ce89ef4be7d82a1648ac87a
+            sha: 2bb3a7811d6390614176455ccd27876f809dadb2
             required: scripts/ci/application-probes/encoder-recorder.txt
           - service: discord-bot
             repository: Kome-Lab/Autostream-DiscordBot
-            sha: bb297aac5a44865bd7d5f92dbd4b268d5b8e53f8
+            sha: 71fb449e7d5235262126546d022f3a70c6a9fb2c
             required: scripts/ci/application-probes/discord-bot.txt
           - service: observability
             repository: Kome-Lab/Autostream-Observability
-            sha: e754ca2015c1640118dc9a446ea2658b1b62a6ab
+            sha: f4f014bb210f965e6e17425090559b38eaac7261
             required: scripts/ci/application-probes/observability.txt
     steps:
       - name: Check out Updater evidence verifier
@@ -353,7 +353,7 @@ jobs:
       - go
       - application-probe-denominator
     env:
-      CONTROL_PANEL_SHA: 792c6c56506c26ffd81b18c1793211e8e78be44d
+      CONTROL_PANEL_SHA: d63cc3e827f927e4b38ef97d60912b40176607cd
     steps:
       - name: Check out exact Updater source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -836,7 +836,7 @@ jobs:
       - installers
       - docker-fixture
     env:
-      CONTROL_PANEL_SHA: 792c6c56506c26ffd81b18c1793211e8e78be44d
+      CONTROL_PANEL_SHA: d63cc3e827f927e4b38ef97d60912b40176607cd
       PRE_REMOVAL_UPDATER_SHA: ce27d4b7c849b75735cbbdb7720bea71b70e4bc1
       PRE_REMOVAL_CONTROL_PANEL_SHA: 4d9d9c16e4863cc11ad3ad4e826e97f30ecf5c74
       PRE_REMOVAL_WORKFLOW_RUN_ID: "33576522166"
