@@ -1,0 +1,770 @@
+[
+  {
+    "target_id": "B9-M001",
+    "repository": "Autostream-Contracts",
+    "path": "openapi/control-api.yaml",
+    "category": "production-code",
+    "before_lines": 8330,
+    "before_sha256": "a6b12221ba6972317f3d9bbd6044126ae364bd0e0fc739cbbd4e214e134f5bad"
+  },
+  {
+    "target_id": "B9-M002",
+    "repository": "Autostream-Contracts",
+    "path": "pkg/contracts/types.go",
+    "category": "production-code",
+    "before_lines": 2847,
+    "before_sha256": "76925a099ea9909b671734b6b39884526a08996379fda284e88159fd9ed50919"
+  },
+  {
+    "target_id": "B9-M003",
+    "repository": "Autostream-Contracts",
+    "path": "pkg/contracts/schema_files_test.go",
+    "category": "test-code",
+    "before_lines": 2361,
+    "before_sha256": "4d30ffb1a67bbae2588283d18cad510731b2521d21854091937fcb3bdde28a16"
+  },
+  {
+    "target_id": "B9-M004",
+    "repository": "Autostream-Contracts",
+    "path": "pkg/contracts/openapi_characterization_test.go",
+    "category": "test-code",
+    "before_lines": 1329,
+    "before_sha256": "90e2de4361f304c13f0b9cdd5c24e297e6f517f5ff0909e571c439aae6a68ae0"
+  },
+  {
+    "target_id": "B9-M005",
+    "repository": "Autostream-Contracts",
+    "path": "schemas/discord-bot-start-job-request.schema.json",
+    "category": "authored-schema",
+    "before_lines": 1290,
+    "before_sha256": "b78d10beb31818c5edbb6e7c5ee617d7df183adef9a585622d9127feafe5b35b"
+  },
+  {
+    "target_id": "B9-M006",
+    "repository": "Autostream-Contracts",
+    "path": "pkg/contracts/system_update_contracts_test.go",
+    "category": "test-code",
+    "before_lines": 1071,
+    "before_sha256": "358c7fe654c0d326775a063b01cfdf7a299165514a3cd1872abc43c659d53d86"
+  },
+  {
+    "target_id": "B9-M007",
+    "repository": "Autostream-Contracts",
+    "path": "scripts/characterize-contracts.mjs",
+    "category": "production-code",
+    "before_lines": 1003,
+    "before_sha256": "256dad10cd6339731328acc28c016baf14ce4da6c83247040a92bf7ae7d96a60"
+  },
+  {
+    "target_id": "B9-M008",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/server_youtube_lifecycle_test.go",
+    "category": "test-code",
+    "before_lines": 3840,
+    "before_sha256": "3ffe382a4cb0039d0e7bcf8567aab92a87b8af6f7ecbc5dc4ea72004a5597927"
+  },
+  {
+    "target_id": "B9-M009",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/helpers/browser-request-lifecycle.test.mts",
+    "category": "test-code",
+    "before_lines": 3336,
+    "before_sha256": "4ee8f97b8a2039f9cbe3f017e09dde9b7e45b7a3aa0d819e33235b8bbce401cf"
+  },
+  {
+    "target_id": "B9-M010",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/service_token_lock_order_mariadb_test.go",
+    "category": "test-code",
+    "before_lines": 3108,
+    "before_sha256": "13a091df667c2ebee2304b33b7ba350a8508c8c596a58cb89c5149b21ca59e5d"
+  },
+  {
+    "target_id": "B9-M011",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/services.go",
+    "category": "production-code",
+    "before_lines": 3107,
+    "before_sha256": "ca0ee5179f1a62bbf0c42e92b60e6b9224b53380616d5ca72df14e567c25a1b0"
+  },
+  {
+    "target_id": "B9-M012",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/service_token_lock_order_fix007_oracle_test.go",
+    "category": "test-code",
+    "before_lines": 3105,
+    "before_sha256": "33f29d6be73e2c4313bcc7db4537f549683c7f3f9b860cf77203b9af246dcf80"
+  },
+  {
+    "target_id": "B9-M013",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/updater_policy.go",
+    "category": "production-code",
+    "before_lines": 3100,
+    "before_sha256": "02cc323d9ff0f9fdc91ff02ad9238a49ce3d6e43b9ce42691d47b731a2bc9e11"
+  },
+  {
+    "target_id": "B9-M014",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/service_token_lock_order_fix005_mariadb_test.go",
+    "category": "test-code",
+    "before_lines": 3009,
+    "before_sha256": "d3a16e4e86903a95e81c805f51318388f02f92df725416cef72f514aaa3730ec"
+  },
+  {
+    "target_id": "B9-M015",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/system-updates.test.mts",
+    "category": "test-code",
+    "before_lines": 2796,
+    "before_sha256": "79d9727c58c5718affbd56b40c04f25860bc9404880f6daf405ec8eb252e4ce6"
+  },
+  {
+    "target_id": "B9-M016",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/ui-foundation-browser.test.mts",
+    "category": "test-code",
+    "before_lines": 2741,
+    "before_sha256": "8b892f6f13f299e27ac730015253680a1c70999d966eb3f95e5b91042405e440"
+  },
+  {
+    "target_id": "B9-M017",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/server_auth_test.go",
+    "category": "test-code",
+    "before_lines": 2728,
+    "before_sha256": "a83f77fe61fd733b2f6a45935c13a621778a3a42552e3fa59d32957a6d440619"
+  },
+  {
+    "target_id": "B9-M018",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/server_stream_lifecycle_test.go",
+    "category": "test-code",
+    "before_lines": 2594,
+    "before_sha256": "06b38a34e7dc105a35a77017dc0e05ef4c9729b3b6fc7b603b32cdd57c4670b3"
+  },
+  {
+    "target_id": "B9-M019",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/system_updates_test.go",
+    "category": "test-code",
+    "before_lines": 2195,
+    "before_sha256": "ece25eb62e16f7ed62457754b557d36e8cde215f6b88f6998e6c523bebc13ec4"
+  },
+  {
+    "target_id": "B9-M020",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/youtube_relay_binding_claims.go",
+    "category": "production-code",
+    "before_lines": 2180,
+    "before_sha256": "73a607854276a09ad50be8269f50f5c90ac3b5de48a19e9b28f77250cdb3e4a4"
+  },
+  {
+    "target_id": "B9-M021",
+    "repository": "Autostream-ControlPanel",
+    "path": "release/test-install-autostream-control-panel-integration.sh",
+    "category": "test-code",
+    "before_lines": 2179,
+    "before_sha256": "680adc35d6cf384c14cda06a64446858d0e05306682eb90ecbee46cbfe83a801"
+  },
+  {
+    "target_id": "B9-M022",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/system_updates.go",
+    "category": "production-code",
+    "before_lines": 2166,
+    "before_sha256": "42095722ccb6e6dad3619f6d639fc0fb155ad815ab68e6d1bc0d666a4b30cc15"
+  },
+  {
+    "target_id": "B9-M023",
+    "repository": "Autostream-ControlPanel",
+    "path": "release/install-autostream-control-panel",
+    "category": "automation-code",
+    "before_lines": 2157,
+    "before_sha256": "bef6f208c0529bf19c8fab647fa5e45267784261c3c61b9d8fdc2d328bd483c0"
+  },
+  {
+    "target_id": "B9-M024",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/server_runtime_config_test.go",
+    "category": "test-code",
+    "before_lines": 1998,
+    "before_sha256": "adc978b42780d118162e70ac8ad855307950090e9ec1918439e8951138b22666"
+  },
+  {
+    "target_id": "B9-M025",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/updater_identity_mutation_test.go",
+    "category": "test-code",
+    "before_lines": 1982,
+    "before_sha256": "2a5d8f85f7345bff7174aacb2d34c31809fab4bada07bf89455052248c5cd9f7"
+  },
+  {
+    "target_id": "B9-M026",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/server_node_registration_test.go",
+    "category": "test-code",
+    "before_lines": 1923,
+    "before_sha256": "15da29c91988ea589dbd074063c9c787db8957434a1466b812e98f3da7acecd7"
+  },
+  {
+    "target_id": "B9-M027",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/system_update_runtime_token_rotations_mariadb.go",
+    "category": "production-code",
+    "before_lines": 1892,
+    "before_sha256": "5ce91d56cced272e3ca228141e6f6e10fe74111a248d0408dbb65a5b224ebf3b"
+  },
+  {
+    "target_id": "B9-M028",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/src/features/mock-data.ts",
+    "category": "production-code",
+    "before_lines": 1881,
+    "before_sha256": "5fec19b8ab57c0cda25292ff05ad80a9a0dc184d15d504848a56f2700ad3fbb5"
+  },
+  {
+    "target_id": "B9-M029",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/servicecall/client.go",
+    "category": "production-code",
+    "before_lines": 1740,
+    "before_sha256": "912bd1a1d2342091e55dfd599c99bc16ad476607a08a5438caae05cda8a1e170"
+  },
+  {
+    "target_id": "B9-M030",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/memory_services_test.go",
+    "category": "test-code",
+    "before_lines": 1736,
+    "before_sha256": "666f702021856d4fc605abd2b5407fb988e1946bfbf2bded26a7b07a08b0f708"
+  },
+  {
+    "target_id": "B9-M031",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/streams.go",
+    "category": "production-code",
+    "before_lines": 1529,
+    "before_sha256": "1a4ebde472e3dfd05426f4f85e75235eefcda6e6d8c4ce1395eefb0d285b39ab"
+  },
+  {
+    "target_id": "B9-M032",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/servicecall/client_test.go",
+    "category": "test-code",
+    "before_lines": 1488,
+    "before_sha256": "e52609918ac95c8130a0fac879cae8e0b8e07369863d275b077c116c331bd175"
+  },
+  {
+    "target_id": "B9-M033",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/runtime_token_rotations_test.go",
+    "category": "test-code",
+    "before_lines": 1483,
+    "before_sha256": "c9bee5449bed7f1142b82bfc5de1b2c130776f0dab534705943c06d912cc8a05"
+  },
+  {
+    "target_id": "B9-M034",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/server_test.go",
+    "category": "test-code",
+    "before_lines": 1482,
+    "before_sha256": "3cf0efd29d7f747c3a6d9ba442d9472b23596877ffb9bad96f644fdd8d4c5f93"
+  },
+  {
+    "target_id": "B9-M035",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/memory_services.go",
+    "category": "production-code",
+    "before_lines": 1465,
+    "before_sha256": "e7189060b2eb24260f0b9dfcaa273877f6ccd5ad9ba406800af243f16c341280"
+  },
+  {
+    "target_id": "B9-M036",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/integrations.go",
+    "category": "production-code",
+    "before_lines": 1444,
+    "before_sha256": "8e652adce90cde4e67173b427611c2e59eb61992c3415c78fcb8899384e99fa0"
+  },
+  {
+    "target_id": "B9-M037",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/system_updates.go",
+    "category": "production-code",
+    "before_lines": 1398,
+    "before_sha256": "6301e83a32a8f97b7772319ae6c6b1b7b8f9d9363d292d4e1dacb7b7ca6d770a"
+  },
+  {
+    "target_id": "B9-M038",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/ui-foundation-remote-state.test.mts",
+    "category": "test-code",
+    "before_lines": 1335,
+    "before_sha256": "9ad902a62a243306a4807caf4ce67f84e95121ab55bf8ac79d84abf0840f0486"
+  },
+  {
+    "target_id": "B9-M039",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/ui-foundation-confirmation.test.mts",
+    "category": "test-code",
+    "before_lines": 1252,
+    "before_sha256": "f66a0b097ced1d780c6901b1b947d162660e8625183b1874c56532bfc2ec9399"
+  },
+  {
+    "target_id": "B9-M040",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/auth.go",
+    "category": "production-code",
+    "before_lines": 1237,
+    "before_sha256": "899ff70ea1e8991501889521029cdc399383e235c544d51f729a3a21e6b81f9f"
+  },
+  {
+    "target_id": "B9-M041",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/security/service_installer_test.go",
+    "category": "test-code",
+    "before_lines": 1215,
+    "before_sha256": "9498b9df45866bd8e13175319ffe021a759b9f80a40d52ae02b0c3a14529b343"
+  },
+  {
+    "target_id": "B9-M042",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/ui-foundation-secrets.test.mts",
+    "category": "test-code",
+    "before_lines": 1178,
+    "before_sha256": "96351da58e9cda3a71dc7f5d598a4348e099284da56cafcb2cb8bee1a2d03134"
+  },
+  {
+    "target_id": "B9-M043",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/server_stream_start.go",
+    "category": "production-code",
+    "before_lines": 1174,
+    "before_sha256": "80cb889dcfe47651d2377211c1b5f24c4bfac11ce8543404540f42acd05aac80"
+  },
+  {
+    "target_id": "B9-M044",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/system_update_runtime_token_rotations_mariadb_test.go",
+    "category": "test-code",
+    "before_lines": 1155,
+    "before_sha256": "f8283bdfe86c28fb591b4738c8b2800bc0c9662f55113d0d89a9e5ec3e6a8a27"
+  },
+  {
+    "target_id": "B9-M045",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/httpapi/st_port_full_chain_process_linux_test.go",
+    "category": "test-code",
+    "before_lines": 1148,
+    "before_sha256": "799211e0887aec1393d6ae654a5f89abe002aa4e2abeb21126d4d83ba53f42e5"
+  },
+  {
+    "target_id": "B9-M046",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/memory.go",
+    "category": "production-code",
+    "before_lines": 1104,
+    "before_sha256": "7d1fd17b79eedee4bc308cdb070649b9d84e046fe6b923ce2490f5dfde6a978f"
+  },
+  {
+    "target_id": "B9-M047",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/youtube/client_test.go",
+    "category": "test-code",
+    "before_lines": 1077,
+    "before_sha256": "ef7d89e80d7b443bd4d84769d1ea7c59d82f50c6b93a4594942d68ae7870e17a"
+  },
+  {
+    "target_id": "B9-M048",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/service_assignment_guard_mariadb.go",
+    "category": "production-code",
+    "before_lines": 1031,
+    "before_sha256": "7a021eea0306869129899e4bee657b025a3a59eb4fb6ef4015db3fc648cdff3e"
+  },
+  {
+    "target_id": "B9-M049",
+    "repository": "Autostream-ControlPanel",
+    "path": "internal/store/system_update_host_self_updates_memory.go",
+    "category": "production-code",
+    "before_lines": 1011,
+    "before_sha256": "4e6b2d7d95366cf3fe5071309af2b4721005a0d59222f5cad617df7ff9a3441f"
+  },
+  {
+    "target_id": "B9-M050",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/src/features/application/updater-host-bootstrap-panel.tsx",
+    "category": "production-code",
+    "before_lines": 942,
+    "before_sha256": "62bd386b6fbb710c292ed14011b25910c81abe6db1bea833b962b94ff7b9556a"
+  },
+  {
+    "target_id": "B9-M051",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/helpers/browser-harness.mts",
+    "category": "test-code",
+    "before_lines": 907,
+    "before_sha256": "b9b1114f1cbb1d44d3f1cae40b4a07124817211f7c228f4d871788b8af8fee49"
+  },
+  {
+    "target_id": "B9-M052",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/bundle9-browser-contract.test.mts",
+    "category": "test-code",
+    "before_lines": 860,
+    "before_sha256": "0be9156a82f960a60b2e8aec4f93df15dfe4b1f6072c57609b51883164007ba9"
+  },
+  {
+    "target_id": "B9-M053",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/tests/workers-foundation-pilot.test.mts",
+    "category": "test-code",
+    "before_lines": 815,
+    "before_sha256": "fa49f6d6c320cad5e88c671c00bb7e875ab974041a874ca705e1b988b7e84858"
+  },
+  {
+    "target_id": "B9-M054",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/src/features/nodes/node-registration-view.tsx",
+    "category": "production-code",
+    "before_lines": 709,
+    "before_sha256": "8f8335f88c6f0c78774f9f0b6bd0551aa87e22bd37591cb325bdb3a5d4b5b6ae"
+  },
+  {
+    "target_id": "B9-M055",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/src/features/application/updater-settings-form.tsx",
+    "category": "production-code",
+    "before_lines": 649,
+    "before_sha256": "517b9785d99efce835482e869ba06008bc25088e74b4f0334d5c6c4ea0b24abc"
+  },
+  {
+    "target_id": "B9-M056",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/src/features/application/application-info-view.tsx",
+    "category": "production-code",
+    "before_lines": 487,
+    "before_sha256": "4e7afb3d31acfc65b81d30e4c580272e91014043f092e254ee275731d92ed467"
+  },
+  {
+    "target_id": "B9-M057",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/src/features/streams/stream-preview.tsx",
+    "category": "production-code",
+    "before_lines": 468,
+    "before_sha256": "3daa25f20ed82c725b63012d02ac93015f87a82cb134788cb38a26b8e47eac11"
+  },
+  {
+    "target_id": "B9-M058",
+    "repository": "Autostream-ControlPanel",
+    "path": "web/src/features/application/updater-settings-panel.tsx",
+    "category": "production-code",
+    "before_lines": 462,
+    "before_sha256": "d33b399aef812aed5cbe5e9df569b15a11012fad252b109aa5dfcdd40379ebb6"
+  },
+  {
+    "target_id": "B9-M059",
+    "repository": "Autostream-DiscordBot",
+    "path": "internal/jobs/manager_test.go",
+    "category": "test-code",
+    "before_lines": 2626,
+    "before_sha256": "a99b426d3ed29e0191001462889445179afabe527207c79703e1e145e56bac77"
+  },
+  {
+    "target_id": "B9-M060",
+    "repository": "Autostream-DiscordBot",
+    "path": "release/install-autostream-discord-bot",
+    "category": "automation-code",
+    "before_lines": 2379,
+    "before_sha256": "ddd1f86c70abd8c61d5a60d48988571e030254f025a1e048ad6eedab83480e67"
+  },
+  {
+    "target_id": "B9-M061",
+    "repository": "Autostream-DiscordBot",
+    "path": "release/test-install-autostream-discord-bot-integration.sh",
+    "category": "test-code",
+    "before_lines": 1711,
+    "before_sha256": "3ed55200bf2cae56a6ea3cdec8903a1c2c848a10810f54dd26edefc1621475ed"
+  },
+  {
+    "target_id": "B9-M062",
+    "repository": "Autostream-DiscordBot",
+    "path": "internal/discord/client_test.go",
+    "category": "test-code",
+    "before_lines": 1634,
+    "before_sha256": "b87fad7e1dfe4f36324bb2dc260dc732d2f1e7be2a53bae723a753884b1ef2c1"
+  },
+  {
+    "target_id": "B9-M063",
+    "repository": "Autostream-DiscordBot",
+    "path": "internal/security/service_installer_test.go",
+    "category": "test-code",
+    "before_lines": 1215,
+    "before_sha256": "7f968c7fd673d9674ac30ccebdb457e23e8a25019085ea665b6630e7b265ea8b"
+  },
+  {
+    "target_id": "B9-M064",
+    "repository": "Autostream-DiscordBot",
+    "path": "internal/httpapi/server_test.go",
+    "category": "test-code",
+    "before_lines": 1129,
+    "before_sha256": "016d84274346bc1752f4658c2e4f26791af42addae617446b77d7e85ddf4532b"
+  },
+  {
+    "target_id": "B9-M065",
+    "repository": "Autostream-Encoder-Recorder",
+    "path": "release/install-autostream-encoder-recorder",
+    "category": "automation-code",
+    "before_lines": 2363,
+    "before_sha256": "86a0b6f0993b2eb3b931ffc099ed623834325c94165fdb9d0de31f713c85a45a"
+  },
+  {
+    "target_id": "B9-M066",
+    "repository": "Autostream-Encoder-Recorder",
+    "path": "release/test-install-autostream-encoder-recorder-integration.sh",
+    "category": "test-code",
+    "before_lines": 1979,
+    "before_sha256": "e050a8b0d6fb68c6d904e4dd8dffcf8be9d7f3b3fbb4c736193921e3cd49f7e9"
+  },
+  {
+    "target_id": "B9-M067",
+    "repository": "Autostream-Encoder-Recorder",
+    "path": "internal/security/service_installer_test.go",
+    "category": "test-code",
+    "before_lines": 1232,
+    "before_sha256": "f64f497b445025556a70af3e095accd6574782bed680d19550e51c2a7053a9ae"
+  },
+  {
+    "target_id": "B9-M068",
+    "repository": "Autostream-Observability",
+    "path": "release/install-autostream-observability",
+    "category": "automation-code",
+    "before_lines": 2259,
+    "before_sha256": "32b81282ef82d7700c3686b0dd74234be1b9684bbc4dc6ba6532b9344a551c83"
+  },
+  {
+    "target_id": "B9-M069",
+    "repository": "Autostream-Observability",
+    "path": "release/test-install-autostream-observability-integration.sh",
+    "category": "test-code",
+    "before_lines": 1535,
+    "before_sha256": "bfdf7f65b7693c4a6d49c52db0cf3ff187e079bf8d59379555ac13703d961803"
+  },
+  {
+    "target_id": "B9-M070",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_manual_upgrade_linux_test.go",
+    "category": "test-code",
+    "before_lines": 3665,
+    "before_sha256": "f186ad67a26c7d06803709421b4ee14be212d8e92c07f497c6eff4a918922cbf"
+  },
+  {
+    "target_id": "B9-M071",
+    "repository": "Autostream-Updater",
+    "path": "install/install-autostream-updater-agent",
+    "category": "automation-code",
+    "before_lines": 3589,
+    "before_sha256": "253de13618f2bc77fdf1f7ba9858cd27d0e2529bf16869f9d7bfeeea425e0cbc"
+  },
+  {
+    "target_id": "B9-M072",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_manual_upgrade_linux.go",
+    "category": "production-code",
+    "before_lines": 3328,
+    "before_sha256": "e26172ccdab1b609ee1a8bc13e2f896b50113111686fd2c83c4483c5da309d55"
+  },
+  {
+    "target_id": "B9-M073",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/docker_port_daemon_smoke_linux_test.go",
+    "category": "test-code",
+    "before_lines": 2678,
+    "before_sha256": "2a95d4520eaedbfbcfdd77ed80a94877cea5c7d5634fcbbb7c415a77f9bf4bd8"
+  },
+  {
+    "target_id": "B9-M074",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_self_update_executor.go",
+    "category": "production-code",
+    "before_lines": 2525,
+    "before_sha256": "5fec6cdb12d3dccb6a1cdfe4a24548a713ce3c6073353e231c1f38b553da7583"
+  },
+  {
+    "target_id": "B9-M075",
+    "repository": "Autostream-Updater",
+    "path": "scripts/ci/run-host-agent-installer-upgrade-smoke.sh",
+    "category": "automation-code",
+    "before_lines": 2285,
+    "before_sha256": "47f6c3529c7f33faabe5bedf729b489ed5e44e6c09481added1fcec081f28d49"
+  },
+  {
+    "target_id": "B9-M076",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_pull_execution_test.go",
+    "category": "test-code",
+    "before_lines": 1910,
+    "before_sha256": "02f3ca3d945aa1e77f3e86cc9f0d38b5117e2e9d587efc82296e6dff602e9a8f"
+  },
+  {
+    "target_id": "B9-M077",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_agent_configure_transaction.go",
+    "category": "production-code",
+    "before_lines": 1888,
+    "before_sha256": "5b379d18851ad941ba49bb1eb22bbd677c1d814103b1917373b28fd4d0055967"
+  },
+  {
+    "target_id": "B9-M078",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/runtime_token_rotation_executor.go",
+    "category": "production-code",
+    "before_lines": 1837,
+    "before_sha256": "bd20b514a0c8f5a81be5c004f84b85978e6f8bf00028844255d76f6f1d85cd6d"
+  },
+  {
+    "target_id": "B9-M079",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/runtime_token_rotation_executor_test.go",
+    "category": "test-code",
+    "before_lines": 1825,
+    "before_sha256": "71bc39021dbacba22904787fd0f5ae9c458d2a0f26e285e076114480b1c9c3cf"
+  },
+  {
+    "target_id": "B9-M080",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/local_executor_test.go",
+    "category": "test-code",
+    "before_lines": 1822,
+    "before_sha256": "b6757528fe3117c75dd41b8b54bfedd6fbdbbc278ee8a06787aaa311da88283d"
+  },
+  {
+    "target_id": "B9-M081",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/helper.go",
+    "category": "production-code",
+    "before_lines": 1738,
+    "before_sha256": "9f46ae6eb5c500cea2fb5aa8a4eff0ce163006d8ee44ff92a90d9fd020442c34"
+  },
+  {
+    "target_id": "B9-M082",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_self_update_executor_linux_test.go",
+    "category": "test-code",
+    "before_lines": 1680,
+    "before_sha256": "eaae15bebec06846c696946e313beead6590556fea8d4b8ed919f4de6f203789"
+  },
+  {
+    "target_id": "B9-M083",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/systemd_port_reconfigure.go",
+    "category": "production-code",
+    "before_lines": 1536,
+    "before_sha256": "1d30bf5b73e3afd2b03de7addf9bb6737fb88563d7e30be44576f7b585e01d75"
+  },
+  {
+    "target_id": "B9-M084",
+    "repository": "Autostream-Updater",
+    "path": "install/install-autostream-local-executor",
+    "category": "automation-code",
+    "before_lines": 1524,
+    "before_sha256": "c576bf4952880c0da500269db778974382ab49d6cd206eafdc6ea232c64b2105"
+  },
+  {
+    "target_id": "B9-M085",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_pull_execution.go",
+    "category": "production-code",
+    "before_lines": 1324,
+    "before_sha256": "3e31860816ec24ff6d261397eef240445f6f235d69e9b179c0a5189a0b1c47db"
+  },
+  {
+    "target_id": "B9-M086",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/docker_port_reconfigure.go",
+    "category": "production-code",
+    "before_lines": 1250,
+    "before_sha256": "11668c8d0e209724ad25d6b8155903a84d0dba7874ddf32c4e704f6a9973d6ce"
+  },
+  {
+    "target_id": "B9-M087",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_pull_agent_test.go",
+    "category": "test-code",
+    "before_lines": 1214,
+    "before_sha256": "b0b94dda737cc9175ffe3ae37ccd13eff05faf5a809a86c4c9b904044c4dd41d"
+  },
+  {
+    "target_id": "B9-M088",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_pull_agent.go",
+    "category": "production-code",
+    "before_lines": 1151,
+    "before_sha256": "f304160b352f0332c839649e1b1243031bbbb44925fe225ac66123d3e75cc2c5"
+  },
+  {
+    "target_id": "B9-M089",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_self_update_grant.go",
+    "category": "production-code",
+    "before_lines": 1058,
+    "before_sha256": "86d98bcdd10357132ee13db55acb62318a23f1a72d5674e3aeacab5de4c7afea"
+  },
+  {
+    "target_id": "B9-M090",
+    "repository": "Autostream-Updater",
+    "path": "scripts/ci/run-host-agent-installer-prepare-smoke.sh",
+    "category": "automation-code",
+    "before_lines": 1053,
+    "before_sha256": "c84bc618321412d558ee0c41d1a0da413fe4efaf48583aaf1f13b4c42fe3bdc1"
+  },
+  {
+    "target_id": "B9-M091",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/executor_mutation.go",
+    "category": "production-code",
+    "before_lines": 1031,
+    "before_sha256": "49dba9ca5e81c2cedb0ef067eaa4c3108c893aebde84772083525913185a0e47"
+  },
+  {
+    "target_id": "B9-M092",
+    "repository": "Autostream-Updater",
+    "path": "internal/hostruntime/host_pull_runtime_token_rotation_test.go",
+    "category": "test-code",
+    "before_lines": 1025,
+    "before_sha256": "ad1ea93c69c300020edcdfb6b3657d1b9897a8014a3f9acdc441c0ef472e5569"
+  },
+  {
+    "target_id": "B9-M093",
+    "repository": "Autostream-Worker",
+    "path": "release/install-autostream-worker",
+    "category": "automation-code",
+    "before_lines": 1967,
+    "before_sha256": "24556e8fcbdb3326f070df79962d5a695385edefe6759c9070c7f2e0c094b1fb"
+  },
+  {
+    "target_id": "B9-M094",
+    "repository": "Autostream-Worker",
+    "path": "release/test-install-autostream-worker-integration.sh",
+    "category": "test-code",
+    "before_lines": 1705,
+    "before_sha256": "f8675bb69f9a7fed80538fa3218ab67847706f4db2d5518f7bc3403fc406891e"
+  },
+  {
+    "target_id": "B9-M095",
+    "repository": "Autostream-Worker",
+    "path": "internal/jobs/manager_test.go",
+    "category": "test-code",
+    "before_lines": 1603,
+    "before_sha256": "250ecc88a49254f6232a8569329162fa8efa09da311beb88b98c4720f7711a2f"
+  },
+  {
+    "target_id": "B9-M096",
+    "repository": "Autostream-Worker",
+    "path": "internal/httpapi/server_test.go",
+    "category": "test-code",
+    "before_lines": 1237,
+    "before_sha256": "cfb8067037ec444d3551c10888e87c9ee97a1972823540fdeeafb4e0806607bc"
+  }
+]

@@ -1,0 +1,41 @@
+{
+  "format_version": 1,
+  "repository": "Autostream-Updater",
+  "artifacts": [
+    {
+      "target_id": "B9-M071",
+      "output": "install/install-autostream-updater-agent",
+      "fragments": [
+        "authoring/install-autostream-updater-agent/options-preflight.sh.inc",
+        "authoring/install-autostream-updater-agent/host-locks.sh.inc",
+        "authoring/install-autostream-updater-agent/artifact-verification.sh.inc",
+        "authoring/install-autostream-updater-agent/recovery-live-identity.sh.inc",
+        "authoring/install-autostream-updater-agent/recovery-guard.sh.inc",
+        "authoring/install-autostream-updater-agent/recovery-cleanup.sh.inc",
+        "authoring/install-autostream-updater-agent/recovery-locks.sh.inc",
+        "authoring/install-autostream-updater-agent/recovery-execution.sh.inc",
+        "authoring/install-autostream-updater-agent/installation-journal.sh.inc",
+        "authoring/install-autostream-updater-agent/account-rollback.sh.inc",
+        "authoring/install-autostream-updater-agent/identity-rollback.sh.inc",
+        "authoring/install-autostream-updater-agent/bootstrap.sh.inc",
+        "authoring/install-autostream-updater-agent/managed-directories.sh.inc",
+        "authoring/install-autostream-updater-agent/runtime-rollback.sh.inc",
+        "authoring/install-autostream-updater-agent/runtime-activation.sh.inc"
+      ]
+    },
+    {
+      "target_id": "B9-M084",
+      "output": "install/install-autostream-local-executor",
+      "fragments": [
+        "authoring/install-autostream-local-executor/options-host-locks.sh.inc",
+        "authoring/install-autostream-local-executor/artifact-verification.sh.inc",
+        "authoring/install-autostream-local-executor/installation-journal.sh.inc",
+        "authoring/install-autostream-local-executor/identity-traversal.sh.inc",
+        "authoring/install-autostream-local-executor/runtime-state.sh.inc",
+        "authoring/install-autostream-local-executor/host-preflight.sh.inc",
+        "authoring/install-autostream-local-executor/cleanup.sh.inc",
+        "authoring/install-autostream-local-executor/runtime-activation.sh.inc"
+      ]
+    }
+  ]
+}

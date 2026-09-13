@@ -1,0 +1,2403 @@
+[
+  {
+    "target_id": "B9-M070",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_manual_upgrade_linux_test.go",
+    "original_sha256": "f186ad67a26c7d06803709421b4ee14be212d8e92c07f497c6eff4a918922cbf",
+    "before_physical_lines": 3665,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture/model ownership;normal scenarios;authorization/negative cases;concurrency/failure/recovery;shared assertions",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_activation_linux_test.go",
+        "sha256": "d9fb8392b37aabd461bb82e57f75b0b359c81131a6adab7555b866d62251bac1",
+        "symbols": [
+          "TestManualHostUpgradeRecoversCandidateWhenBeginActivationFails",
+          "TestManualHostUpgradeRejectsProtectedInstallationDriftBeforeSwitch",
+          "TestManualHostUpgradeRollsBackAmbiguousActivationStateWrite",
+          "TestManualHostUpgradeRollsBackWhenActivationFenceDisappears"
+        ],
+        "physical_lines": 186
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_artifact_linux_test.go",
+        "sha256": "fc48fe38c6a3cbee8886046b9605f1bde1a2f594823b370a31cb690261283289",
+        "symbols": [
+          "TestSameManualHostUpgradeArchiveContentAcceptsOnlineBindingIdentity"
+        ],
+        "physical_lines": 89
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_checkpoint_linux_test.go",
+        "sha256": "a3aff1ce652e8dcaa126afb6462d34d176f2ec9ec97ea9f734a09272485dd35e",
+        "symbols": [
+          "TestManualHostUpgradeAllowsTerminalLocalCheckpointWithoutMutation",
+          "TestManualHostUpgradeFixedSystemdCheckpointTargetsCoverEveryProfile",
+          "TestManualHostUpgradePreservesTerminalCheckpointAcrossRollback",
+          "TestManualHostUpgradeProductionArtifactRequiresInstallerStaging",
+          "TestManualHostUpgradeRejectsInvalidLocalCheckpointBeforeMutation",
+          "TestManualHostUpgradeRejectsNonTerminalLocalCheckpointAndRestoresAgent",
+          "TestManualHostUpgradeScansFixedCheckpointAbsentFromConfigurations"
+        ],
+        "physical_lines": 299
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_deadline_linux_test.go",
+        "sha256": "06a1a1e52ddb07bb7ddde1eae7fd8dda42d933ab9cabdcf13640a8e6d85b3bab",
+        "symbols": [
+          "TestEnsureManualHostUpgradeDeadlineBoundaries",
+          "TestManualHostUpgradeCommitDeadlineExpiryRollsBackVerifiedRuntime",
+          "TestManualHostUpgradeDeadlineCancelsBlockedPostStopRunnerAndRollsBack",
+          "TestManualHostUpgradeDeadlineExpiryRollsBackBeforeStop"
+        ],
+        "physical_lines": 247
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_fixture_assertions_linux_test.go",
+        "sha256": "063143f593a51845576280540d1bf76fdd23a67aa79b3631d7211453bbef4e5b",
+        "symbols": [
+          "assertManualHostUpgradeLinuxNoTransitionResidue",
+          "assertManualHostUpgradeLinuxProtectedFileUnchanged",
+          "assertManualHostUpgradeLinuxPublicLinks",
+          "assertManualHostUpgradeLinuxSlotBinding",
+          "infoMode",
+          "manualHostUpgradeLinuxProtectedSnapshot",
+          "snapshotManualHostUpgradeLinuxProtectedFile"
+        ],
+        "physical_lines": 160
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_fixture_linux_test.go",
+        "sha256": "fd68673fb35fe2c8d56555318db4209cd7295abb41bf75d2a3af518d1dc08c25",
+        "symbols": [
+          "assertManualHostUpgradeLinuxRejectedBeforeMutation",
+          "newManualHostUpgradeLinuxFixture",
+          "removeManualHostUpgradeLinuxStateRoot",
+          "writeManualHostUpgradeLinuxCheckpoint"
+        ],
+        "physical_lines": 371
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_fixture_state_linux_test.go",
+        "sha256": "a23161cca20e8eed0c2599a9cad498112d70fd340aaec47132e055865885f91e",
+        "symbols": [
+          "assertManualHostUpgradeRecoveryUnitConverged",
+          "configureManualHostUpgradeDowngradeArtifact",
+          "configureManualHostUpgradeLegacyExecutorUnit",
+          "configureManualHostUpgradeLegacyRecoveryUnit",
+          "copyManualHostUpgradeArtifactBinariesToSlot",
+          "manualHostUpgradeLinuxMkdir",
+          "manualHostUpgradeLinuxUnitPaths",
+          "manualHostUpgradeLinuxWriteChecksums",
+          "manualHostUpgradeLinuxWriteFile"
+        ],
+        "physical_lines": 248
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_linux_test.go",
+        "sha256": "1459f8174d61475ae26933c377aa7f1bf62e7982c7a5440bc5ca2dbb61774583",
+        "symbols": [
+          "TestManualHostUpgradeBootstrapsMissingSlotAndCommitsRuntimePair",
+          "TestManualHostUpgradeCleansCreatedStateRootWhenBootstrapFsyncFails",
+          "TestManualHostUpgradeRejectsDurableBlockerBeforeCreatingStateRoot",
+          "TestManualHostUpgradeRejectsStateRootEEXISTRace",
+          "TestManualHostUpgradeRejectsTamperedArtifactBeforeMutation",
+          "TestManualHostUpgradeRejectsUnsafeBootstrapStateLayout",
+          "TestManualHostUpgradeRollsBackWhenTargetAgentActivationFails",
+          "TestManualHostUpgradeSameVersionPersistsMissingBootstrapState"
+        ],
+        "physical_lines": 412
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_migration_linux_test.go",
+        "sha256": "cdc3153ec704eccb744551fe4880de15dad918df397ffd0f2a21fdf96c2ead97",
+        "symbols": [
+          "TestManualHostUpgradeDoesNotMigrateRecoveryUnitBeforeBlockerChecks",
+          "TestManualHostUpgradeKeepsCorrectedRecoveryUnitAcrossRollbackAndRetry",
+          "TestManualHostUpgradeMigratesLegacyExecutorUnitDuringBootstrap",
+          "TestManualHostUpgradeMigratesLegacyRecoveryUnitDuringBootstrap",
+          "TestManualHostUpgradeRejectsDowngradeBeforeRecoveryMutation",
+          "TestManualHostUpgradeRejectsUnknownRecoveryOverrideBeforeMutation",
+          "TestManualHostUpgradeRetriesAfterBootstrapResetFailedFailure",
+          "TestManualHostUpgradeSameVersionMigratesLegacyExecutorUnit",
+          "TestManualHostUpgradeSameVersionMigratesLegacyRecoveryUnit"
+        ],
+        "physical_lines": 413
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_process_linux_test.go",
+        "sha256": "06147e10268530ca511979082dd26704addeee7426b295fbad0cc01f7c99bf87",
+        "symbols": [
+          "TestVerifyManualHostUnitProcessBoundsPersistentSystemdExecutor",
+          "TestVerifyManualHostUnitProcessHonorsCanceledTransitionWait",
+          "TestVerifyManualHostUnitProcessRejectsPIDChurn",
+          "TestVerifyManualHostUnitProcessRejectsUntrustedSystemdExecutorPath",
+          "TestVerifyManualHostUnitProcessWaitsForTransientSystemdExecutor"
+        ],
+        "physical_lines": 250
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_recovery_linux_test.go",
+        "sha256": "2f0de792182f2a6fe3ee90a3ccb29bd1fc5bc7dd6b9dac0b1de84b972c92e0de",
+        "symbols": [
+          "TestManualHostUpgradeCoreServiceRecoveryHandoffPreconditions",
+          "TestManualHostUpgradeJournalRecoveryInspection",
+          "TestManualHostUpgradeStoppedRecoveryHandoffAlreadyCurrentLeavesAgentStopped",
+          "TestManualHostUpgradeStoppedRecoveryHandoffCommitsRuntimePair",
+          "TestManualHostUpgradeStoppedRecoveryObservesDiskAgentAndLiveExecutor",
+          "TestManualHostUpgradeStoppedRecoveryPreFenceFailureLeavesAgentStopped"
+        ],
+        "physical_lines": 464
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_retry_linux_test.go",
+        "sha256": "23837f8a3ee11b101cf843b746af2f0fbd0ae6bbd012390f1ff5750296777549",
+        "symbols": [
+          "TestManualHostUpgradeBlocksOnTerminalGrantWithoutMutation",
+          "TestManualHostUpgradeLoadsLegacyHelperTargetsBeforeLocking",
+          "TestManualHostUpgradeSameArchiveRetryUsesFreshGeneration",
+          "TestManualHostUpgradeSameVersionStillRejectsDurableBlocker",
+          "TestManualHostUpgradeStopFailureUsesDetachedAgentRecovery"
+        ],
+        "physical_lines": 321
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_runner_linux_test.go",
+        "sha256": "9e95c73344655e05b173f8f4404205b66c91768ae7035d04bb2c63b087c780b1",
+        "symbols": [
+          "*manualHostUpgradeLinuxRunner.Run",
+          "*manualHostUpgradeLinuxRunner.binaryIdentity",
+          "*manualHostUpgradeLinuxRunner.currentSlot",
+          "*manualHostUpgradeLinuxRunner.unitActive",
+          "manualHostUpgradeLinuxFixture",
+          "manualHostUpgradeLinuxRunner",
+          "manualHostUpgradeTestOldCommit,manualHostUpgradeTestTargetCommit,manualHostUpgradeTestOldBuildDate,manualHostUpgradeTestBuildDate,manualHostUpgradeTestActivationNow",
+          "manualHostUpgradeTestOldVersion,manualHostUpgradeTestTargetVersion"
+        ],
+        "physical_lines": 355
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M071",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "install/install-autostream-updater-agent",
+    "original_sha256": "253de13618f2bc77fdf1f7ba9858cd27d0e2529bf16869f9d7bfeeea425e0cbc",
+    "before_physical_lines": 3589,
+    "disposition": "generated-from-bounded-authoring",
+    "responsibility": "preamble/options;validation/identity;locks/journal;staging;account/systemd changes;activation/health;rollback/cleanup;main dispatch",
+    "destinations": [
+      {
+        "path": "authoring/install-autostream-updater-agent/account-rollback.sh.inc",
+        "sha256": "fb1e50705c5889f4bac0c83bcb57a5eb9729b41aa2d8dcadf0cb58327ea87053",
+        "symbols": [],
+        "physical_lines": 227
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/artifact-verification.sh.inc",
+        "sha256": "90dbbfd0aca657e725dfb4d53d7ca6d3fd56d9e7efe10fb404942940f53f0c6a",
+        "symbols": [],
+        "physical_lines": 331
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/bootstrap.sh.inc",
+        "sha256": "23a43fb207e438d8f40e2fc77963a0163ebeb5f5e483f554342175d635a341eb",
+        "symbols": [],
+        "physical_lines": 181
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/host-locks.sh.inc",
+        "sha256": "ab6c61ac9c222b8fc7affe53830b03b5789bfc5b05ba04e37de87d3c5a26dfc9",
+        "symbols": [],
+        "physical_lines": 130
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/identity-rollback.sh.inc",
+        "sha256": "2204f15c704c114f54420c99961a064aa1bb7ab59945513ec1f04d8274bc4fe0",
+        "symbols": [],
+        "physical_lines": 187
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/installation-journal.sh.inc",
+        "sha256": "e951774d19a1d7cc3bf228d8df40332f5e5cab956d4cb8a4e73759c11344e362",
+        "symbols": [],
+        "physical_lines": 148
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/managed-directories.sh.inc",
+        "sha256": "68d85a3f7d123ada096fb28dc9362e14e4de5c83974a4ac41913ffa0adfe8af7",
+        "symbols": [],
+        "physical_lines": 184
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/options-preflight.sh.inc",
+        "sha256": "c2f7b29b35816f83be7165e7cba167d92b34e2ce166b52a3280c8ddc1bdf0d0f",
+        "symbols": [],
+        "physical_lines": 195
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/recovery-cleanup.sh.inc",
+        "sha256": "5a093371b10e9c588541aac43bbf2ad22a5b75d4a61bf82d1ee839caa55d40ea",
+        "symbols": [],
+        "physical_lines": 129
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/recovery-execution.sh.inc",
+        "sha256": "91a2d2f08f9e019637ddf2d5bed7e4c86892edf36ce087a71a14e18d2cae9589",
+        "symbols": [],
+        "physical_lines": 288
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/recovery-guard.sh.inc",
+        "sha256": "2b432cc203d8befa6bb49753057ecb1d0d08d0ecf06310341c56b7ae1731d013",
+        "symbols": [],
+        "physical_lines": 325
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/recovery-live-identity.sh.inc",
+        "sha256": "96d6d9259c80d04bfe2d2d2f4ee5daf8a126e5689253cce71722a5bc9d565ef8",
+        "symbols": [],
+        "physical_lines": 345
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/recovery-locks.sh.inc",
+        "sha256": "a91c1157a666acb2998a12a79a36c04d82770058a902b32c5b89f86b4816bc61",
+        "symbols": [],
+        "physical_lines": 175
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/runtime-activation.sh.inc",
+        "sha256": "9ec1ab83cd4f90d329ebe9f9cdece05fdce6ba29c45f1a9cf97672c3e48d95a1",
+        "symbols": [],
+        "physical_lines": 349
+      },
+      {
+        "path": "authoring/install-autostream-updater-agent/runtime-rollback.sh.inc",
+        "sha256": "8663736eb5c7795db8c6c954590475e864711b49aba40d958a157541174ea136",
+        "symbols": [],
+        "physical_lines": 395
+      },
+      {
+        "path": "install/install-autostream-updater-agent",
+        "sha256": "253de13618f2bc77fdf1f7ba9858cd27d0e2529bf16869f9d7bfeeea425e0cbc",
+        "symbols": [],
+        "physical_lines": 3589
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M072",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_manual_upgrade_linux.go",
+    "original_sha256": "e26172ccdab1b609ee1a8bc13e2f896b50113111686fd2c83c4483c5da309d55",
+    "before_physical_lines": 3328,
+    "disposition": "responsibility-split",
+    "responsibility": "request/plan validation;artifact identity;staging;activation;health;rollback/recovery;filesystem helpers",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_activation_linux.go",
+        "sha256": "04f63cb943977dae995f0caa821f7d8f7cd475c634f6444ced3d1b1f94b6d431",
+        "symbols": [
+          "acquireManualHostUpgradeLocks",
+          "activateManualHostUpgrade",
+          "lockManualHostUpgradeFile",
+          "rollbackManualHostUpgrade"
+        ],
+        "physical_lines": 237
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_artifact_linux.go",
+        "sha256": "4d8184767f486f95508cd7f8593c8345069cbea936624f4d73498a43381f180d",
+        "symbols": [
+          "inspectManualHostUpgradeArtifact",
+          "isManualHostInstallerStageName",
+          "manualHostArtifactManifest",
+          "readBoundedManualHostUpgradeFile",
+          "readManualHostBinaryIdentity",
+          "validateManualHostUpgradeArtifactStagingPath",
+          "validateManualHostUpgradeArtifactTree",
+          "verifyManualHostUpgradeChecksumInventory"
+        ],
+        "physical_lines": 406
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_blockers_linux.go",
+        "sha256": "5f1752e95271ad1e8c622ce05f29271e8cf41d133a9c46ef6d790fa2f197e4a7",
+        "symbols": [
+          "inspectManualHostUpdateCheckpoint",
+          "inspectManualHostUpgradeDurableBlockers",
+          "manualHostUpgradeFixedSystemdCheckpointTargets",
+          "readManualHostUpgradeJournal",
+          "rejectManualHostUpgradeStateFile",
+          "scanManualHostLegacyHelperState",
+          "scanManualHostRemoteMutationLedgers",
+          "scanManualHostRemoteMutationLedgersAt",
+          "scanManualHostUpdateCheckpoints",
+          "validateManualHostUpgradeStateRoots"
+        ],
+        "physical_lines": 398
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_bootstrap_linux.go",
+        "sha256": "e747ab76a7f91f2dccfa036d1a0b2a75d2b852df47af4cf25ac619a1e067e6df",
+        "symbols": [
+          "cleanupManualHostUpgradeCreatedStateRoot",
+          "ensureManualHostUpgradeBootstrapStateRoot",
+          "manualHostUpgradeSlotExists",
+          "persistManualHostUpgradeBootstrapState",
+          "recoverManualHostUpgradeBeforeFence",
+          "restoreManualHostUpgradeOriginalState",
+          "stopManualHostAgent",
+          "syncManualHostUpgradeDirectory"
+        ],
+        "physical_lines": 279
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_config_linux.go",
+        "sha256": "ba2a0ae70094b12704c3eefcecc7ffc6f49a03fd915b6242ffcd5feb91391dd6",
+        "symbols": [
+          "defaultManualHostUpgradeRuntime",
+          "manualHostBinaryIdentity",
+          "manualHostRuntimeObservation",
+          "manualHostUpgradeAgentUser,manualHostUpgradeAgentGroup,manualHostUpgradeRecoveryTimeout,legacyUpdateHostInstallLockPath",
+          "manualHostUpgradePaths",
+          "manualHostUpgradeRuntime",
+          "manualHostUpgradeSnapshot",
+          "secureManualHostUpgradeDirectory",
+          "secureManualHostUpgradeFile",
+          "secureManualHostUpgradeLink"
+        ],
+        "physical_lines": 135
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_installation_linux.go",
+        "sha256": "e362e6b0872c322c153f2d2f82b1162fb8faf2a9f30459bf5da7d2a904a0f193",
+        "symbols": [
+          "migrateManualHostUpgradeExecutorUnit",
+          "migrateManualHostUpgradeRecoveryUnit",
+          "snapshotManualHostUpgradeStateLayout",
+          "validateManualHostUpgradeInstallation"
+        ],
+        "physical_lines": 343
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_linux.go",
+        "sha256": "6d69ea7e4ec7356737286a026bf9470f7a83d91cf1e11e07646da5568cdeb1f4",
+        "symbols": [
+          "prepareManualHostUpgradeRuntime",
+          "upgradeHostRuntimeFromVerifiedBundle",
+          "upgradeHostRuntimeWithRuntime"
+        ],
+        "physical_lines": 517
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_observation_linux.go",
+        "sha256": "22b5820b62fe02bc271770ed2cb690c89cf5a2381ccc34b39090455ec007cc69",
+        "symbols": [
+          "ensureManualHostUpgradeDeadline",
+          "observeManualHostRuntime",
+          "observeManualHostRuntimeForUpgrade",
+          "verifyManualHostUnitProcess",
+          "verifyStoppedManualHostAgentIdentity"
+        ],
+        "physical_lines": 256
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_port_ledger_linux.go",
+        "sha256": "12ecd3266c8b7373e2f12f8bc39c3409e6068bf8dcb4f10790813955661e4f06",
+        "symbols": [
+          "decodeManualHostPrivateJSON",
+          "readOptionalManualHostDirectory",
+          "rejectManualHostUpgradeGrant",
+          "scanManualHostPortLedgerNamespace",
+          "scanManualHostPortLedgers"
+        ],
+        "physical_lines": 190
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_services_linux.go",
+        "sha256": "5e5dbf359d53bcc3fcf0b47bd86e5480aef926347f5018ccf346bdcd6bed3c93",
+        "symbols": [
+          "normalizeManualHostUpgradeRecoveryServices",
+          "readManualHostUpgradeRecoveryServiceState",
+          "requireManualHostSystemdState",
+          "restartManualHostUpgradeLocalExecutor",
+          "validateManualHostUpgradeCoreServicePreconditions",
+          "validateManualHostUpgradeRecoveryServicePreconditions"
+        ],
+        "physical_lines": 184
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_snapshot_linux.go",
+        "sha256": "a4c001d8938c680c1958082d0f97bcb812d99cbe6f0c53f9889305b45fa995d6",
+        "symbols": [
+          "manualHostUpgradeDirectoryMatches",
+          "manualHostUpgradeProtectedFileMatches",
+          "rejectManualHostUpgradeTransitionResidue",
+          "snapshotManualHostUpgradeDirectory",
+          "snapshotManualHostUpgradeFile",
+          "snapshotManualHostUpgradePublicLink",
+          "validateManualHostUpgradeDirectoryInfo",
+          "verifyManualHostUpgradeSnapshot"
+        ],
+        "physical_lines": 236
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_state_linux.go",
+        "sha256": "948f8ffb3d2e2669757b885530b19908d6350c1c48b5dd9fc0bf3d5c2083fb04",
+        "symbols": [
+          "inspectHostUpdateRecovery",
+          "loadManualHostUpgradeState",
+          "manualHostUpgradeAlreadyCurrent",
+          "manualHostUpgradeJournalRecoveryActive",
+          "readManualHostUpdateSlotBinding",
+          "sameManualHostUpgradeArchiveContent",
+          "validateManualHostUpgradeCurrentState"
+        ],
+        "physical_lines": 278
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M073",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/docker_port_daemon_smoke_linux_test.go",
+    "original_sha256": "2a95d4520eaedbfbcfdd77ed80a94877cea5c7d5634fcbbb7c415a77f9bf4bd8",
+    "before_physical_lines": 2678,
+    "disposition": "responsibility-split",
+    "responsibility": "Docker fixture;success/drift;restart/unhealthy/rollback;grant checks;safe diagnostic helpers",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/docker_port_daemon_assertions_linux_test.go",
+        "sha256": "6c8162201a07c6b3ee08d07bce542d7175b6d262f534ec88414202c3448ef0d8",
+        "symbols": [
+          "assertDockerPortSmokeApplied",
+          "assertDockerPortSmokeDurableState",
+          "assertDockerPortSmokeFrozenCaptures",
+          "assertDockerPortSmokeRolledBack",
+          "assertDockerPortSmokeSidecar",
+          "assertDockerPortSmokeWorkDirEmpty",
+          "startDockerPortSmokeForeignContainer"
+        ],
+        "physical_lines": 227
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_child_linux_test.go",
+        "sha256": "ff8310bf51a4902949370d375747c83bd007b8d2c50f494d1627e55d8e718cf2",
+        "symbols": [
+          "TestDockerPortDaemonSmokeChild"
+        ],
+        "physical_lines": 130
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_cleanup_linux_test.go",
+        "sha256": "bcb864f8f75c87974e0b76e5f553e9d81e1bf2e98f46b2b9e5728a60eadaa8b5",
+        "symbols": [
+          "cleanupDockerPortSmokeEnvironment",
+          "dockerPortSmokeCommand",
+          "dockerPortSmokeSHA256",
+          "mustDockerPortSmokeRun",
+          "pathExists",
+          "proveDockerAutoConfigureFailsClosed",
+          "proveDockerTransientCleanup",
+          "requireDockerPortSmokeHostClean",
+          "requireDockerPortSmokePortAvailable"
+        ],
+        "physical_lines": 251
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_container_linux_test.go",
+        "sha256": "5fac0436b09ace5774997de600ada6ad7d2feb78ca85d13f41a24cc7eda9afd0",
+        "symbols": [
+          "assertDockerPortFixtureBoundary",
+          "buildDockerPortFixtureImage",
+          "dockerPortSmokeContainerID",
+          "dockerPortSmokeServerGoArch",
+          "getDockerPortFixtureJSON",
+          "verifyDockerPortFixture",
+          "waitForDockerPortFixture"
+        ],
+        "physical_lines": 255
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_diagnostics_linux_test.go",
+        "sha256": "fe10a27a7890a4048065ea8a49a1fcb6721ee804e1038813cd70d262f2105fc5",
+        "symbols": [
+          "*dockerPortSmokeRunner.beginSTPortDiagnostic",
+          "*dockerPortSmokeRunner.logSTPortChildReturn",
+          "*dockerPortSmokeRunner.logSTPortResultFailure",
+          "*dockerPortSmokeRunner.observeSTPortPhase",
+          "*dockerPortSmokeRunner.observeSTPortRunner",
+          "*dockerPortSmokeRunnerObservation.atListenerStage",
+          "*dockerPortSmokeRunnerObservation.observeListenerMatch",
+          "dockerPortSmokeIdentityObservation",
+          "dockerPortSmokeLogger",
+          "dockerPortSmokeRunner",
+          "dockerPortSmokeRunnerObservation",
+          "dockerPortSmokeSTPortDiagnostic",
+          "dockerPortSmokeStep"
+        ],
+        "physical_lines": 217
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_fixture_linux_test.go",
+        "sha256": "756d8396dabc8bde063dcfa514e4173e2cd38c3e40ecaa0c2399e7c1aee2b86e",
+        "symbols": [
+          "dockerPortSmokePlan",
+          "dockerPortSmokeRequest",
+          "newDockerPortSmokeState",
+          "readDockerPortSmokeJSON",
+          "runDockerPortSmokeChild",
+          "runDockerPortSmokeMutation",
+          "setupDockerPortSmokeRoot",
+          "validateDockerPortSmokeGrantBinding",
+          "writeDockerPortSmokeFile",
+          "writeDockerPortSmokeJSON"
+        ],
+        "physical_lines": 361
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_legacy_diagnostics_linux_test.go",
+        "sha256": "fcdd19937aa8a4b8e6423f6bbb876d9c3be04d254fd45ec3c60314a92e367081",
+        "symbols": [
+          "*dockerPortSmokeLegacyDiagnostic.close",
+          "*dockerPortSmokeLegacyDiagnostic.logReturn",
+          "*dockerPortSmokeLegacyDiagnostic.observeRunner",
+          "*dockerPortSmokeLegacyDiagnostic.withFailureObserver",
+          "*dockerPortSmokeLegacyDiagnostic.wrapCrashPoint",
+          "*dockerPortSmokeRunner.beginLegacyDiagnostic",
+          "dockerPortSmokeBoundedCount",
+          "dockerPortSmokeClosedRunner",
+          "dockerPortSmokeIncrement",
+          "dockerPortSmokeLegacyDiagnostic",
+          "dockerPortSmokeLocalPhase",
+          "dockerPortSmokeRollbackSummary",
+          "observeDockerPortSmokeUnhealthyMutation"
+        ],
+        "physical_lines": 261
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_namespace_linux_test.go",
+        "sha256": "22ba5cdd1aee6ad4b7a55f5447ff854d3afe7dcfff838c22089fd679baddb3f3",
+        "symbols": [
+          "dockerPortSmokeOverlayRoot",
+          "hardenDockerPortSmokeProjectParent",
+          "infoSyscallStat",
+          "prepareDockerPortSmokeMountNamespace",
+          "requireDockerPortSmokeFilesystem",
+          "requireDockerPortSmokePrivateRootPropagation",
+          "requireDockerPortSmokeRootAnchor"
+        ],
+        "physical_lines": 280
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_runner_linux_test.go",
+        "sha256": "851ab19afcc437480e500de8d06b92cc61b47bfdebe4e196a5dccccd88fbddcb",
+        "symbols": [
+          "*dockerPortSmokeRunner.Run",
+          "*dockerPortSmokeRunner.captureExecution",
+          "*dockerPortSmokeRunner.repoDigestCalls",
+          "*dockerPortSmokeRunner.verifyMountedListener",
+          "cleanupDockerPortSmokeListeners",
+          "dockerPortSmokeFrozenComposePath",
+          "dockerPortSmokeListenerIdentity",
+          "dockerPortSmokeListenerRecord",
+          "dockerPortSmokeTarget",
+          "newDockerPortSmokeRunner",
+          "verifyDockerPortSmokeListenerFile",
+          "verifyDockerPortSmokeListenerFileObserved",
+          "waitForDockerPortTCP"
+        ],
+        "physical_lines": 380
+      },
+      {
+        "path": "internal/hostruntime/docker_port_daemon_smoke_linux_test.go",
+        "sha256": "593f23fed394d743a91dc777db5fcd1245f82e5cf7808376f438cb71675a80fa",
+        "symbols": [
+          "TestDockerPortDaemonSmoke",
+          "dockerPortDaemonSmokeEnv,dockerPortDaemonSmokeMountNSEnv,dockerPortDaemonSmokeChildEnv,dockerPortDaemonSmokePayloadEnv,dockerPortDaemonSmokeGrantEnv,dockerPortDaemonSmokeFixtureEnv,dockerPortDaemonSmokeGrant,dockerPortDaemonSmokeCrashExit,dockerPortDaemonSmokeOwnerFile,dockerPortSmokeProjectDir,dockerPortSmokePolicyPath,dockerPortSmokeImageRepo",
+          "dockerPortSmokeChildPayload",
+          "dockerPortSmokeState"
+        ],
+        "physical_lines": 430
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M074",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_self_update_executor.go",
+    "original_sha256": "5fec6cdb12d3dccb6a1cdfe4a24548a713ce3c6073353e231c1f38b553da7583",
+    "before_physical_lines": 2525,
+    "disposition": "responsibility-split",
+    "responsibility": "runtime/options;validation/grants;slot preparation;activation/verification;rollback/recovery;safe reports",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_self_update_activation.go",
+        "sha256": "3cdce23f72014641a6f2a23c4a33b71dfdb501a3330fd3a268a3f12f634abee0",
+        "symbols": [
+          "hostSelfUpdateExecutorRuntime.activate",
+          "hostSelfUpdateExecutorRuntime.failStagedHostSelfUpdate",
+          "hostSelfUpdateExecutorRuntime.reconcile",
+          "hostSelfUpdateExecutorRuntime.verifyPendingHostSelfUpdateSlot"
+        ],
+        "physical_lines": 284
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_executor.go",
+        "sha256": "8a64b9c768ef448bdfa97650f8c5053555ac2e97d262e0e81f0e6b3bd66ae0c7",
+        "symbols": [
+          "defaultHostSelfUpdateExecutorRuntime",
+          "errHostSelfUpdateBusy,errHostSelfUpdateStage,errHostSelfUpdateRollback,errHostSelfUpdatePrecondition",
+          "handleLocalExecutorHostSelfUpdate",
+          "hostAgentReleaseDownloader",
+          "hostSelfUpdateExecutorRuntime",
+          "hostSelfUpdateServiceUnit,hostSelfUpdateExecutorServiceUnit,hostSelfUpdateExecutorSocketUnit,hostSelfUpdateBinaryIdentityTimeout,hostSelfUpdateDetachedVerifyTimeout,hostSelfUpdateSystemdExecutorProbes"
+        ],
+        "physical_lines": 418
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_health.go",
+        "sha256": "ac7ca18d73974dac469db771fde4d46aef5aa22ee5110a636d47114df19e812c",
+        "symbols": [
+          "hostSelfUpdateExecutorRuntime.acquireHealthyLocalExecutorPID",
+          "hostSelfUpdateExecutorRuntime.healthyLocalExecutorPID",
+          "hostSelfUpdateExecutorRuntime.healthyLocalExecutorProcess",
+          "hostSelfUpdateExecutorRuntime.restartHostAgent",
+          "hostSelfUpdateExecutorRuntime.restartLocalExecutor",
+          "hostSelfUpdateExecutorRuntime.verifyHealthyLocalExecutor",
+          "isHostRuntimeSystemdExecutor"
+        ],
+        "physical_lines": 251
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_preparation.go",
+        "sha256": "743752515461e93f9b4aaf21a8f03731766d8028f62e8ea46dd0db5fb3507e64",
+        "symbols": [
+          "*hostSelfUpdateExecutorRuntime.prepare",
+          "hostSelfUpdateExecutorRuntime.ensureRoots",
+          "missingHostSelfUpdateDirectories"
+        ],
+        "physical_lines": 179
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_slot_recovery.go",
+        "sha256": "63b2c2a89857def91ea91720ed15877111104199f737c3d309a3218765af393e",
+        "symbols": [
+          "hostSelfUpdateExecutorRuntime.hostSelfUpdateDetachedVerificationContext",
+          "hostSelfUpdateExecutorRuntime.recoverHostSelfUpdateSlotArtifacts",
+          "hostSelfUpdateExecutorRuntime.restoreUncommittedHostSelfUpdateSlot",
+          "hostSelfUpdateExecutorRuntime.verifyPendingHostSelfUpdateSlotForRecovery",
+          "looksLikeReservedHostSelfUpdateSlotArtifactName",
+          "parseHostSelfUpdateSlotArtifactName"
+        ],
+        "physical_lines": 383
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_slot_state.go",
+        "sha256": "a4bb7a306ed479e5c4b593a2f6b4b35c55a167156568209b32cf200ae981dcd3",
+        "symbols": [
+          "hostSelfUpdateExecutorRuntime.hostSelfUpdateSlotHasBinding",
+          "hostSelfUpdateExecutorRuntime.loadPersistedState",
+          "hostSelfUpdateExecutorRuntime.loadState",
+          "hostSelfUpdateExecutorRuntime.readCurrentSlot",
+          "hostSelfUpdateExecutorRuntime.reconstructCurrent",
+          "hostSelfUpdateExecutorRuntime.replaceCurrent",
+          "hostSelfUpdateExecutorRuntime.saveState",
+          "hostSelfUpdateExecutorRuntime.switchCurrent",
+          "hostSelfUpdateExecutorRuntime.validateHostSelfUpdateSlotDirectory",
+          "hostSelfUpdateExecutorRuntime.validateHostSelfUpdateSlotTree",
+          "hostSelfUpdateExecutorRuntime.validateHostSelfUpdateSlotTreeRoot",
+          "validateHostSelfUpdateSlotBinary"
+        ],
+        "physical_lines": 324
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_slot_verification.go",
+        "sha256": "a5d44fea014dd202038c2b850cbabe543bf08b8f07594977453031fa012977fc",
+        "symbols": [
+          "copyHostSelfUpdateBinary",
+          "hostSelfUpdateArtifactBinaryDigests",
+          "hostSelfUpdateExecutorRuntime.removeHostSelfUpdateSlotArtifact",
+          "hostSelfUpdateExecutorRuntime.restoreHostSelfUpdateSlot",
+          "hostSelfUpdateExecutorRuntime.syncHostSelfUpdateDirectory",
+          "hostSelfUpdateExecutorRuntime.verifyHostSelfUpdateBinaryIdentity",
+          "hostSelfUpdateExecutorRuntime.verifyHostSelfUpdateSlot",
+          "hostSelfUpdateSlotMarkers",
+          "hostSelfUpdateVersionOutputHasLine",
+          "isCanonicalBareSHA256",
+          "readHostSelfUpdateSlotMarker"
+        ],
+        "physical_lines": 414
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_staging.go",
+        "sha256": "9ae76582466f15dcc74180791ecb0b49576dca579326b25b5ab679e3dff45cb1",
+        "symbols": [
+          "hostSelfUpdateExecutorRuntime.mutationStatus",
+          "hostSelfUpdateExecutorRuntime.stage",
+          "hostSelfUpdateExecutorRuntime.stageSlot",
+          "hostSelfUpdateExecutorRuntime.status",
+          "hostSelfUpdateExecutorRuntime.statusWithGrantRecovery",
+          "hostSelfUpdateReleaseMatchesRequest"
+        ],
+        "physical_lines": 345
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M075",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "scripts/ci/run-host-agent-installer-upgrade-smoke.sh",
+    "original_sha256": "47f6c3529c7f33faabe5bedf729b489ed5e44e6c09481added1fcec081f28d49",
+    "before_physical_lines": 2285,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture setup/stubs;case families;assertions;cleanup;ordered entry",
+    "destinations": [
+      {
+        "path": "scripts/ci/host-agent-upgrade/archive-rejection-cases.sh",
+        "sha256": "091fd5074aac638e5aef6b07b0e4741ac1488fc4dd3588bb24c28ae41896a158",
+        "symbols": [],
+        "physical_lines": 121
+      },
+      {
+        "path": "scripts/ci/host-agent-upgrade/bundle-and-command-fixture.sh",
+        "sha256": "9a1a165f55fc5849ff45eeebfe70f68d9f7c00e261a1f9bb17c0e6d159dfe20a",
+        "symbols": [],
+        "physical_lines": 496
+      },
+      {
+        "path": "scripts/ci/host-agent-upgrade/bundle-and-private-stage-assertions.sh",
+        "sha256": "0acded35f9ad962bcef29be04edc29a12fc13eb5530eb758c4402bac98c379eb",
+        "symbols": [],
+        "physical_lines": 136
+      },
+      {
+        "path": "scripts/ci/host-agent-upgrade/independent-guard-and-commit-cases.sh",
+        "sha256": "1cdb0ccb05b8e46af201216cc487f9dffe79bb1a54d540e588ee9b6f71365524",
+        "symbols": [],
+        "physical_lines": 161
+      },
+      {
+        "path": "scripts/ci/host-agent-upgrade/managed-runtime-fixture.sh",
+        "sha256": "4ba870c293d03b82cd1e52dee4d39bf61520ff3773c30c9f5b68cd66383fd217",
+        "symbols": [],
+        "physical_lines": 188
+      },
+      {
+        "path": "scripts/ci/host-agent-upgrade/recovery-and-guard-assertions.sh",
+        "sha256": "3271ee261febe1492c0cb6d6e0718fe5812e87ca1a4c5944613acd5be1b4b15f",
+        "symbols": [],
+        "physical_lines": 441
+      },
+      {
+        "path": "scripts/ci/host-agent-upgrade/recovery-rejection-and-rollback-cases.sh",
+        "sha256": "c2a7d214e3eec911b65627411cbfff91e20b613830a46984bbc3aac847d455b5",
+        "symbols": [],
+        "physical_lines": 255
+      },
+      {
+        "path": "scripts/ci/host-agent-upgrade/service-manager-adapters.sh",
+        "sha256": "297752bb76a4c14466e4c44f3605500c9119689acbe8ddeda8364a9efd465bdc",
+        "symbols": [],
+        "physical_lines": 341
+      },
+      {
+        "path": "scripts/ci/host-agent-upgrade/wrapper-signal-and-helper-cases.sh",
+        "sha256": "a67b65f2cfc6d8ce1fe31a4ce353160c2fb81894e59b4c4fce5608da5a43a4cf",
+        "symbols": [],
+        "physical_lines": 121
+      },
+      {
+        "path": "scripts/ci/run-host-agent-installer-upgrade-smoke.sh",
+        "sha256": "762b51314585b21e92692939f5805e6a7f9355c36fb309a3a3c5339f42b21bb0",
+        "symbols": [],
+        "physical_lines": 37
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M076",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_pull_execution_test.go",
+    "original_sha256": "02f3ca3d945aa1e77f3e86cc9f0d38b5117e2e9d587efc82296e6dff602e9a8f",
+    "before_physical_lines": 1910,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture/model ownership;normal scenarios;authorization/negative cases;concurrency/failure/recovery;shared assertions",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_pull_execution_failure_test.go",
+        "sha256": "39285dbfe287c5365a65a29c4aac0548ea5bf943002a1886c7abdac62ed87c20",
+        "symbols": [
+          "TestHostPullExecutionExplicitStageFailurePreservesPlanForRecovery",
+          "TestHostPullExecutionPostUpdateRollbackReportsRollingBackBeforeTerminal",
+          "TestHostPullExecutionRecordsPreciseStageFailureForRecovery",
+          "TestHostPullExecutionUncertainApplyReconcilesWithoutReapplying",
+          "TestHostPullExecutionUncertainStagePreservesPlanAndRecoversWithoutRestaging",
+          "TestHostPullJournalRejectsTamperedDurablePlan",
+          "TestHostPullPermanentStaleReportPreservesPlanForFreshRecovery"
+        ],
+        "physical_lines": 371
+      },
+      {
+        "path": "internal/hostruntime/host_pull_execution_fixture_test.go",
+        "sha256": "292dad85b5c73d41b14da2c08b7b99610fc5922151260d5811d08536751bce54",
+        "symbols": [
+          "hostPullRefreshV2CommandDigest",
+          "hostPullV2CommandBase",
+          "hostPullV2PortGrantBinding",
+          "hostPullV2SoftwareGrantBinding",
+          "newHostPullExecutionHarness",
+          "newHostPullPortExecutionHarness"
+        ],
+        "physical_lines": 252
+      },
+      {
+        "path": "internal/hostruntime/host_pull_execution_grant_test.go",
+        "sha256": "378c7f1e3f33c027e41db41e43a967d9ef2c6fab3ce2d36fadeb3688b3a6aa5c",
+        "symbols": [
+          "TestHostPullClaimRejectsMalformedLeaseCredential",
+          "TestHostPullRejectsTamperedV2SoftwareGrantBinding",
+          "TestHostPullSelectsV2PortMutationWithoutSyntheticVersion",
+          "TestHostPullSelectsV2SoftwareMutationWithoutLegacyFallback",
+          "TestHostPullV2GrantFailsClosedOnLegacyOnlyExecutor",
+          "TestHostPullV2PortClaimIsAuthoritativelyVersionless",
+          "TestHostPullV2RecoveryClearUsesDedicatedSyntheticTerminalProof",
+          "TestValidateV2RecoveryClearRejectsIdentityAndCredentialMutants"
+        ],
+        "physical_lines": 264
+      },
+      {
+        "path": "internal/hostruntime/host_pull_execution_port_test.go",
+        "sha256": "1a911d267f6d3a60b49593be84312d301b0793a77ee3542d8fa0982b46da05d6",
+        "symbols": [
+          "TestHostPullPortClaimRejectsUnionAndPolicyDrift",
+          "TestHostPullPortGrantResponseFailureReconcilesUnstartedMutationAsUnchanged",
+          "TestHostPullPortJournalRejectsTamperedRuntimePlan",
+          "TestHostPullPortPlanGenerationFailureNeverSendsInvalidTerminalResult",
+          "TestHostPullPortReconfigureSkipsReleaseAndStagesNoSoftware",
+          "TestHostPullPortReconfigureUncertainResultReconcilesWithoutReapply",
+          "TestHostPullPortRecoveryRebindsLeaseAndPreservesSessionAndIntent",
+          "TestHostPullPortRecoveryReconstructsMissingPreMutationPlanAndReconciles"
+        ],
+        "physical_lines": 327
+      },
+      {
+        "path": "internal/hostruntime/host_pull_execution_readiness_test.go",
+        "sha256": "ee88dac9a67a4a1560bb390fa2c43f871fbfa009f80e699439fc2cee9c9c9b1e",
+        "symbols": [
+          "TestHostPullExecutionClaimsServerOwnedHostAndCompletesThroughLocalExecutor",
+          "TestHostPullExecutorReadinessAllowsOnlyLegacySystemdObserverBackfill",
+          "TestValidatePortExecutionResultBindsDockerMappingToImmutablePlan"
+        ],
+        "physical_lines": 196
+      },
+      {
+        "path": "internal/hostruntime/host_pull_execution_recovery_test.go",
+        "sha256": "6b54d8c8b017ad63028a3c7d41810b1f59a83312f458d24fdcfed7c257e3d8df",
+        "symbols": [
+          "TestHostPullRecoveryOnlyReconcilesDurableExecutorState",
+          "TestHostPullRecoveryReconcileResponseLossPreservesPlan",
+          "TestHostPullRecoveryReportsRecordedStageFailureCategory",
+          "TestHostPullRecoveryRolledBackTerminatesAtOneHundred",
+          "TestHostPullRecoveryWithoutExecutorStageTerminates"
+        ],
+        "physical_lines": 245
+      },
+      {
+        "path": "internal/hostruntime/host_pull_execution_test.go",
+        "sha256": "aaa0e382cc94c6e598c19bdc0db0efa5a32d3b10664bd03c18872e9a7f02816c",
+        "symbols": [
+          "*hostPullExecutionTestExecutor.Apply",
+          "*hostPullExecutionTestExecutor.ApplyV2",
+          "*hostPullExecutionTestExecutor.PortReconfigure",
+          "*hostPullExecutionTestExecutor.PortReconfigureReconcile",
+          "*hostPullExecutionTestExecutor.PortReconfigureReconcileV2",
+          "*hostPullExecutionTestExecutor.PortReconfigureV2",
+          "*hostPullExecutionTestExecutor.Reconcile",
+          "*hostPullExecutionTestExecutor.ReconcileV2",
+          "*hostPullExecutionTestExecutor.Stage",
+          "*hostPullExecutionTestPanel.ClaimHost",
+          "*hostPullExecutionTestPanel.FetchHostAgentPolicy",
+          "*hostPullExecutionTestPanel.HeartbeatHostAgent",
+          "*hostPullExecutionTestPanel.IssueMutationGrant",
+          "*hostPullExecutionTestPanel.RegisterHostAgent",
+          "*hostPullExecutionTestPanel.Report",
+          "appliedPortExecutionResult",
+          "dockerPortExecutionResultForTest",
+          "hostPullExecutionTestDownloader",
+          "hostPullExecutionTestDownloader.Download",
+          "hostPullExecutionTestDownloader.ResolveDockerReleaseForArch",
+          "hostPullExecutionTestExecutor",
+          "hostPullExecutionTestPanel",
+          "hostPullFailingDownloader",
+          "hostPullFailingDownloader.Download",
+          "hostPullFailingDownloader.ResolveDockerReleaseForArch",
+          "hostPullLegacyOnlyMutationExecutor",
+          "hostPullLegacyOnlyMutationExecutor.Apply",
+          "hostPullLegacyOnlyMutationExecutor.Reconcile",
+          "hostPullLegacyOnlyMutationExecutor.Stage",
+          "unchangedPortExecutionResult"
+        ],
+        "physical_lines": 303
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M077",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_agent_configure_transaction.go",
+    "original_sha256": "5b379d18851ad941ba49bb1eb22bbd677c1d814103b1917373b28fd4d0055967",
+    "before_physical_lines": 1888,
+    "disposition": "responsibility-split",
+    "responsibility": "prepare identity;stage policy/config;activate binding;commit;rollback/reconcile;durable filesystem",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_agent_configure_policy_transaction.go",
+        "sha256": "aefd01e5443f29aec44727e04b704f674f5c94139eb3e375d914d19e76b38ce3",
+        "symbols": [
+          "*preparedLocalExecutorPolicy.Abort",
+          "*preparedLocalExecutorPolicy.Commit",
+          "*preparedLocalExecutorPolicy.Rollback",
+          "*preparedLocalExecutorPolicy.finishCommittedInstall",
+          "*preparedLocalExecutorPolicy.verifyDestination",
+          "*preparedLocalExecutorPolicy.verifyTemporaryFile",
+          "prepareLocalExecutorPolicy",
+          "preparedLocalExecutorPolicy",
+          "readRootPolicySnapshot",
+          "readRootPolicySnapshotOptional"
+        ],
+        "physical_lines": 319
+      },
+      {
+        "path": "internal/hostruntime/host_agent_configure_sidecar_adoption.go",
+        "sha256": "ee4e9f4dbb3d0a321b768306bf7fe9bad51e6fa282faa2b7ac9d62610b29efc3",
+        "symbols": [
+          "authorizeHostAgentSystemdSidecarAdoption",
+          "decodeCanonicalLocalExecutorPolicy",
+          "decodeManagedHostAgentIdentity",
+          "sameConfiguredPanelURL",
+          "validateInitialSystemdPortSidecarSnapshots"
+        ],
+        "physical_lines": 177
+      },
+      {
+        "path": "internal/hostruntime/host_agent_configure_sidecar_commit.go",
+        "sha256": "85a3560909d34496ce1298939f58bba8f6ab4ff578d563ffed1c46dcf1adc2fb",
+        "symbols": [
+          "*preparedSystemdPortSidecars.Commit",
+          "*preparedSystemdPortSidecars.CommitContext",
+          "hostAgentSystemdSidecarAdoption",
+          "prepareSystemdPortSidecarsWithOptions"
+        ],
+        "physical_lines": 281
+      },
+      {
+        "path": "internal/hostruntime/host_agent_configure_sidecar_plan.go",
+        "sha256": "21820279341058b6ed827631b657ab2efa6a76c2657aebcf9e3a67842d0d6e67",
+        "symbols": [
+          "canonicalSystemdPortSidecarPaths",
+          "cleanAbsoluteSystemdSidecarDirectory",
+          "hostAgentSystemdSidecarRollbackAuthority",
+          "initialSystemdPortSidecarPlan",
+          "initialSystemdPortSidecarPlans",
+          "initialSystemdPortSidecarSnapshot",
+          "joinSystemdSidecarPath",
+          "preparedSystemdPortSidecar",
+          "preparedSystemdPortSidecars"
+        ],
+        "physical_lines": 192
+      },
+      {
+        "path": "internal/hostruntime/host_agent_configure_sidecar_replacement.go",
+        "sha256": "2fc999a7d07d4bfc01322dde7cba434a1317964466bbaa65ae280247bc8f2e97",
+        "symbols": [
+          "*preparedSystemdPortSidecar.installNoReplace",
+          "*preparedSystemdPortSidecar.prepareBody",
+          "*preparedSystemdPortSidecars.exchangeReplacement",
+          "*preparedSystemdPortSidecars.prepareReplacementBody",
+          "*preparedSystemdPortSidecars.preserveAmbiguousReplacement",
+          "*preparedSystemdPortSidecars.replacementPairMatches",
+          "*preparedSystemdPortSidecars.replacementPairMatchesOnDisk"
+        ],
+        "physical_lines": 243
+      },
+      {
+        "path": "internal/hostruntime/host_agent_configure_sidecar_rollback.go",
+        "sha256": "6b6fb632d0d84d5b5e94ed61164287957ffb19c1482bff9c98d98548f6b27755",
+        "symbols": [
+          "*preparedSystemdPortSidecars.Abort",
+          "*preparedSystemdPortSidecars.Finalize",
+          "*preparedSystemdPortSidecars.Rollback",
+          "*preparedSystemdPortSidecars.rollbackCreatedSidecars",
+          "*preparedSystemdPortSidecars.rollbackReplacement",
+          "*preparedSystemdPortSidecars.syncParentDirectory",
+          "*preparedSystemdPortSidecars.verifyLiveReplacementRollback"
+        ],
+        "physical_lines": 255
+      },
+      {
+        "path": "internal/hostruntime/host_agent_configure_sidecar_verification.go",
+        "sha256": "3d1970e497bfcf9a9e8a7a41858f69244b8df75421e22b00257d03d76a30e5c5",
+        "symbols": [
+          "*preparedSystemdPortSidecar.verifyTemporaryFile",
+          "*preparedSystemdPortSidecars.verifyDestinations",
+          "*preparedSystemdPortSidecars.verifyReplacementTemporaryFile",
+          "readRootSystemdPortSidecarOptional",
+          "validateInstalledSystemdPortSidecars",
+          "validateSystemdPortSidecarDirectory"
+        ],
+        "physical_lines": 200
+      },
+      {
+        "path": "internal/hostruntime/host_agent_configure_transaction.go",
+        "sha256": "ca109bb16d44af23301e7c0614827a18ff78cca722106860625394137d5264b6",
+        "symbols": [
+          "*PreparedHostAgentConfiguration.Abort",
+          "*PreparedHostAgentConfiguration.Commit",
+          "*PreparedHostAgentConfiguration.CommitContext",
+          "DefaultLocalExecutorPolicyPath,defaultSystemdPortSidecarDirectory,systemdPortSidecarConfigureMaxBytes,hostAgentSidecarRollbackProofTimeout",
+          "HostAgentConfigurationInstalled",
+          "HostAgentConfigurationOptions",
+          "PrepareHostAgentConfigurationWithOptions",
+          "PreparedHostAgentConfiguration",
+          "ValidateInstalledHostAgentConfiguration",
+          "configurePolicyProjectionPolicy",
+          "hostAgentConfigurationInstalledError",
+          "hostAgentConfigurationInstalledError.Error",
+          "hostAgentConfigurationInstalledError.Unwrap",
+          "hostAgentLiveSystemdSidecarProof",
+          "hostAgentLiveSystemdSidecarVerifier"
+        ],
+        "physical_lines": 288
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M078",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/runtime_token_rotation_executor.go",
+    "original_sha256": "bd20b514a0c8f5a81be5c004f84b85978e6f8bf00028844255d76f6f1d85cd6d",
+    "before_physical_lines": 1837,
+    "disposition": "responsibility-split",
+    "responsibility": "claim/stage;activate/finalize;cancel/expiry/emergency;identity I/O;ledger validation",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_binding.go",
+        "sha256": "eaaa09ea9e4b208129db2e40b1a9f8bfd64469a842a0a121bf3d6589160e8989",
+        "symbols": [
+          "runtimeCredentialExecutorRuntime.bindClaimPreparedStagedIdentity",
+          "runtimeCredentialExecutorRuntime.bindStageBoundInstalledIdentity",
+          "runtimeCredentialExecutorRuntime.cleanupExpiredOrphanedStagedIdentity",
+          "runtimeCredentialRequestMatchesStatus",
+          "runtimeCredentialResponse",
+          "validateRuntimeCredentialPanelTransition"
+        ],
+        "physical_lines": 218
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_cleanup.go",
+        "sha256": "078776424a465f2da3b46f024212c6fdc591af3ed28df0abf90f6f42394c6d27",
+        "symbols": [
+          "runtimeCredentialExecutorRuntime.identityCleanupComplete",
+          "runtimeCredentialExecutorRuntime.secureStagedIdentityInfo",
+          "runtimeCredentialExecutorRuntime.wipeAndRemoveIdentity"
+        ],
+        "physical_lines": 185
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_executor.go",
+        "sha256": "48b489f5fa609b69d574515294fa8ce690575a3b71c8a8419eee458ae24dedf5",
+        "symbols": [
+          "RuntimeCredentialStatePath,runtimeCredentialStateMaxBytes,runtimeCredentialStagedMaxAge",
+          "defaultRuntimeCredentialExecutorRuntime",
+          "errRuntimeCredentialBusy,errRuntimeCredentialPrecondition,errRuntimeCredentialStateUnavailable",
+          "handleLocalExecutorRuntimeCredential",
+          "runtimeCredentialExecutorRuntime",
+          "runtimeCredentialExecutorRuntime.currentExecutorVersion",
+          "runtimeCredentialExecutorRuntime.currentTime",
+          "runtimeCredentialExecutorRuntime.validateIdentityLayout",
+          "runtimeCredentialExecutorRuntime.validatePaths",
+          "runtimeCredentialStateFile"
+        ],
+        "physical_lines": 250
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_identity.go",
+        "sha256": "1f5f7c999d207887e74b9137e74ab52d053060849b51ead89953a1852f065604",
+        "symbols": [
+          "decodeRuntimeCredentialIdentity",
+          "marshalRuntimeCredentialIdentity",
+          "runtimeCredentialDigest",
+          "runtimeCredentialExecutorRuntime.loadIdentity",
+          "runtimeCredentialExecutorRuntime.secureMode",
+          "runtimeCredentialExecutorRuntime.validateIdentityDirectory",
+          "runtimeCredentialExecutorRuntime.writeIdentityAtomic",
+          "runtimeCredentialTokenDigest"
+        ],
+        "physical_lines": 179
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_reconciliation.go",
+        "sha256": "e7f839871cdb78289277ac16a1bb3c2111b7700d115dbc44ae5162d142eec15c",
+        "symbols": [
+          "runtimeCredentialExecutorRuntime.loadAndReconcileStatus"
+        ],
+        "physical_lines": 306
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_staging.go",
+        "sha256": "4bf00f710b0aff13655767defccfa47e291b642363b824b98160cdb56f3a8dd1",
+        "symbols": [
+          "runtimeCredentialExecutorRuntime.markProofReady",
+          "runtimeCredentialExecutorRuntime.prepare",
+          "runtimeCredentialExecutorRuntime.stage"
+        ],
+        "physical_lines": 344
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_state.go",
+        "sha256": "c9b33a973cfe83d9e618d0c2c12a6d34a15379d253e9cf13317ce0ffb480a2e1",
+        "symbols": [
+          "runtimeCredentialExecutorRuntime.loadStatus",
+          "runtimeCredentialExecutorRuntime.removeState",
+          "runtimeCredentialExecutorRuntime.saveStatus"
+        ],
+        "physical_lines": 184
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_transition.go",
+        "sha256": "75b8411b1cbbaaadb8390f4f5decb215022c6ba059b81c664167ef1a3cfd25ee",
+        "symbols": [
+          "runtimeCredentialExecutorRuntime.activateCredential",
+          "runtimeCredentialExecutorRuntime.cancel",
+          "runtimeCredentialExecutorRuntime.finalize"
+        ],
+        "physical_lines": 221
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M079",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/runtime_token_rotation_executor_test.go",
+    "original_sha256": "71bc39021dbacba22904787fd0f5ae9c458d2a0f26e285e076114480b1c9c3cf",
+    "before_physical_lines": 1825,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture/model ownership;normal scenarios;authorization/negative cases;concurrency/failure/recovery;shared assertions",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_executor_emergency_binding_test.go",
+        "sha256": "08f1f39a64f9fbf178e962d03e521a03d0691fb1f61e5c69b7a704837ecf1f2e",
+        "symbols": [
+          "TestClaimPreparedWriteBeforeLedgerCompatibilitySupportsEmergencyRecovery",
+          "TestEmergencyManualReconfigureRecoveryAcceptsStageBoundWithoutFileImmediately",
+          "TestEmergencyManualReconfigureRecoveryPromotesInstalledStageBoundAndRequiresTTL"
+        ],
+        "physical_lines": 236
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_executor_expiry_test.go",
+        "sha256": "cb3c2965f7202a46dd40bcee61862ec4fcb5024b04094598903bbdcd167dd28e",
+        "symbols": [
+          "TestRuntimeCredentialExecutorCancelRejectsRevisionSkipping",
+          "TestRuntimeCredentialExecutorExpiryNeverChangesActiveIdentity",
+          "TestRuntimeCredentialExecutorUntrackedCancelFailsClosedWithoutWipingStage",
+          "TestRuntimeCredentialExecutorUntrackedCancelRejectsOtherRevisions"
+        ],
+        "physical_lines": 265
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_executor_fixture_test.go",
+        "sha256": "fac7bff92178de44d1a91cecc3a18627f05623dd3172ead8636ceb06527cbb1e",
+        "symbols": [
+          "cloneRuntimeCredentialMutation",
+          "newRuntimeCredentialExecutorFixture",
+          "requireRuntimeCredentialPhase",
+          "stageRevision",
+          "testRuntimeTokenRotation"
+        ],
+        "physical_lines": 153
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_executor_manual_recovery_phase_test.go",
+        "sha256": "477a0d85847db4bcdc6ab7f0544f67d17af2329793f2e26198682e037749f778",
+        "symbols": [
+          "TestEmergencyManualReconfigureRecoveryAcceptsCancelReadyWithoutTTL",
+          "TestEmergencyManualReconfigureRecoveryAcceptsClaimPreparedWithoutTTL",
+          "TestManualRecoveryPowerLossBeforeStagedWipeReconcilesExactSlot"
+        ],
+        "physical_lines": 169
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_executor_manual_recovery_test.go",
+        "sha256": "d15478fa00efe0211c595c6df319b34f4dd40af2b205e6a7bfc50ab9aaea84e0",
+        "symbols": [
+          "TestEmergencyManualReconfigureRecoveryAcceptsActivatedLedger",
+          "TestEmergencyManualReconfigureRecoveryIsDurableAndUnblocksNextRotation",
+          "TestEmergencyManualReconfigureRecoveryRejectsUnsafeEvidence",
+          "TestRuntimeCredentialOrphanExpiryUsesBoundedFileAge"
+        ],
+        "physical_lines": 337
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_executor_quarantine_test.go",
+        "sha256": "f35329d40b874a5954c517ab7ddd75b768dce17024aa4f6b294e6311c491c9c3",
+        "symbols": [
+          "TestEmergencyManualReconfigureRecoveryRejectsRevokedOrInvalidReplacement",
+          "TestManualRecoveryResumesQuarantinedStagedIdentityWipe",
+          "replaceRuntimeCredentialIdentityForTest"
+        ],
+        "physical_lines": 338
+      },
+      {
+        "path": "internal/hostruntime/runtime_token_rotation_executor_test.go",
+        "sha256": "6b31fea59f9570a0c560bec2fe403b3ef944b13083382a25cf0575d5a5f3fd0b",
+        "symbols": [
+          "TestEmergencyRuntimeCredentialRecoveryRejectsUnsafeIdentityLayoutBeforeMutation",
+          "TestRuntimeCredentialExecutorActivationResponseLossRecoversWithoutSecretLeak",
+          "TestRuntimeCredentialExecutorPersistsClaimBindingBeforeStagedFileWrite",
+          "TestRuntimeCredentialExecutorRechecksIdentityLayoutAfterPanelActivationBeforeActiveWrite",
+          "TestRuntimeCredentialExecutorRecoversWriteBeforeLedgerPowerLoss",
+          "TestRuntimeCredentialExecutorRejectsUnsafeIdentityLayoutBeforeMutation",
+          "testOldRuntimeToken,testNewRuntimeToken"
+        ],
+        "physical_lines": 384
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M080",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/local_executor_test.go",
+    "original_sha256": "b6757528fe3117c75dd41b8b54bfedd6fbdbbc278ee8a06787aaa311da88283d",
+    "before_physical_lines": 1822,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture/model ownership;normal scenarios;authorization/negative cases;concurrency/failure/recovery;shared assertions",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/local_executor_fixture_test.go",
+        "sha256": "2c27772f69e29ef0a83c3063d53fbb03b2c89712cad0f7e7a03cdfbba64d6638",
+        "symbols": [
+          "*fakeLocalExecutorProbeClient.Probe",
+          "*fakeLocalTargetVerifier.Observe",
+          "*fakeLocalTargetVerifier.ObserveDockerPort",
+          "cloneLocalExecutorPolicy",
+          "endpointFromServer",
+          "fakeLocalExecutorProbeClient",
+          "fakeLocalTargetVerifier",
+          "mustJSON",
+          "newLocalExecutorProbeServer",
+          "validLocalDockerTarget",
+          "validLocalExecutorPolicy",
+          "validLocalProcessObservation",
+          "validLocalSystemdTarget",
+          "writeTestFile"
+        ],
+        "physical_lines": 201
+      },
+      {
+        "path": "internal/hostruntime/local_executor_host_observer_test.go",
+        "sha256": "28cb7d58314e8a4a56daccb44a44054c7566b56e7847266383c10fe2fb1b430c",
+        "symbols": [
+          "TestLocalExecutorHostObserverReportsVerifiedDockerPortMapping",
+          "TestLocalExecutorHostObserverRequiresPinnedMatchingPolicy"
+        ],
+        "physical_lines": 332
+      },
+      {
+        "path": "internal/hostruntime/local_executor_policy_test.go",
+        "sha256": "19e174fba75ced519db5f1a81d717599ddbc4f6d7986723265a44531646e6660",
+        "symbols": [
+          "TestLocalExecutorMutationRequiresExplicitRootOwnedPolicyV2",
+          "TestLocalExecutorMutationValidPolicyBindingReachesDurableCore",
+          "TestLocalExecutorPolicyFixesPrivilegedDockerProfiles",
+          "TestLocalExecutorPolicyFixesPrivilegedSystemdProfiles",
+          "TestLocalExecutorPolicyValidationAndStrictLoad",
+          "TestNewDockerVersionPinDefaultsToPrivateMode"
+        ],
+        "physical_lines": 390
+      },
+      {
+        "path": "internal/hostruntime/local_executor_probe_applied_state_test.go",
+        "sha256": "5e4129e9a1b84c376f2bbe4377c943abe169bf932ffac7ba1a39143879dfd0ae",
+        "symbols": [
+          "TestLocalExecutorProbeBindsProcessEndpointIdentityAndRevision",
+          "TestLocalExecutorProbeRejectsUnboundAppliedSystemdPortState",
+          "TestLocalExecutorProbeUsesDurableAppliedDockerPortStateAfterReopen",
+          "TestLocalExecutorProbeUsesDurableAppliedSystemdPortState"
+        ],
+        "physical_lines": 458
+      },
+      {
+        "path": "internal/hostruntime/local_executor_probe_state_security_test.go",
+        "sha256": "f318e6902d66ca112d8dd5c4991d2fa4ea9832adb9f5effa6db26150f3d569a8",
+        "symbols": [
+          "TestFileSystemdAppliedStateVerifierRejectsModeAndSymlinkDrift",
+          "TestFileSystemdStateStoreRejectsDirectoryLinkWithoutChangingTarget",
+          "TestFileSystemdStateStoreRejectsNestedDirectoryLinkWithoutChangingTarget",
+          "TestLocalExecutorHTTPProbeBypassesConfiguredProxy",
+          "TestLocalExecutorProbeRejectsFakeHealthAndWrongCgroup",
+          "TestLocalExecutorProbeRejectsMutationWithoutTouchingRuntime",
+          "TestSystemdAppliedStateAllowsOnlyExactRootPolicyLineageMigration"
+        ],
+        "physical_lines": 318
+      },
+      {
+        "path": "internal/hostruntime/local_executor_test.go",
+        "sha256": "74c0e926b88e086f32a9e92e7340b06eaacb329d664a605e3864da91ef722c3b",
+        "symbols": [
+          "TestLocalExecutorMutationProtocolCarriesOnlyBoundedPlanAndEphemeralGrant",
+          "TestLocalExecutorRequestIsProbeOnlyAndStrict",
+          "TestLocalExecutorResponseFromOutcomePreservesSafeFailureMessage",
+          "TestLocalExecutorResponseIsBoundedAndStrict"
+        ],
+        "physical_lines": 168
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M081",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/helper.go",
+    "original_sha256": "9f46ae6eb5c500cea2fb5aa8a4eff0ce163006d8ee44ff92a90d9fd020442c34",
+    "before_physical_lines": 1738,
+    "disposition": "responsibility-split",
+    "responsibility": "request parsing/dispatch;validation;process runner;artifact/fs helpers;response safety",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/docker_compose_verification.go",
+        "sha256": "71bb837fc179bc3a4c21d92f5eb31a681076db1c7dd7b6f07f8937c9b40a0d48",
+        "symbols": [
+          "composeArgs",
+          "composeFrozenArgs",
+          "composeModelHash",
+          "validateComposeHostReference",
+          "validateComposeHostTree",
+          "validateComposeModelSecurity",
+          "validateTrustedFrozenCompose",
+          "validateTrustedFrozenComposeWithOwnerCheck",
+          "verifyComposeConfig",
+          "verifyComposeModel",
+          "verifyTrustedStagedDockerInputsWithOwnerCheck",
+          "writeDockerOverride"
+        ],
+        "physical_lines": 350
+      },
+      {
+        "path": "internal/hostruntime/docker_release_apply.go",
+        "sha256": "a4b486241db9ba4cc354d950e8869039306ec41892655ffcb239d3fa67020e24",
+        "symbols": [
+          "applyDocker",
+          "applyDockerWithGate",
+          "applyDockerWithGateAndBaseline",
+          "applyDockerWithGateAndBaselineWithOwnerCheck",
+          "applyDockerWithListenerStore",
+          "dockerMutationBaseline",
+          "dockerMutationBaseline.matches",
+          "dockerMutationBaseline.validate",
+          "dockerMutationObservation",
+          "observeDockerMutationBaseline"
+        ],
+        "physical_lines": 345
+      },
+      {
+        "path": "internal/hostruntime/docker_release_identity.go",
+        "sha256": "5ec781ffeee4088d3b861de07c96c2d98ef7e6388fa54fa08b1f1e24827823a4",
+        "symbols": [
+          "managedContainerID",
+          "parseVersionEnvPin",
+          "readVersionEnv",
+          "repositoryDigest",
+          "repositoryHasDigest",
+          "restoreVersionEnv",
+          "updateVersionEnv",
+          "writeAtomicFile"
+        ],
+        "physical_lines": 141
+      },
+      {
+        "path": "internal/hostruntime/helper.go",
+        "sha256": "799cc88aa612e04e451264916fecf6d9b55f3c8210b528e7725b73048a17228f",
+        "symbols": [
+          "*limitedBuffer.Write",
+          "ApplyPlan",
+          "ApplyResult",
+          "CommandRunner",
+          "OSCommandRunner",
+          "OSCommandRunner.Run",
+          "OSCommandRunner.runWithOutputMetadata",
+          "dockerCommandEnv",
+          "limitedBuffer",
+          "sanitizedCommandEnv"
+        ],
+        "physical_lines": 113
+      },
+      {
+        "path": "internal/hostruntime/release_filesystem.go",
+        "sha256": "7c22f9728115adb8a2e7bf70e4618be7743deff5c8c9e896d641bf7684f438ec",
+        "symbols": [
+          "chmodAndSyncRegularFile",
+          "copyRegularFile",
+          "installReleaseTree",
+          "normalizeInstalledReleaseTreeModes",
+          "normalizedReleaseFileMode",
+          "removeStaleReleasePartial",
+          "syncDirectory",
+          "syncDirectoryTreeBottomUp",
+          "writeSyncedFile"
+        ],
+        "physical_lines": 283
+      },
+      {
+        "path": "internal/hostruntime/release_reconciliation.go",
+        "sha256": "d85196a9bff33f9e481059494186b0e776eede691e0938d0fee07c43a9ddbfc2",
+        "symbols": [
+          "readHealthyTargetVersion",
+          "readHealthyTargetVersionWithClient",
+          "reconcileDocker",
+          "reconcileDockerWithGate",
+          "reconcileDockerWithListenerStore",
+          "reconcileSystemd",
+          "reconcileSystemdWithGate",
+          "systemdRequestedReleaseDigestMatches"
+        ],
+        "physical_lines": 246
+      },
+      {
+        "path": "internal/hostruntime/release_target_health.go",
+        "sha256": "3de1c37743eb0031534ef7699c626f7d622c7da5338f9b94d28af4da88a7b343",
+        "symbols": [
+          "checkHealth",
+          "checkpointEnv",
+          "checkpointMode",
+          "fetchApplicationIdentityVersion",
+          "firstError",
+          "runFixedCommand",
+          "shortID",
+          "verifyTarget",
+          "versionMatches",
+          "versionsEqual"
+        ],
+        "physical_lines": 122
+      },
+      {
+        "path": "internal/hostruntime/systemd_release_apply.go",
+        "sha256": "e88c36b87fab511add93d6e91535c41a078e496d73061012a79f77864b76b92c",
+        "symbols": [
+          "applySystemd",
+          "applySystemdWithGate"
+        ],
+        "physical_lines": 130
+      },
+      {
+        "path": "internal/hostruntime/systemd_release_state.go",
+        "sha256": "d6d59998a03a66b23835d7675450c7d7941ad03c9ab863310b4ada526094a990",
+        "symbols": [
+          "currentRelease",
+          "rollbackSystemd",
+          "switchSymlink",
+          "verifySystemdProcess"
+        ],
+        "physical_lines": 94
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M082",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_self_update_executor_linux_test.go",
+    "original_sha256": "eaae15bebec06846c696946e313beead6590556fea8d4b8ed919f4de6f203789",
+    "before_physical_lines": 1680,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture/model ownership;normal scenarios;authorization/negative cases;concurrency/failure/recovery;shared assertions",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_self_update_activation_fence_linux_test.go",
+        "sha256": "4cf5a0dd3ff53fa6cd7acc42bd4b29ac8fee369efc5e476dcd9d8c0780629146",
+        "symbols": [
+          "TestLocalExecutorHostSelfUpdateActivationUsesOnlyRootClock",
+          "TestLocalExecutorHostSelfUpdateSwitchFailurePersistsRollbackFence",
+          "TestLocalExecutorStopsOldRuntimeWheneverRestartWasRequested"
+        ],
+        "physical_lines": 117
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_current_recovery_linux_test.go",
+        "sha256": "0e312e6530c7406cbbae19bd55c72f2ca46888cf5506695887a88bcfb8e3c6d9",
+        "symbols": [
+          "TestExpiredActivationAtHealthySlotCannotLoopSwitchCurrent",
+          "TestHealthySlotWatchdogReconstructsCurrentFromDurableState",
+          "TestHealthySlotWatchdogRejectsArbitraryRecoveryPaths"
+        ],
+        "physical_lines": 228
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_executor_health_linux_test.go",
+        "sha256": "840099755a5b461e6ffe1e58ba23dda9ce3e7299a220f9bd73f10eccbbf6470e",
+        "symbols": [
+          "TestAcquireHealthyLocalExecutorHonorsCanceledTransitionWait",
+          "TestAcquireHealthyLocalExecutorRejectsPIDChurnDuringTransition",
+          "TestAcquireHealthyLocalExecutorRejectsUnsafeOrPersistentHelper",
+          "TestHealthySlotWatchdogRequiresRunningHealthyExecutorIdentity",
+          "TestVerifyHealthyLocalExecutorWaitsForTransientSystemdExecutor"
+        ],
+        "physical_lines": 336
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_executor_linux_test.go",
+        "sha256": "8354224c428db809328e0c10e7336bae59025141a8e1fa8125bef04a77997056",
+        "symbols": [
+          "*hostSelfUpdateExecutorTestRunner.Run",
+          "*hostSelfUpdateExecutorTestRunner.registerBinaryIdentity",
+          "hostSelfUpdateExecutorTestBinaryIdentity",
+          "hostSelfUpdateExecutorTestDownloader",
+          "hostSelfUpdateExecutorTestDownloader.DownloadHostAgentRelease",
+          "hostSelfUpdateExecutorTestRunner"
+        ],
+        "physical_lines": 142
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_recovery_fixture_linux_test.go",
+        "sha256": "90cdea0acadf6f220229f7b361ce41e5b4cba677645468b41094c986338ec45e",
+        "symbols": [
+          "newHostSelfUpdateRecoveryFixture",
+          "stageHostSelfUpdateStateForLinuxTest"
+        ],
+        "physical_lines": 208
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_slot_activation_linux_test.go",
+        "sha256": "41bab7feffa2e4dea530f8084b161548dc09fe9aa4bf8c42238091427f9134b2",
+        "symbols": [
+          "TestLocalExecutorHostSelfUpdateFailureRestoresHealthySlot",
+          "TestLocalExecutorHostSelfUpdateRebootRecoversActivatingStateWithoutRestage",
+          "TestLocalExecutorHostSelfUpdateStagesSwitchesAndCommitsABSlot"
+        ],
+        "physical_lines": 417
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_watchdog_linux_test.go",
+        "sha256": "1e864dedce4083c90cae23858f3ccdd86ac358dfa99bdc5a95a35bd14c4e5dd4",
+        "symbols": [
+          "TestHealthySlotWatchdogLeavesRollbackFenceWhenExecutorRestartFails",
+          "TestHealthySlotWatchdogLeavesRollbackFenceWhenSocketHandshakeFails",
+          "TestHealthySlotWatchdogRollsBackWhenCandidateNeverContactsPanel",
+          "TestNonHealthySlotWatchdogDoesNotRecoverSharedSlotArtifacts"
+        ],
+        "physical_lines": 300
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M083",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/systemd_port_reconfigure.go",
+    "original_sha256": "1d30bf5b73e3afd2b03de7addf9bb6737fb88563d7e30be44576f7b585e01d75",
+    "before_physical_lines": 1536,
+    "disposition": "responsibility-split",
+    "responsibility": "plan/result contracts;ledger/store;policy validation;execute/reconcile;commit/repair/rollback",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/systemd_port_commit.go",
+        "sha256": "af4d79ffc0cbfd13028c1fbf0fae0520fa3cf75264f3ae69166ce64bd74fd547",
+        "symbols": [
+          "SystemdPortReconfigurePlan.mutationGrantBinding",
+          "cloneDockerPortMutationGrantBinding",
+          "commitSystemdPortResult",
+          "handleLocalExecutorSystemdPortMutation",
+          "localExecutorPortResponse",
+          "sameSystemdPortCheckpoint",
+          "sameSystemdPortIntent",
+          "systemdPortAppliedStateForResult",
+          "systemdPortTargetAfter"
+        ],
+        "physical_lines": 213
+      },
+      {
+        "path": "internal/hostruntime/systemd_port_execution.go",
+        "sha256": "3a409166cf92abcac222fe6fea26c3edb1a9266c649213a59018f663077bbc8b",
+        "symbols": [
+          "executeSystemdPortRequest",
+          "resolveSystemdPortAppliedTarget",
+          "systemdPortRuntime",
+          "systemdPortTargetMatchesExpected",
+          "validateSystemdPortPolicyBinding"
+        ],
+        "physical_lines": 286
+      },
+      {
+        "path": "internal/hostruntime/systemd_port_reconfigure.go",
+        "sha256": "19f1516d81c257b37b2bf5e0e0dce12e059842e195b20cf443e98bfb8134ed21",
+        "symbols": [
+          "SystemdPortReconfigurePlan",
+          "SystemdPortReconfigurePlan.ComputePortPlanSHA256",
+          "SystemdPortReconfigurePlan.Validate",
+          "SystemdPortReconfigurePlan.effectiveDeploymentMode",
+          "errSystemdPortSimulatedCrash",
+          "systemdPortPlanSchemaVersion,systemdPortLedgerStaged,systemdPortLedgerGrantConsuming,systemdPortLedgerGrantConsumed,systemdPortLedgerSidecarWritten,systemdPortLedgerRestarted,systemdPortLedgerAmbiguous,systemdPortLedgerCommitting,systemdPortLedgerTerminal,systemdPortNetworkNamespaceHost,systemdPortProtocolTCP,systemdPortResultApplied,systemdPortResultRolledBack,systemdPortResultUnchanged,systemdPortResultRollbackFailed"
+        ],
+        "physical_lines": 319
+      },
+      {
+        "path": "internal/hostruntime/systemd_port_recovery.go",
+        "sha256": "8c4e4a706fd3ce22efa4618107d34737f17c84315a78266ef805d193e718a0e8",
+        "symbols": [
+          "reconcileSystemdPortRequest",
+          "reconcileUnstartedSystemdPortRequest",
+          "repairSystemdPortCommit",
+          "rollbackSystemdPortRequest"
+        ],
+        "physical_lines": 259
+      },
+      {
+        "path": "internal/hostruntime/systemd_port_result.go",
+        "sha256": "20a94d8b583bfb9023b0a567047ae72d01095c716933ddfc98d9d7e9138631f3",
+        "symbols": [
+          "DockerPortReconfigureResultState",
+          "SystemdPortReconfigureResult",
+          "SystemdPortReconfigureResult.Validate",
+          "systemdPortAdapter",
+          "systemdPortAdapterFor",
+          "systemdPortSidecarBytes",
+          "systemdPortSidecarSHA256",
+          "validSystemdPort",
+          "validSystemdPortServiceType"
+        ],
+        "physical_lines": 181
+      },
+      {
+        "path": "internal/hostruntime/systemd_port_state_models.go",
+        "sha256": "16111b5604b84870cd0f3f9d7448f3857de8353cfc30c1961ba3900e5206046b",
+        "symbols": [
+          "*memorySystemdPortStateStore.LoadActive",
+          "*memorySystemdPortStateStore.LoadApplied",
+          "*memorySystemdPortStateStore.LoadJob",
+          "*memorySystemdPortStateStore.Save",
+          "*memorySystemdPortStateStore.SaveApplied",
+          "*memorySystemdPortStateStore.Stage",
+          "cloneSystemdPortLedger",
+          "memorySystemdPortStateStore",
+          "newMemorySystemdPortStateStore",
+          "newSystemdPortSidecarCheckpoint",
+          "systemdPortAppliedState",
+          "systemdPortAppliedState.matchesTarget",
+          "systemdPortAppliedState.validateForPolicy",
+          "systemdPortAppliedState.validateRecord",
+          "systemdPortLedger",
+          "systemdPortLedger.validate",
+          "systemdPortSidecarCheckpoint",
+          "systemdPortSidecarCheckpoint.validate",
+          "systemdPortStateStore"
+        ],
+        "physical_lines": 306
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M084",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "install/install-autostream-local-executor",
+    "original_sha256": "c576bf4952880c0da500269db778974382ab49d6cd206eafdc6ea232c64b2105",
+    "before_physical_lines": 1524,
+    "disposition": "generated-from-bounded-authoring",
+    "responsibility": "preamble/options;validation/identity;locks/journal;staging;account/systemd changes;activation/health;rollback/cleanup;main dispatch",
+    "destinations": [
+      {
+        "path": "authoring/install-autostream-local-executor/artifact-verification.sh.inc",
+        "sha256": "226e3de19d4975422d6a530132ee7622be55935c2674a5abe13ae0a0cb1a1863",
+        "symbols": [],
+        "physical_lines": 276
+      },
+      {
+        "path": "authoring/install-autostream-local-executor/cleanup.sh.inc",
+        "sha256": "c12cd40c26cfcf356bbf03b70c7ecf3737fa3707653b742f361777b0230f9e7a",
+        "symbols": [],
+        "physical_lines": 135
+      },
+      {
+        "path": "authoring/install-autostream-local-executor/host-preflight.sh.inc",
+        "sha256": "55a225741673cf33a7ba3a3bb1dc8320612c10890461e335b3af279c5374a411",
+        "symbols": [],
+        "physical_lines": 206
+      },
+      {
+        "path": "authoring/install-autostream-local-executor/identity-traversal.sh.inc",
+        "sha256": "8e36ad58871939c6084a114e9e9dff26f6381195f020e4764681c2c4612a56de",
+        "symbols": [],
+        "physical_lines": 133
+      },
+      {
+        "path": "authoring/install-autostream-local-executor/installation-journal.sh.inc",
+        "sha256": "beb6b64c3a894e4a9f8730085925910359a563ba088cc2a60590a356626cc770",
+        "symbols": [],
+        "physical_lines": 169
+      },
+      {
+        "path": "authoring/install-autostream-local-executor/options-host-locks.sh.inc",
+        "sha256": "3b7c359925e5260979ce8191302d403c8fa390013da6e0b4b0dda185fd23228a",
+        "symbols": [],
+        "physical_lines": 256
+      },
+      {
+        "path": "authoring/install-autostream-local-executor/runtime-activation.sh.inc",
+        "sha256": "d9f0564310a715f21435a86f95d714fdfc826c45b6e8c4407f4db11d388ac645",
+        "symbols": [],
+        "physical_lines": 193
+      },
+      {
+        "path": "authoring/install-autostream-local-executor/runtime-state.sh.inc",
+        "sha256": "0638b7c61affdc307d877db0367cb795e36ec38c2061bc5167befa2676dd7ef7",
+        "symbols": [],
+        "physical_lines": 156
+      },
+      {
+        "path": "install/install-autostream-local-executor",
+        "sha256": "c576bf4952880c0da500269db778974382ab49d6cd206eafdc6ea232c64b2105",
+        "symbols": [],
+        "physical_lines": 1524
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M085",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_pull_execution.go",
+    "original_sha256": "3e31860816ec24ff6d261397eef240445f6f235d69e9b179c0a5189a0b1c47db",
+    "before_physical_lines": 1324,
+    "disposition": "responsibility-split",
+    "responsibility": "claim verification;desired operation dispatch;software update path;self-update path;report/recovery",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_pull_claim_validation.go",
+        "sha256": "e52a56310b1da7f2e345d440b9e75f882410757cdeba850f021dcc8ac70b7586",
+        "symbols": [
+          "hostPullPolicyTarget",
+          "isV2RecoveryClearStatus",
+          "samePortMutationGrantBinding",
+          "sameRecoveredJobIntent",
+          "sameRecoveredJobLease",
+          "validateHostPullClaim",
+          "validateV2RecoveryClear"
+        ],
+        "physical_lines": 202
+      },
+      {
+        "path": "internal/hostruntime/host_pull_execution.go",
+        "sha256": "89e99e2063653b6696aa65539c0dd4697c705cde2706da7734a1a9227c3e460c",
+        "symbols": [
+          "*HostPullAgent.executeOnce",
+          "*HostPullAgent.executorReady",
+          "*HostPullAgent.mutationCapabilityReady",
+          "*HostPullAgent.mutationReady",
+          "*HostPullAgent.startExecution",
+          "HostPullClaimRequest",
+          "HostPullExecutionControlPlane",
+          "newHostPullSessionID"
+        ],
+        "physical_lines": 186
+      },
+      {
+        "path": "internal/hostruntime/host_pull_execution_grants.go",
+        "sha256": "23b9598a500be9ddbbf7fd39c61b98a21067493ab33b8aef5a35275124506dea",
+        "symbols": [
+          "*HostPullAgent.emitExecutionReport",
+          "*HostPullAgent.flushExecutionReports",
+          "validateV2ExecutionGrantCommon",
+          "validateV2PortExecutionGrant",
+          "validateV2SoftwareExecutionGrant"
+        ],
+        "physical_lines": 184
+      },
+      {
+        "path": "internal/hostruntime/host_pull_port_execution.go",
+        "sha256": "90da7adb745b33e1b0f3fdf9b9d2f4b5e824dea0d47781e43e2fa7093e90624c",
+        "symbols": [
+          "*HostPullAgent.finishPortExecutionResult",
+          "*HostPullAgent.invokePortExecutionMutation",
+          "*HostPullAgent.preparePortExecutionPlan",
+          "*HostPullAgent.processPortReconfigurationJob",
+          "*HostPullAgent.recoverPortExecutionPlan",
+          "portExecutionPlanFromJob"
+        ],
+        "physical_lines": 341
+      },
+      {
+        "path": "internal/hostruntime/host_pull_port_result.go",
+        "sha256": "7b7eb7de8784962ee0cebc8ff1e57383fe22a8a4ea62a9d25b2fbe1cac6a1d80",
+        "symbols": [
+          "*HostPullAgent.emitPortExecutionReport",
+          "*HostPullAgent.emitPortExecutionTerminal",
+          "dockerPortExecutionResultMatchesPlan",
+          "validatePortExecutionResult"
+        ],
+        "physical_lines": 126
+      },
+      {
+        "path": "internal/hostruntime/host_pull_software_execution.go",
+        "sha256": "7b844ecc0b0b77c0f2a0d47aa6ca7974993f4673f8069fb558e34ae0d1f5e3c5",
+        "symbols": [
+          "*HostPullAgent.processExecutionJob",
+          "localExecutorErrorCode"
+        ],
+        "physical_lines": 128
+      },
+      {
+        "path": "internal/hostruntime/host_pull_software_mutation.go",
+        "sha256": "979060b83ce95c7dbff755073d920aad724f5776a58ec5c1cb825810179c0873",
+        "symbols": [
+          "*HostPullAgent.finishExecutionResult",
+          "*HostPullAgent.invokeExecutionMutation",
+          "*HostPullAgent.prepareExecutionPlan",
+          "*HostPullAgent.recoverExecutionPlan",
+          "hostPullExecutionNow"
+        ],
+        "physical_lines": 200
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M086",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/docker_port_reconfigure.go",
+    "original_sha256": "11668c8d0e209724ad25d6b8155903a84d0dba7874ddf32c4e704f6a9973d6ce",
+    "before_physical_lines": 1250,
+    "disposition": "responsibility-split",
+    "responsibility": "plan/binding;checkpoint/inspect;reconfigure;health/commit;rollback/reconcile",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/docker_port_commit.go",
+        "sha256": "7e51f1ba82c3db873d7721963018bfc2144004d955a224d0850d7b912e4cdade",
+        "symbols": [
+          "commitDockerPortResult",
+          "handleLocalExecutorDockerPortMutation",
+          "terminalDockerPortRollbackFailed"
+        ],
+        "physical_lines": 181
+      },
+      {
+        "path": "internal/hostruntime/docker_port_execution.go",
+        "sha256": "966f9c774bb5ac71cc85716e3c83a95d4a00f904a21b3e809876518dd86e2aac",
+        "symbols": [
+          "dockerPortRuntime",
+          "dockerPortTargetMatchesExpected",
+          "executeDockerPortRequest",
+          "resolveDockerPortAppliedTarget",
+          "resolveDockerPortAppliedTargetBound",
+          "resolveDockerPortAppliedTargetForTransaction",
+          "validateDockerPortPolicyBinding"
+        ],
+        "physical_lines": 312
+      },
+      {
+        "path": "internal/hostruntime/docker_port_reconfigure.go",
+        "sha256": "2342140cc1d9a995f69b3f6c844421fbe781ee2c760229e1857618e853d6c8ba",
+        "symbols": [
+          "dockerPortAppliedSidecarVerifier",
+          "dockerPortAppliedState",
+          "dockerPortAppliedState.matchesTarget",
+          "dockerPortAppliedState.validate",
+          "dockerPortAppliedState.validateForPolicy",
+          "dockerPortAppliedState.validateRecord",
+          "dockerPortAppliedStateReader",
+          "dockerPortCapabilityVersion,dockerPortLedgerStaged,dockerPortLedgerGrantConsuming,dockerPortLedgerGrantConsumed,dockerPortLedgerEnvWritten,dockerPortLedgerRecreated,dockerPortLedgerAmbiguous,dockerPortLedgerCommitting,dockerPortLedgerTerminal",
+          "dockerPortLedger",
+          "dockerPortLedger.validate",
+          "dockerPortMappingCheckpoint",
+          "dockerPortMappingCheckpoint.validate",
+          "dockerPortObservation",
+          "dockerPortObservation.validate",
+          "dockerPortPreparedModel",
+          "dockerPortPreparedModel.validate",
+          "dockerPortRuntimeBaseline",
+          "dockerPortRuntimeBaseline.validate",
+          "newDockerPortMappingCheckpoint"
+        ],
+        "physical_lines": 308
+      },
+      {
+        "path": "internal/hostruntime/docker_port_recovery.go",
+        "sha256": "ad51192bdc33edf1af2938e690fc1ee563299dcc1e448ecb65166049251c9366",
+        "symbols": [
+          "reconcileDockerPortRequest",
+          "repairDockerPortCommit",
+          "rollbackDockerPortRequest"
+        ],
+        "physical_lines": 185
+      },
+      {
+        "path": "internal/hostruntime/docker_port_staging.go",
+        "sha256": "ddd9917b602996d3f52dc5cf43351687ee9034c2a9dab29231f43fc005b452b5",
+        "symbols": [
+          "dockerPortObservationMatchesPlanBaseline",
+          "dockerPortObservationMatchesTarget",
+          "dockerPortPreparedMatchesPlan",
+          "dockerPortTargetAfter",
+          "recheckDockerPortStagedInputs",
+          "stageDockerPortLedger"
+        ],
+        "physical_lines": 158
+      },
+      {
+        "path": "internal/hostruntime/docker_port_state_models.go",
+        "sha256": "bba1440d8a23e624b2f43d9001f4aa678278333e35fb1dd5c22e2ed7d9435d84",
+        "symbols": [
+          "*memoryDockerPortStateStore.LoadActive",
+          "*memoryDockerPortStateStore.LoadDockerApplied",
+          "*memoryDockerPortStateStore.LoadJob",
+          "*memoryDockerPortStateStore.Save",
+          "*memoryDockerPortStateStore.SaveApplied",
+          "*memoryDockerPortStateStore.Stage",
+          "cloneDockerPortLedger",
+          "dockerPortStateStore",
+          "memoryDockerPortStateStore",
+          "newMemoryDockerPortStateStore"
+        ],
+        "physical_lines": 132
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M087",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_pull_agent_test.go",
+    "original_sha256": "b0b94dda737cc9175ffe3ae37ccd13eff05faf5a809a86c4c9b904044c4dd41d",
+    "before_physical_lines": 1214,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture/model ownership;normal scenarios;authorization/negative cases;concurrency/failure/recovery;shared assertions",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_pull_agent_capabilities_test.go",
+        "sha256": "6853300b5adfb3d1351cd7c713a6bfa24a246c1b5443dc757541d9405e951485",
+        "symbols": [
+          "TestHostAgentCapabilitiesAdvertiseSelfUpdateRecoveryProtocol",
+          "TestHostAgentCapabilitiesDoNotTreatAppliedPortAsLocalObservation",
+          "TestHostAgentPortDriftNeverComparesLocalPortToAdvertisedEndpoint",
+          "TestObserveOnlyHostAgentBacksOffAfterPanelOutage"
+        ],
+        "physical_lines": 131
+      },
+      {
+        "path": "internal/hostruntime/host_pull_agent_fixture_test.go",
+        "sha256": "b10c8a4120127a7cac6cdd2ae3e38ab1dd64bbf2389f80443ce3791ae3567a73",
+        "symbols": [
+          "*failingHostPullControlPlane.FetchHostAgentPolicy",
+          "*failingHostPullControlPlane.HeartbeatHostAgent",
+          "*failingHostPullControlPlane.RegisterHostAgent",
+          "*hostPullRecoveryLoopPanel.ClaimHost",
+          "*hostPullRecoveryLoopPanel.FetchHostAgentPolicy",
+          "*hostPullRecoveryLoopPanel.HeartbeatHostAgent",
+          "*hostPullRecoveryLoopPanel.IssueMutationGrant",
+          "*hostPullRecoveryLoopPanel.RegisterHostAgent",
+          "*hostPullRecoveryLoopPanel.Report",
+          "*hostPullRecoveryLoopPanel.activeJobIDs",
+          "*hostPullRecoveryLoopPanel.heartbeatSnapshot",
+          "agentControlPlane",
+          "configureHostPullRecoveryProbe",
+          "failingHostPullControlPlane",
+          "hostPullHeartbeatReportsEligiblePolicy",
+          "hostPullRecoveryLoopPanel",
+          "managedHostAgentBootstrap"
+        ],
+        "physical_lines": 237
+      },
+      {
+        "path": "internal/hostruntime/host_pull_agent_policy_test.go",
+        "sha256": "ceb282c4094dda738b9b8c2c867fe13eb023ac1e63655e81402a3d1e9318c6e6",
+        "symbols": [
+          "TestFetchHostAgentPolicyAcceptsSamePolicyRevisionWithRefreshedTargetConfig",
+          "TestFetchHostAgentPolicyRejectsCrossHostBinding",
+          "TestFetchHostAgentPolicyRejectsUnknownFields",
+          "TestHostAgentPolicyObserveOnlyMatchesOwnershipEpochExactly",
+          "TestHostAgentPolicyObserverExecutorBindingIsAllOrNothing",
+          "TestHostAgentPolicyRejectsNonHTTPURLAndPaddedDuplicateTarget",
+          "TestNewHostPullAgentUsesDedicatedStateDirectory",
+          "TestObserveOnlyHostAgentFailsClosedWhenJournalCannotOpen",
+          "TestRegisterHostAgentDoesNotFollowRedirect"
+        ],
+        "physical_lines": 262
+      },
+      {
+        "path": "internal/hostruntime/host_pull_agent_recovery_loop_test.go",
+        "sha256": "218ffb58909692c52586a581d45c1e3749c499b0aa140fa1f1d590944542d972",
+        "symbols": [
+          "TestHostAgentRetryCadenceIsDeterministicallyJitteredPerIdentity",
+          "TestHostPullAgentRefreshesTargetReadinessBeforeActiveRecovery",
+          "TestHostPullRecoveryReadinessDoesNotEnableNewClaims",
+          "TestRecoveryOnlyHostPullAgentDoesNotClaimWhenHeartbeatFails",
+          "TestRecoveryOnlyHostPullAgentPreservesCursorOnUnprovenClear",
+          "TestRecoveryOnlyHostPullAgentRefreshesStaleHeartbeatBeforeClaim",
+          "TestRecoveryOnlyHostPullAgentReturnsWithoutClaimWhenCursorIsAbsent"
+        ],
+        "physical_lines": 364
+      },
+      {
+        "path": "internal/hostruntime/host_pull_agent_test.go",
+        "sha256": "917e6c5d5a686d6675d45f01d52c686a4e6dedc8766db0edaf4a181c355ad93e",
+        "symbols": [
+          "TestObserveOnlyHostAgentPreservesInterruptedJournalWithoutClaimOrReport",
+          "TestObserveOnlyHostAgentUsesEndpointlessOutboundControlLoop"
+        ],
+        "physical_lines": 258
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M088",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_pull_agent.go",
+    "original_sha256": "f304160b352f0332c839649e1b1243031bbbb44925fe225ac66123d3e75cc2c5",
+    "before_physical_lines": 1151,
+    "disposition": "responsibility-split",
+    "responsibility": "agent state/options;policy polling;claim loop;heartbeat/report;cancel/backoff",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_pull_agent.go",
+        "sha256": "b2307694c352d86390f8f1bb003117d0cbd77df2a298e8d848898ec13e865eb9",
+        "symbols": [
+          "HostDockerPortObservation",
+          "HostPullAgent",
+          "HostPullAgentOptions",
+          "HostPullAgentStateDir,TargetAvailabilityUnknown,TargetAvailabilityAvailable,TargetAvailabilityUnavailable",
+          "HostTargetObservation",
+          "HostTargetObserver",
+          "NewHostPullAgent"
+        ],
+        "physical_lines": 288
+      },
+      {
+        "path": "internal/hostruntime/host_pull_control_loop.go",
+        "sha256": "e9341f4ea0bb49a84e8c31dd0efc976bd5cfc59188c2631b958c37f6979741e4",
+        "symbols": [
+          "*HostPullAgent.Run",
+          "recoveryOnlyHostPullControlPlane",
+          "recoveryOnlyHostPullControlPlane.ClaimHost",
+          "recoveryOnlyHostPullControlPlane.IssueMutationGrant",
+          "recoveryOnlyHostPullControlPlane.Report"
+        ],
+        "physical_lines": 246
+      },
+      {
+        "path": "internal/hostruntime/host_pull_credential_heartbeat.go",
+        "sha256": "7ad90b271eea43102f0b889c7242657f0393a11419b01a910985a7f8480408ac",
+        "symbols": [
+          "*HostPullAgent.addRuntimeTokenRotationCapabilities",
+          "*HostPullAgent.recordRuntimeTokenRotationHeartbeat",
+          "*hostAgentRetryState.record",
+          "deploymentAbsolutePath",
+          "hostAgentJitteredInterval",
+          "hostAgentRetryState",
+          "hostAgentRetryState.ready",
+          "newHostAgentRetryState"
+        ],
+        "physical_lines": 126
+      },
+      {
+        "path": "internal/hostruntime/host_pull_observation.go",
+        "sha256": "572dc2bcd6c1cf7a2f00044fdf9cde09ae946d23c48ba17aea4d94e12e22bfc8",
+        "symbols": [
+          "*HostPullAgent.capabilities",
+          "*HostPullAgent.observe",
+          "validHostDockerPortObservation"
+        ],
+        "physical_lines": 312
+      },
+      {
+        "path": "internal/hostruntime/host_pull_recovery_control.go",
+        "sha256": "f8062f6722ea9d2f60a3508f422aedfe8d00ee4397c8556901827e5642965dd2",
+        "symbols": [
+          "*HostPullAgent.currentAgentVersion",
+          "*HostPullAgent.currentIdentity",
+          "*HostPullAgent.hasActiveRecovery",
+          "*HostPullAgent.recoveryExecutionReady",
+          "*HostPullAgent.replaceRuntimeIdentity",
+          "*HostPullAgent.runRecoveryOnly",
+          "*HostPullAgent.startExecutionCycle"
+        ],
+        "physical_lines": 211
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M089",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_self_update_grant.go",
+    "original_sha256": "86d98bcdd10357132ee13db55acb62318a23f1a72d5674e3aeacab5de4c7afea",
+    "before_physical_lines": 1058,
+    "disposition": "responsibility-split",
+    "responsibility": "grant types;signature/binding validation;consume;expiry/recovery;safe errors",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_self_update_grant.go",
+        "sha256": "640cad90945612c2acdc98c871c2365e3354a80bdfde2a0f70ce644983f5cdf6",
+        "symbols": [
+          "HostSelfUpdateGrantAuthorization",
+          "HostSelfUpdateGrantAuthorization.validate",
+          "HostSelfUpdateGrantBinding",
+          "HostSelfUpdateGrantBinding.validate",
+          "HostSelfUpdateGrantConsumeResult",
+          "HostSelfUpdateGrantStatePath,hostSelfUpdateGrantStateSchemaVersion,hostSelfUpdateGrantPhasePrepared,hostSelfUpdateGrantPhaseConsumed,hostSelfUpdateGrantPhaseApplied,hostSelfUpdateGrantPhaseFailed",
+          "errHostSelfUpdateGrantUncertain",
+          "sameHostSelfUpdateGrantBinding"
+        ],
+        "physical_lines": 196
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_grant_authorization.go",
+        "sha256": "3e8ef7d401e457e87ecae7473165ae4ba5a4746750887c9079a4bd929d04be53",
+        "symbols": [
+          "*hostSelfUpdateExecutorRuntime.authorizeHostSelfUpdate",
+          "*hostSelfUpdateExecutorRuntime.hostSelfUpdateGrantApplied",
+          "*hostSelfUpdateExecutorRuntime.hostSelfUpdateGrantPhase",
+          "*hostSelfUpdateExecutorRuntime.markHostSelfUpdateGrantApplied"
+        ],
+        "physical_lines": 118
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_grant_binding.go",
+        "sha256": "877970fdfa779ee37702ea0aa3976442225ce6420aa3abc63a7cd292e86d8799",
+        "symbols": [
+          "hostSelfUpdateExecutorRuntime.hostSelfUpdateSlotMarkerDigests",
+          "hostSelfUpdateExecutorRuntime.hostSelfUpdateStateEffectMatchesGrant",
+          "hostSelfUpdatePendingMatchesGrant",
+          "hostSelfUpdateRequestForGrantBinding",
+          "sameHostSelfUpdateRequestIdentity",
+          "validateHostSelfUpdateGrantForOperation",
+          "validateHostSelfUpdateGrantReplayBinding"
+        ],
+        "physical_lines": 298
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_grant_consume.go",
+        "sha256": "d0f68bba213e67baf890ebf1d2faba8efa184dbd94b50602b0855a569aa98034",
+        "symbols": [
+          "ConsumeHostSelfUpdateGrant",
+          "consumeHostSelfUpdateGrant",
+          "hostSelfUpdateGrantConsumer",
+          "hostSelfUpdateGrantState",
+          "hostSelfUpdateGrantState.matches",
+          "hostSelfUpdateGrantState.validate",
+          "loadHostSelfUpdateGrantState",
+          "newHostSelfUpdateGrantState",
+          "saveHostSelfUpdateGrantState"
+        ],
+        "physical_lines": 217
+      },
+      {
+        "path": "internal/hostruntime/host_self_update_grant_recovery.go",
+        "sha256": "8ef2ea43ffe00bdf6cbea70ca4b81bc154642a7891d114fdfc85bfad1355eff7",
+        "symbols": [
+          "*hostSelfUpdateExecutorRuntime.convergeHostSelfUpdateStageAfterError",
+          "failedHostSelfUpdateStateMatchesStageGrant",
+          "hostSelfUpdateExecutorRuntime.cleanFailedHostSelfUpdateGrant",
+          "hostSelfUpdateExecutorRuntime.failClosedUncertainStage",
+          "hostSelfUpdateExecutorRuntime.markDurableHostSelfUpdateGrantApplied",
+          "hostSelfUpdateExecutorRuntime.recoverDurableHostSelfUpdateGrant",
+          "hostSelfUpdateExecutorRuntime.removeHostSelfUpdateGrantState"
+        ],
+        "physical_lines": 256
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M090",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "scripts/ci/run-host-agent-installer-prepare-smoke.sh",
+    "original_sha256": "c84bc618321412d558ee0c41d1a0da413fe4efaf48583aaf1f13b4c42fe3bdc1",
+    "before_physical_lines": 1053,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture setup/stubs;case families;assertions;cleanup;ordered entry",
+    "destinations": [
+      {
+        "path": "scripts/ci/host-agent-prepare/account-and-transaction-rollback-cases.sh",
+        "sha256": "9093393cc7b1c25f0149c08eaf0a253982c683dad0d943d447f272f6ab84fb07",
+        "symbols": [],
+        "physical_lines": 311
+      },
+      {
+        "path": "scripts/ci/host-agent-prepare/bundle-fixture-and-input-rejections.sh",
+        "sha256": "bb5a00c29b532bdf4c957a5dbba5234b4a2bc3457fc067f1a5711bab707ff92a",
+        "symbols": [],
+        "physical_lines": 305
+      },
+      {
+        "path": "scripts/ci/host-agent-prepare/prepare-and-lock-cases.sh",
+        "sha256": "8f5267b54fdc2be2c356212de121aca6bf23ccbded295442cbe1906d08408e70",
+        "symbols": [],
+        "physical_lines": 142
+      },
+      {
+        "path": "scripts/ci/host-agent-prepare/service-manager-adapters.sh",
+        "sha256": "c2b0326ec87abb9f85aca2af3098adcce883a773fba50b9c503276fba5fb44e8",
+        "symbols": [],
+        "physical_lines": 158
+      },
+      {
+        "path": "scripts/ci/host-agent-prepare/uninstall-and-purge-cases.sh",
+        "sha256": "43962a7eb24ace864dd3f72b11960d16141220670ea96d6bb8912a619b5d1dea",
+        "symbols": [],
+        "physical_lines": 117
+      },
+      {
+        "path": "scripts/ci/run-host-agent-installer-prepare-smoke.sh",
+        "sha256": "f3287a4db16bc03673beb1f01dc5ec8e933c38192474aff9599e30ebecb2c42b",
+        "symbols": [],
+        "physical_lines": 28
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M091",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/executor_mutation.go",
+    "original_sha256": "49dba9ca5e81c2cedb0ef067eaa4c3108c893aebde84772083525913185a0e47",
+    "before_physical_lines": 1031,
+    "disposition": "responsibility-split",
+    "responsibility": "mutation binding;allowed command dispatch;validation;filesystem execution;safe result",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/executor_mutation.go",
+        "sha256": "fcb7a3350030c6d06c7dac923b86e80b26cb920a6e877015501c718a880ebe67",
+        "symbols": [
+          "defaultExecutorMutationRuntime",
+          "executorMutationRuntime",
+          "managedRemoteCurrentVersion",
+          "probeRemoteTargetVersion",
+          "remoteLegacyStageGenerationScanLimit",
+          "remoteMutationWaitLimit",
+          "requirePlannedCurrentVersion",
+          "verifyMutationPlanCurrentVersion"
+        ],
+        "physical_lines": 127
+      },
+      {
+        "path": "internal/hostruntime/executor_mutation_dispatch.go",
+        "sha256": "df03ed0261c280d1338728cbc114c4c259d05879edc782d0714e3cf31270d3e4",
+        "symbols": [
+          "consumeExecutorMutationGrant",
+          "executorMutationRequest"
+        ],
+        "physical_lines": 196
+      },
+      {
+        "path": "internal/hostruntime/executor_mutation_result.go",
+        "sha256": "0c70c14e281569d2d966eb684c65b7b3da4c083734d42428b0f3bfd8c5069df9",
+        "symbols": [
+          "bindRemoteApplyResult",
+          "executorFailure",
+          "executorFailureWithMessage",
+          "executorMutationRuntime.String",
+          "remoteLedgerRequestFailure",
+          "remoteStageFailureMessage",
+          "sanitizeRemoteApplyResult"
+        ],
+        "physical_lines": 127
+      },
+      {
+        "path": "internal/hostruntime/executor_stage_request.go",
+        "sha256": "8672b6269d12c78cbec47dc0abed5b42480ef1670f16ed455584eaa7faf8e588",
+        "symbols": [
+          "cleanupRemoteOrphanStage",
+          "cleanupRemoteTerminalStage",
+          "executorStageRequest",
+          "gcAgedRemoteStagePartials",
+          "prepareExecutorStage",
+          "remoteOrphanStageRoots",
+          "remoteStageResult",
+          "remoteStageRoot",
+          "validateExecutorStage"
+        ],
+        "physical_lines": 324
+      },
+      {
+        "path": "internal/hostruntime/executor_systemd_staging.go",
+        "sha256": "ed2c04c4683e608e1a0388d228ed8479b048d639812b1189c1357952117aff7c",
+        "symbols": [
+          "applyRemoteStagedSystemd",
+          "applyRemoteStagedSystemdWithVerifier",
+          "commitRemoteSystemdMutation",
+          "preflightRemoteSystemdStage",
+          "remoteSystemdBaselineVerifier",
+          "resolveRemoteArtifactRoot",
+          "verifyRemoteHealthyVersionExact",
+          "verifyRemoteSystemdBaseline",
+          "verifyRemoteSystemdStagedArtifact"
+        ],
+        "physical_lines": 289
+      }
+    ]
+  },
+  {
+    "target_id": "B9-M092",
+    "repository": "Kome-Lab/Autostream-Updater",
+    "original_path": "internal/hostruntime/host_pull_runtime_token_rotation_test.go",
+    "original_sha256": "ad1ea93c69c300020edcdfb6b3657d1b9897a8014a3f9acdc441c0ef472e5569",
+    "before_physical_lines": 1025,
+    "disposition": "responsibility-split",
+    "responsibility": "fixture/model ownership;normal scenarios;authorization/negative cases;concurrency/failure/recovery;shared assertions",
+    "destinations": [
+      {
+        "path": "internal/hostruntime/host_pull_credential_claim_replay_test.go",
+        "sha256": "3215af251f6b2304a7b61f575331743fc0a66819c3df31c2d0a48c5138f62ece",
+        "symbols": [
+          "TestAuthoritativeNilRetiresRootClaimPreparedAndUnblocksNextRotation",
+          "TestClaimPreparedReplaysCommittedRevisionTwoWithExactClaimID",
+          "TestNewRevisionOneDirectiveRetiresDifferentRootClaimPrepared",
+          "TestStageBoundMissingFileReplaysCommittedClaimOverExactClaimID"
+        ],
+        "physical_lines": 250
+      },
+      {
+        "path": "internal/hostruntime/host_pull_credential_fixture_test.go",
+        "sha256": "a408c98822b44f221c08284f514a0c3d436c1abcf986fcfbac94381a79f76c0b",
+        "symbols": [
+          "*claimingRuntimeCredentialExecutor.StageRuntimeCredential",
+          "*claimingRuntimeTokenRotationPanel.ClaimRuntimeTokenRotation",
+          "*memoryRuntimeCredentialExecutor.ActivateRuntimeCredential",
+          "*memoryRuntimeCredentialExecutor.CancelRuntimeCredential",
+          "*memoryRuntimeCredentialExecutor.FinalizeRuntimeCredential",
+          "*memoryRuntimeCredentialExecutor.MarkRuntimeCredentialProofReady",
+          "*memoryRuntimeCredentialExecutor.PrepareRuntimeCredential",
+          "*memoryRuntimeCredentialExecutor.RuntimeCredentialStatus",
+          "*memoryRuntimeCredentialExecutor.StageRuntimeCredential",
+          "*memoryRuntimeTokenClaimStateStore.Delete",
+          "*memoryRuntimeTokenClaimStateStore.Load",
+          "*memoryRuntimeTokenClaimStateStore.Save",
+          "*memoryRuntimeTokenRotationPanel.AcknowledgeRuntimeTokenRotationCancel",
+          "*memoryRuntimeTokenRotationPanel.ClaimRuntimeTokenRotation",
+          "*memoryRuntimeTokenRotationPanel.ProveRuntimeTokenRotation",
+          "claimingRuntimeCredentialExecutor",
+          "claimingRuntimeTokenRotationPanel",
+          "memoryRuntimeCredentialExecutor",
+          "memoryRuntimeTokenClaimStateStore",
+          "memoryRuntimeTokenRotationPanel",
+          "newRuntimeTokenRotationTestAgent",
+          "runtimeTokenClaimStateFromStatus",
+          "testClaimPreparedRuntimeCredentialStatus"
+        ],
+        "physical_lines": 331
+      },
+      {
+        "path": "internal/hostruntime/host_pull_credential_manual_recovery_test.go",
+        "sha256": "d22dc43ec10328539ee8072326630a89ad6293d08bc35ab7d98bd5265fad1896",
+        "symbols": [
+          "TestHostAgentFinalizesManualRecoveryBeforeNextRotation",
+          "TestHostAgentManualRecoveryCrashKeepsRootLedgerAfterClaimCleanup"
+        ],
+        "physical_lines": 148
+      },
+      {
+        "path": "internal/hostruntime/host_pull_runtime_token_rotation_test.go",
+        "sha256": "a5752311f01ff083af691c539ba6168bccedcc8c30f61763b8892ff33c797998",
+        "symbols": [
+          "TestAuthoritativeNilRotationRetiresPreclaimCrashTombstone",
+          "TestExpiredClaimReplayWithoutRootLedgerFailsClosedOnCancelAfterRestart",
+          "TestNewAuthenticatedDirectiveRetiresRootlessStaleClaim",
+          "TestRootClaimPreparationFailurePreventsPanelCredentialClaim",
+          "TestRuntimeTokenClaimStateMatchesBothTokenIDs"
+        ],
+        "physical_lines": 318
+      }
+    ]
+  }
+]
