@@ -1,0 +1,103 @@
+name: Bundle 9 final source maintainability
+
+on:
+  workflow_call:
+    inputs:
+      workflow-sha:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify-final-source-set:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.workflow-sha }}
+          path: checker
+          persist-credentials: false
+      - name: Materialize the exact nine repository source set
+        id: pins
+        shell: bash
+        env:
+          WORKFLOW_SHA: ${{ inputs.workflow-sha }}
+        run: |
+          set -euo pipefail
+          python3 checker/scripts/ci/materialize_bundle9_source_set.py \
+            --workflow-sha "${WORKFLOW_SHA}" \
+            --out "${RUNNER_TEMP}/bundle9-final-source-set.json" \
+            --github-output "${GITHUB_OUTPUT}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-ControlPanel
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-ControlPanel'] }}
+          path: sources/Autostream-ControlPanel
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Contracts
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-Contracts'] }}
+          path: sources/Autostream-Contracts
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Worker
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-Worker'] }}
+          path: sources/Autostream-Worker
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Encoder-Recorder
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-Encoder-Recorder'] }}
+          path: sources/Autostream-Encoder-Recorder
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-DiscordBot
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-DiscordBot'] }}
+          path: sources/Autostream-DiscordBot
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Observability
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-Observability'] }}
+          path: sources/Autostream-Observability
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Updater
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-Updater'] }}
+          path: sources/Autostream-Updater
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Docs
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-Docs'] }}
+          path: sources/Autostream-Docs
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Kome-Lab/Autostream-Docker
+          ref: ${{ fromJSON(steps.pins.outputs.sources)['Autostream-Docker'] }}
+          path: sources/Autostream-Docker
+          persist-credentials: false
+      - name: Verify all 96 targets, source limits, and raw distribution bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 checker/scripts/ci/verify_bundle9_sources.py \
+            --root sources --source-set "${RUNNER_TEMP}/bundle9-final-source-set.json" \
+            --out "${RUNNER_TEMP}/bundle9-final-source-measurement.json"
+      - name: Upload the fixed source set and measurement
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundle9-final-source-measurement-${{ inputs.workflow-sha }}
+          path: |
+            ${{ runner.temp }}/bundle9-final-source-set.json
+            ${{ runner.temp }}/bundle9-final-source-measurement.json
+          if-no-files-found: error
