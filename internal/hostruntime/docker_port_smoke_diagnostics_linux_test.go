@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -608,55 +605,7 @@ func TestDockerSmokeDiagnosticLegacyBoundsAndSecrets(t *testing.T) {
 }
 
 func TestDockerSmokeDiagnosticLegacyCallerConnection(t *testing.T) {
-	source, err := os.ReadFile("docker_port_daemon_smoke_linux_test.go")
-	if err != nil {
-		t.Fatal("cannot read actual smoke caller")
-	}
-	file, err := parser.ParseFile(token.NewFileSet(), "smoke.go", source, 0)
-	if err != nil {
-		t.Fatal("cannot parse actual smoke caller")
-	}
-	functions := map[string]*ast.FuncDecl{}
-	for _, declaration := range file.Decls {
-		if function, ok := declaration.(*ast.FuncDecl); ok {
-			functions[function.Name.Name] = function
-		}
-	}
-	calls := func(name, target string) []token.Pos {
-		var positions []token.Pos
-		ast.Inspect(functions[name].Body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			called := ""
-			switch function := call.Fun.(type) {
-			case *ast.Ident:
-				called = function.Name
-			case *ast.SelectorExpr:
-				called = function.Sel.Name
-			}
-			if called == target {
-				positions = append(positions, call.Pos())
-			}
-			return true
-		})
-		return positions
-	}
-	observed, assertion := calls("TestDockerPortDaemonSmoke", "observeDockerPortSmokeUnhealthyMutation"), calls("TestDockerPortDaemonSmoke", "assertDockerPortSmokeRolledBack")
-	if len(observed) != 1 || len(assertion) != 1 || observed[0] >= assertion[0] {
-		t.Fatal("unhealthy caller bypasses observation or assertion")
-	}
-	for _, target := range []string{"handleLocalExecutorMutation", "withFailureObserver", "wrapCrashPoint"} {
-		if len(calls("runDockerPortSmokeMutation", target)) != 1 {
-			t.Fatal("actual mutation helper lost its handler/observer connection")
-		}
-	}
-	mutate, logged := calls("observeDockerPortSmokeUnhealthyMutation", "mutate"), calls("observeDockerPortSmokeUnhealthyMutation", "logReturn")
-	if len(mutate) != 1 || len(logged) != 1 || mutate[0] >= logged[0] || len(calls("assertDockerPortSmokeRolledBack", "dockerPortSmokeRollbackSummary")) != 1 || len(calls("assertDockerPortSmokeRolledBack", "Fatalf")) != 1 {
-		t.Fatal("real mutation return or fatal assertion bypasses safe summary")
-	}
-	if !strings.Contains(string(source), "return runDockerPortSmokeMutation(t, runner, stateDir, unhealthyPlan, \"port_reconfigure\", nil, scope)") || !strings.Contains(string(source), "if rollbackGrants != 1 {") || !strings.Contains(string(source), "t.Fatalf(\"rollback mutation grant calls=%d\", rollbackGrants)") {
-		t.Fatal("actual unhealthy request or existing grant fatal boundary changed")
+	if err := checkDockerSmokeDiagnosticCallerSources(os.ReadFile); err != nil {
+		t.Fatal(err)
 	}
 }
