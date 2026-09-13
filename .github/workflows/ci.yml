@@ -15,7 +15,7 @@ concurrency:
 env:
   GOMAXPROCS: "2"
   GOTOOLCHAIN: local
-  UPDATER_APPLICATION_SHA: 840562a235ac5abeb4e4e806f8072732c615022c
+  UPDATER_APPLICATION_SHA: 9a9af039795adbbe9db786da4980d17ef195e525
 
 jobs:
   source-maintainability:
