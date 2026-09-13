@@ -1,4 +1,4 @@
-name: Docker restart diagnostics (not release acceptance)
+name: Fixed historical Docker restart diagnostics (ca8bc7a6)
 
 on:
   push:
@@ -8,6 +8,8 @@ on:
       - internal/hostruntime/docker_port_daemon_smoke_linux_test.go
       - internal/hostruntime/docker_port_smoke_diagnostics_linux_test.go
       - .github/workflows/docker-restart-diagnostics.yml
+      - scripts/ci/historical_diagnostic_guard.py
+      - scripts/ci/check_historical_diagnostic_fixtures.py
 
 permissions:
   contents: read
@@ -23,152 +25,50 @@ env:
   B_WORKFLOW: b7ea27bb503bf259abeb34652b41cce9351884d2
   D_PREVIOUS: b123456f33f0c61974bb3300dfd59b909646404a
   W_BASE: 2cc44bcbad857a103aa58cb30e89f97dcda8ffda
+  HISTORICAL_SOURCE_SHA: ca8bc7a696f14efd7c16d5f26b7895ac56ad7262
   DIAGNOSTIC_WORKFLOW_SHA: ${{ github.workflow_sha }}
 
 jobs:
   docker-restart-diagnostics:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: historical-source
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.workflow_sha }}
+          path: workflow-source
           persist-credentials: false
           fetch-depth: 0
           clean: false
-      - name: Guard exact diagnostic source before build or root execution
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.HISTORICAL_SOURCE_SHA }}
+          path: historical-source
+          persist-credentials: false
+          fetch-depth: 0
+          clean: false
+      - name: Guard fixed historical source and actual workflow identity
         id: source-guard
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import re
-          import subprocess
-
-          ALLOWED = {
-              b"internal/hostruntime/docker_port_daemon_smoke_linux_test.go",
-              b"internal/hostruntime/docker_port_smoke_diagnostics_linux_test.go",
-              b".github/workflows/docker-restart-diagnostics.yml",
-          }
-          CI = b".github/workflows/ci.yml"
-          CHECKS = (
-              "commit_ids", "checkout_sha", "workflow_sha", "baseline_commits",
-              "baseline_ancestry", "previous_ancestry", "base_ancestry", "current_ancestry",
-              "current_parent", "baseline_delta", "previous_delta", "base_delta",
-              "current_delta", "application_delta", "historical_ci_blob", "current_ci_blob", "worktree_clean",
-          )
-
-          class GuardFailure(Exception):
-              pass
-
-          def git(*args):
-              result = subprocess.run(["git", *args], capture_output=True)
-              if result.returncode != 0:
-                  raise GuardFailure("git_query_failed")
-              return result.stdout
-
-          def ancestor(base, head):
-              result = subprocess.run(
-                  ["git", "merge-base", "--is-ancestor", base, head],
-                  capture_output=True,
-              )
-              if result.returncode not in (0, 1):
-                  raise GuardFailure("git_query_failed")
-              return result.returncode == 0
-
-          def allowed_delta(base, head, allowed, modified_only=False):
-              raw = git("diff-tree", "-r", "--no-commit-id", "--no-renames",
-                        "--no-abbrev", "--raw", "-z", base, head)
-              entries = raw.split(b"\0")
-              if entries[-1] != b"" or len(entries[:-1]) % 2:
-                  return False
-              changed = set()
-              for index in range(0, len(entries) - 1, 2):
-                  metadata, path = entries[index].split(), entries[index + 1]
-                  if len(metadata) != 5 or path not in allowed or path in changed:
-                      return False
-                  old_mode, new_mode, _, _, status = metadata
-                  # Only regular 0644 additions/modifications. No deletion,
-                  # rename, symlink, executable-bit or other mode exceptions.
-                  if new_mode != b"100644" or (old_mode, status) not in {
-                      (b":000000", b"A"), (b":100644", b"M"),
-                  }:
-                      return False
-                  if modified_only and (old_mode, status) != (b":100644", b"M"):
-                      return False
-                  changed.add(path)
-              return changed == allowed
-
-          def verify_source(u_app, baseline, previous, base, source, workflow, historical_ci_blob, current_ci_blob, checks):
-              def require(name, condition):
-                  checks[name] = "pass" if condition else "fail"
-                  if not condition:
-                      raise GuardFailure(name)
-
-              require("commit_ids", all(re.fullmatch(r"[0-9a-f]{40}", value)
-                                        for value in (u_app, baseline, previous, base, source, workflow)))
-              require("checkout_sha", git("rev-parse", "HEAD").strip().decode() == source)
-              require("workflow_sha", workflow == source)
-              require("baseline_commits", all(
-                  git("rev-parse", "--verify", ref + "^{commit}").strip().decode() == ref
-                  for ref in (u_app, baseline, previous, base, source, workflow)
-              ))
-              require("baseline_ancestry", ancestor(u_app, baseline))
-              require("previous_ancestry", ancestor(baseline, previous))
-              require("base_ancestry", ancestor(previous, base))
-              require("current_ancestry", ancestor(base, source))
-              require("current_parent", git("rev-list", "--parents", "-n", "1", source).split()
-                      == [source.encode(), base.encode()])
-              require("baseline_delta", allowed_delta(u_app, baseline, {CI}))
-              require("previous_delta", allowed_delta(baseline, previous, ALLOWED))
-              require("base_delta", allowed_delta(previous, base, {CI}))
-              require("current_delta", allowed_delta(base, source, ALLOWED, modified_only=True))
-              require("application_delta", allowed_delta(u_app, source, ALLOWED | {CI}))
-              require("historical_ci_blob", all(
-                  git("rev-parse", ref + ":.github/workflows/ci.yml").strip().decode() == historical_ci_blob
-                  for ref in (baseline, previous)
-              ))
-              require("current_ci_blob", all(
-                  git("rev-parse", ref + ":.github/workflows/ci.yml").strip().decode() == current_ci_blob
-                  for ref in (base, source)
-              ))
-              # Include ignored untracked files too; build inputs must be clean.
-              require("worktree_clean", not git("status", "--porcelain=v1", "-z", "--untracked-files=all")
-                      and not git("ls-files", "--others", "-z"))
-
-          def main():
-              evidence = Path(os.environ["RUNNER_TEMP"]) / "docker-restart-diagnostics"
-              evidence.mkdir(parents=True, exist_ok=True)
-              checks = dict.fromkeys(CHECKS, "not_run")
-              status, failure = "fail", "none"
-              try:
-                  verify_source(
-                      os.environ["U_APP"], os.environ["B_WORKFLOW"], os.environ["D_PREVIOUS"], os.environ["W_BASE"], os.environ["GITHUB_SHA"],
-                      os.environ["DIAGNOSTIC_WORKFLOW_SHA"],
-                      "7780fa3a21e20ba304d2301f9dde3b7e97ec79d1", "1236ba11843261deec085cb7396f1276e41f83d2", checks,
-                  )
-                  status = "pass"
-              except GuardFailure as error:
-                  failure = str(error)  # Only the fixed labels above.
-              except Exception:
-                  failure = "guard_internal"
-              (evidence / "source-guard.json").write_text(
-                  json.dumps({"status": status, "failure": failure, "checks": checks}, sort_keys=True) + "\n",
-                  encoding="utf-8",
-              )
-              print("diagnostic source guard: " + status)
-              return 0 if status == "pass" else 1
-
-          if __name__ == "__main__":
-              raise SystemExit(main())
-          PY
+          python3 ../workflow-source/scripts/ci/historical_diagnostic_guard.py \
+            --source-root . --workflow-root ../workflow-source
+      - name: Preserve all 30 historical source guard fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../workflow-source/scripts/ci/check_historical_diagnostic_fixtures.py \
+            --source-root . \
+            --fixture-root "${RUNNER_TEMP}/historical-guard-fixtures" \
+            --out "${RUNNER_TEMP}/docker-restart-diagnostics/guard-fixtures.json"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          go-version-file: historical-source/go.mod
+          cache-dependency-path: historical-source/go.sum
       - name: Run diagnostic helper tests once without root or Docker
         id: helpers
         shell: bash
@@ -194,7 +94,7 @@ jobs:
           PY
           bash scripts/ci/verify-go-test-evidence.sh \
             "${RUNNER_TEMP}/docker-restart-diagnostics/helpers" \
-            "${GITHUB_WORKSPACE}/internal/hostruntime" \
+            "${GITHUB_WORKSPACE}/historical-source/internal/hostruntime" \
             "${RUNNER_TEMP}/docker-restart-diagnostics/helper-tests.txt"
       - name: Build bounded Docker fixture binaries from guarded source
         shell: bash
@@ -251,7 +151,7 @@ jobs:
         run: |
           bash scripts/ci/verify-go-test-evidence.sh \
             "${RUNNER_TEMP}/docker-restart-diagnostics/daemon" \
-            "${GITHUB_WORKSPACE}/internal/hostruntime" \
+            "${GITHUB_WORKSPACE}/historical-source/internal/hostruntime" \
             scripts/ci/required-docker-tests.txt
       - name: Record diagnostic-only provenance even on failure
         if: always()
@@ -276,12 +176,14 @@ jobs:
                   with path.open("rb") as binary:
                       binaries[label] = hashlib.file_digest(binary, "sha256").hexdigest()
           provenance = {
-              "purpose": "diagnostic_only",
+              "purpose": "fixed_historical_diagnostic_reproduction",
               "U_APP": os.environ["U_APP"],
               "B_WORKFLOW": os.environ["B_WORKFLOW"],
               "D_PREVIOUS": os.environ["D_PREVIOUS"],
               "W_BASE": os.environ["W_BASE"],
-              "D_NEXT": os.environ["GITHUB_SHA"],
+              "source_sha": os.environ["HISTORICAL_SOURCE_SHA"],
+              "historical_workflow_sha": os.environ["HISTORICAL_SOURCE_SHA"],
+              "trigger_sha": os.environ["GITHUB_SHA"],
               "workflow_sha": os.environ["DIAGNOSTIC_WORKFLOW_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
@@ -294,7 +196,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: docker-restart-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: historical-docker-restart-diagnostics-ca8bc7a6-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/docker-restart-diagnostics/
           if-no-files-found: error
           retention-days: 14

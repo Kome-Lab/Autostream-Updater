@@ -15,7 +15,7 @@ concurrency:
 env:
   GOMAXPROCS: "2"
   GOTOOLCHAIN: local
-  UPDATER_APPLICATION_SHA: 794d0cd69dd1b3ca130101f7769aaf8ac1274ac8
+  UPDATER_APPLICATION_SHA: e45afad3bc1debc67065b40b8ea96ce89f71e48f
 
 jobs:
   go:
@@ -26,6 +26,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.UPDATER_APPLICATION_SHA }}
+      - name: Verify Bundle 9 authored sources and raw distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/ci -p 'test_artifact_assembly.py' -v
+          python3 -m unittest discover -s scripts/ci -p 'test_verify_bundle9_sources.py' -v
+          python3 scripts/ci/verify_bundle9_sources.py \
+            --repository Autostream-Updater --tree "$(git rev-parse HEAD)"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -81,7 +89,7 @@ jobs:
           for script in install/install-* install/uninstall-*; do
             bash -n "${script}"
           done
-          find scripts/ci -type f -name '*.sh' -exec bash -n {} +
+          find scripts/ci -type f -name '*.sh' -exec bash -n {} \;
       - name: Verify systemd unit syntax
         shell: bash
         run: |
