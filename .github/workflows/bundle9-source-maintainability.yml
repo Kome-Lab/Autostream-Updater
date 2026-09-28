@@ -27,7 +27,7 @@ jobs:
           WORKFLOW_SHA: ${{ inputs.workflow-sha }}
         run: |
           set -euo pipefail
-          python3 checker/scripts/ci/materialize_bundle9_source_set.py \
+          python3 checker/scripts/ci/materialize_source_set.py \
             --workflow-sha "${WORKFLOW_SHA}" \
             --out "${RUNNER_TEMP}/bundle9-final-source-set.json" \
             --github-output "${GITHUB_OUTPUT}"
@@ -89,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 checker/scripts/ci/verify_bundle9_sources.py \
+          python3 checker/scripts/ci/verify_source_integrity.py \
             --root sources --source-set "${RUNNER_TEMP}/bundle9-final-source-set.json" \
             --out "${RUNNER_TEMP}/bundle9-final-source-measurement.json"
       - name: Upload the fixed source set and measurement

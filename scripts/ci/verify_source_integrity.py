@@ -12,8 +12,8 @@ from artifact_assembly import ALLOWED_OUTPUTS, Source, verify
 from source_policy import POLICY_ID, classify, metrics, physical_lines
 
 
-INDEX = Path(__file__).with_name("bundle9-target-index.json")
-MAPPING = "scripts/ci/bundle9-target-map.json"
+INDEX = Path(__file__).with_name("source-origin-index.json")
+MAPPING = "scripts/ci/source-owner-map.json"
 REPOSITORIES = set(ALLOWED_OUTPUTS) | {"Autostream-Docs", "Autostream-Docker"}
 
 

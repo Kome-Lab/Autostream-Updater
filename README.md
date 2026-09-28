@@ -28,7 +28,7 @@ responses that do not confirm contract major 2 fail closed. See
 
 ## Existing-host compatibility
 
-Wave 1 preserves the existing root-owned identity, policy, journal, A/B slot,
+The compatibility boundary preserves the existing root-owned identity, policy, journal, A/B slot,
 socket, and state paths. A normal runtime upgrade must use the version-matched
 installer and must not issue a new Configure Token or delete recovery state.
 

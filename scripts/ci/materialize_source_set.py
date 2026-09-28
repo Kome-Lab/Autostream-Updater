@@ -12,7 +12,7 @@ parser.add_argument("--out", type=Path, required=True)
 parser.add_argument("--github-output", type=Path, required=True)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
-pins = json.loads(Path(__file__).with_name("bundle9-final-source-pins.json").read_text(encoding="utf-8"))
+pins = json.loads(Path(__file__).with_name("integration-source-pins.json").read_text(encoding="utf-8"))
 expected = {"Autostream-ControlPanel", "Autostream-Contracts", "Autostream-Worker",
             "Autostream-Encoder-Recorder", "Autostream-DiscordBot", "Autostream-Observability",
             "Autostream-Docs", "Autostream-Docker"}

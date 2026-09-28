@@ -6,7 +6,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-import verify_bundle9_sources as gate
+import verify_source_integrity as gate
 
 
 class Candidate:
