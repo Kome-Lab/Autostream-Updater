@@ -1,10 +1,10 @@
 {
-  "Autostream-ControlPanel": "fade8df68aacc2ce484a2ace470f12789eb83f82",
+  "Autostream-ControlPanel": "623dd7f55b4f0023af9586c0f354435ecce3ae96",
   "Autostream-Worker": "381790940e0fed8532d9396f0a2a40c0bfd0a612",
-  "Autostream-Encoder-Recorder": "a80feec94a21796b92fe432ab06d4e18dbd36485",
+  "Autostream-Encoder-Recorder": "a000f9add02cd358d8b1acdc60cbc9edbbaea643",
   "Autostream-DiscordBot": "c3cf10af8e89643769c042913e5a9729babf5ae3",
   "Autostream-Observability": "c2daf86c3ae621372dfde1c5afc3bfb54164ed62",
-  "Autostream-Contracts": "eaf25592c3e2b6ff130824a4d1b46e03fd8eba3e",
+  "Autostream-Contracts": "7edb888d585ec7001d2dc1feee9256db620f8cfd",
   "Autostream-Docs": "09c24a094a21934d140539ad2f5bd5f2d9c609c0",
-  "Autostream-Docker": "b46c708b941f6a595b455eaacbe65c8fd6b3e7be"
+  "Autostream-Docker": "8af735503f4aa2a2ddb11792c6ef38f798e2e805"
 }
