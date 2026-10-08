@@ -27,6 +27,7 @@ func prepareSoftwareClaimRecoveryHistoryRootCompleted(t *testing.T) (*manualHost
 	}
 	first := local.SoftwareClaimRecovery.Request
 	agent.StateDir, panel.policy = fixture.runtime.paths.hostStateRoot, authenticated
+	agent.AgentVersion = manualHostUpgradeTestOldVersion
 	panel.job.ID, panel.job.HostID = first.JobID, policy.HostID
 	panel.job.TargetID, panel.job.TargetType, panel.job.ServiceType = first.TargetID, policy.Targets[0].ServiceType, policy.Targets[0].ServiceType
 	agent.ClaimRecoveryInspector = softwareClaimRecoveryHistoryRootInspector{policy: policy, request: local, runtime: runtime}
@@ -177,6 +178,7 @@ func TestSoftwareClaimRecoveryHistoryRootPreflightKeepsPriorSettledAndNewPending
 	}
 	first := local.SoftwareClaimRecovery.Request
 	agent.StateDir, panel.policy = fixture.runtime.paths.hostStateRoot, authenticated
+	agent.AgentVersion = manualHostUpgradeTestOldVersion
 	panel.job.ID, panel.job.HostID = first.JobID, policy.HostID
 	panel.job.TargetID, panel.job.TargetType, panel.job.ServiceType = first.TargetID, policy.Targets[0].ServiceType, policy.Targets[0].ServiceType
 	inspector := softwareClaimRecoveryHistoryRootInspector{policy: policy, request: local, runtime: runtime}
