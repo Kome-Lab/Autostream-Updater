@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -356,12 +359,71 @@ func softwareUpdateChainRunInstallerHook(t *testing.T, h *softwareUpdateChainHar
 	defer log.Close()
 	command := exec.CommandContext(ctx, "/bin/bash", hook, "/opt/software-input/repository", "/opt/software-input/before-production", "b1c94afe2ee2fe8854abb12e2c85565a1bd448dc", "/opt/software-input/candidate-production", os.Getenv("AUTOSTREAM_ST_PORT_UPDATER_SHA"), filepath.Join(h.evidence, "installer"))
 	command.Stdout, command.Stderr = log, log
-	if command.Run() != nil {
+	if runErr := command.Run(); runErr != nil {
+		softwareUpdateChainLogInstallerFailure(t, runErr, ctx.Err() == context.DeadlineExceeded)
 		t.Fatal("normal matched-pair installer upgrade failed; private evidence retains the original failure")
 	}
 	t.Cleanup(func() {
 		_ = exec.Command("/usr/bin/systemctl", "stop", "autostream-host-agent.service", "autostream-local-executor.service", "autostream-local-executor.socket").Run()
 	})
+}
+func softwareUpdateChainLogInstallerFailure(t *testing.T, runErr error, timedOut bool) {
+	t.Helper()
+	commandExit := "unknown"
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) && exitErr.ExitCode() >= 0 && exitErr.ExitCode() <= 255 {
+		commandExit = strconv.Itoa(exitErr.ExitCode())
+	}
+	var diagnostic struct {
+		SchemaVersion            int    `json:"schema_version"`
+		Phase                    string `json:"phase"`
+		Exited                   *bool  `json:"exited"`
+		ExitCode                 *int   `json:"exit_code"`
+		GetfaclPresent           *bool  `json:"getfacl_present"`
+		SetfaclPresent           *bool  `json:"setfacl_present"`
+		OtherDependenciesPresent *bool  `json:"other_dependencies_present"`
+		SourceInventoryMatched   *bool  `json:"source_inventory_matched"`
+		SourceInventoryCount     *int   `json:"source_inventory_count"`
+	}
+	valid := false
+	const statusPath = "/evidence/artifacts/normal-installer-status.json"
+	info, statErr := os.Lstat(statusPath)
+	if statErr == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 && info.Size() > 0 && info.Size() <= 4096 {
+		if file, openErr := os.Open(statusPath); openErr == nil {
+			opened, openedErr := file.Stat()
+			body, readErr := io.ReadAll(io.LimitReader(file, 4097))
+			_ = file.Close()
+			if openedErr == nil && os.SameFile(info, opened) && readErr == nil && len(body) <= 4096 {
+				decoder := json.NewDecoder(bytes.NewReader(body))
+				decoder.DisallowUnknownFields()
+				if decoder.Decode(&diagnostic) == nil {
+					var trailing any
+					valid = errors.Is(decoder.Decode(&trailing), io.EOF) && diagnostic.SchemaVersion == 1 &&
+						diagnostic.Exited != nil &&
+						((!*diagnostic.Exited && diagnostic.ExitCode == nil) ||
+							(*diagnostic.Exited && diagnostic.ExitCode != nil && *diagnostic.ExitCode >= 0 && *diagnostic.ExitCode <= 255)) &&
+						diagnostic.GetfaclPresent != nil && diagnostic.SetfaclPresent != nil && diagnostic.OtherDependenciesPresent != nil &&
+						diagnostic.SourceInventoryMatched != nil && diagnostic.SourceInventoryCount != nil &&
+						*diagnostic.SourceInventoryCount >= 0 && *diagnostic.SourceInventoryCount <= 64 &&
+						(!*diagnostic.SourceInventoryMatched || *diagnostic.SourceInventoryCount == 37)
+				}
+			}
+		}
+	}
+	switch diagnostic.Phase {
+	case "input_validation", "protected_inputs", "ordinary_dependencies", "binary_pair", "compatibility_floor", "fixture_archive", "legacy_pair_install", "legacy_pair_start", "legacy_pair_probe", "normal_upgrade", "candidate_pair_verify", "identity_policy_preservation", "terminal_state_verify", "agent_stop", "result_record", "complete":
+	default:
+		valid = false
+	}
+	if !valid {
+		t.Logf("SOFTWARE installer boundary: diagnostic_valid=false command_exit=%s timeout=%t", commandExit, timedOut)
+		return
+	}
+	recordedExit := "unknown"
+	if diagnostic.ExitCode != nil {
+		recordedExit = strconv.Itoa(*diagnostic.ExitCode)
+	}
+	t.Logf("SOFTWARE installer boundary: diagnostic_valid=true phase=%s exited=%t exit=%s command_exit=%s timeout=%t getfacl_present=%t setfacl_present=%t other_dependencies_present=%t source_inventory_matched=%t source_inventory_count=%d", diagnostic.Phase, *diagnostic.Exited, recordedExit, commandExit, timedOut, *diagnostic.GetfaclPresent, *diagnostic.SetfaclPresent, *diagnostic.OtherDependenciesPresent, *diagnostic.SourceInventoryMatched, *diagnostic.SourceInventoryCount)
 }
 func (h *softwareUpdateChainHarness) writeSoftwareEvidence(t *testing.T, orphan, fresh softwareUpdateChainJob) {
 	t.Helper()
