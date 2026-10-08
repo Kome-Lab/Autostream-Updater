@@ -43,9 +43,13 @@ func TestProductionSourceBoundary(t *testing.T) {
 		`"sh", "` + `-c"`,
 	}
 	callerCounts := map[string]int{
-		"hostruntime.NewHostPullAgent(":                                     2,
+		// Run, recover-update, and four closed software recovery/inspection entries.
+		"hostruntime.NewHostPullAgent(":                                     6,
 		"hostruntime.ServeLocalExecutor":                                    1,
 		"(applicationprobe.Client{HTTP: client}).FetchApplicationIdentity(": 2,
+	}
+	callerFiles := map[string]string{
+		"hostruntime.NewHostPullAgent(": "cmd/autostream-updater-agent/main.go",
 	}
 	observed := make(map[string]int, len(callerCounts))
 	for _, tree := range []string{"cmd", "internal"} {
@@ -72,7 +76,17 @@ func TestProductionSourceBoundary(t *testing.T) {
 				}
 			}
 			for marker := range callerCounts {
-				observed[marker] += bytes.Count(data, []byte(marker))
+				count := bytes.Count(data, []byte(marker))
+				if allowed, restricted := callerFiles[marker]; restricted && count != 0 {
+					relative, err := filepath.Rel(repositoryRoot, path)
+					if err != nil {
+						return err
+					}
+					if filepath.ToSlash(relative) != allowed {
+						t.Errorf("production caller %q in unauthorized file %s", marker, path)
+					}
+				}
+				observed[marker] += count
 			}
 			return nil
 		})

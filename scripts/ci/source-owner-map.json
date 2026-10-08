@@ -1770,7 +1770,7 @@
     "destinations": [
       {
         "path": "internal/hostruntime/host_pull_claim_validation.go",
-        "sha256": "c59b69ab77d180c999ed85c7e0ee26e8a48a06ea9e44f8d7a1bd0b8ab471291f",
+        "sha256": "476d5e264363eaa8d40bec3dfc6295e67c464e79e732f21f439d70ffebf714d1",
         "symbols": [
           "hostPullPolicyTarget",
           "isV2RecoveryClearStatus",
@@ -1780,7 +1780,7 @@
           "validateHostPullClaim",
           "validateV2RecoveryClear"
         ],
-        "physical_lines": 212
+        "physical_lines": 222
       },
       {
         "path": "internal/hostruntime/host_pull_execution.go",

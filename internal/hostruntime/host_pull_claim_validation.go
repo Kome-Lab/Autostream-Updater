@@ -146,6 +146,16 @@ func sameRecoveredJobIntent(active, recovered UpdateJob) bool {
 		if active.SoftwareClaimRejected != recovered.SoftwareClaimRejected || active.PortReconfigure != nil || recovered.PortReconfigure != nil {
 			return false
 		}
+		// A new software lease requires the original frozen authorization. An
+		// unchanged legacy/rejected cursor may be retained, but cannot acquire
+		// execution authority through the port transport recovery exception.
+		if isV2SoftwareJob(active) && (active.LeaseGeneration != recovered.LeaseGeneration || active.CommandID != recovered.CommandID) &&
+			(active.SoftwareClaimRejected || active.SoftwareUpdate == nil || recovered.SoftwareUpdate == nil ||
+				active.SoftwareUpdate.Validate() != nil || recovered.SoftwareUpdate.Validate() != nil ||
+				active.PolicyRevision != active.SoftwareUpdate.ProjectionRevision ||
+				recovered.PolicyRevision != recovered.SoftwareUpdate.ProjectionRevision) {
+			return false
+		}
 		if active.SoftwareUpdate == nil || recovered.SoftwareUpdate == nil {
 			return active.SoftwareUpdate == recovered.SoftwareUpdate
 		}
