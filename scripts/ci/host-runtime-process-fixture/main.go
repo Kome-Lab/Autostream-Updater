@@ -23,7 +23,7 @@ func isLegacyLiveRuntime() bool {
 
 func fixtureVersion(name string) string {
 	if !isLegacyLiveRuntime() {
-		return "v1.9.11"
+		return "v2.0.1"
 	}
 	version := os.Getenv("AUTOSTREAM_RUNTIME_FIXTURE_VERSION")
 	if name == "autostream-host-agent" {

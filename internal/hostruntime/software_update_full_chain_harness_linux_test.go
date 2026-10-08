@@ -120,7 +120,15 @@ func newSoftwareUpdateChainHarness(t *testing.T) *softwareUpdateChainHarness {
 	})
 	h.cp = h.start(t, "cp", h.cpBinary, "TestSoftwareUpdateFullChainControlPanelProcess", 0, 0)
 	initial := h.cp.call(t, stPortChainCommand{Command: "init"})
-	if !initial.OK || initial.AgentIdentityYAML == "" || json.Unmarshal(initial.RootPolicy, &h.rootPolicy) != nil || h.rootPolicy.Validate() != nil || h.rootPolicy.SourcePolicyRevision != h.source || h.rootPolicy.ProjectionRevision != h.projection || h.rootPolicy.PolicyRevision != h.executor || len(h.rootPolicy.Targets) != 1 || h.rootPolicy.Targets[0].ConfigRevision != 1 || h.rootPolicy.Targets[0].ServiceID != "control-panel" {
+	decoded := json.Unmarshal(initial.RootPolicy, &h.rootPolicy) == nil
+	valid := decoded && h.rootPolicy.Validate() == nil
+	var configRevision int64
+	var exactTarget bool
+	if len(h.rootPolicy.Targets) == 1 {
+		configRevision, exactTarget = h.rootPolicy.Targets[0].ConfigRevision, h.rootPolicy.Targets[0].ServiceID == "control-panel"
+	}
+	t.Logf("SOFTWARE CP profile: ok=%t phase=%s identity_present=%t policy_decoded=%t policy_valid=%t source=%d projection=%d executor=%d DB_source=%d DB_projection=%d DB_executor=%d targets=%d exact_target=%t C=%d expected_source=%d expected_projection=%d expected_executor=%d", initial.OK, softwareUpdateChainSafeCode(initial.ErrorCode), initial.AgentIdentityYAML != "", decoded, valid, softwareUpdateChainSafeCount(h.rootPolicy.SourcePolicyRevision), softwareUpdateChainSafeCount(h.rootPolicy.ProjectionRevision), softwareUpdateChainSafeCount(h.rootPolicy.PolicyRevision), softwareUpdateChainSafeCount(initial.DBSourcePolicyRevision), softwareUpdateChainSafeCount(initial.DBProjectionRevision), softwareUpdateChainSafeCount(initial.DBExecutorPolicyRevision), softwareUpdateChainSafeCount(int64(len(h.rootPolicy.Targets))), exactTarget, softwareUpdateChainSafeCount(configRevision), h.source, h.projection, h.executor)
+	if !initial.OK || initial.AgentIdentityYAML == "" || !decoded || !valid || h.rootPolicy.SourcePolicyRevision != h.source || h.rootPolicy.ProjectionRevision != h.projection || h.rootPolicy.PolicyRevision != h.executor || initial.DBSourcePolicyRevision != h.source || initial.DBProjectionRevision != h.projection || initial.DBExecutorPolicyRevision != h.executor || len(h.rootPolicy.Targets) != 1 || configRevision != 1 || !exactTarget {
 		t.Fatal("actual CP fixed profile did not establish independent revisions")
 	}
 	h.initialPolicy = append([]byte(nil), initial.RootPolicy...)

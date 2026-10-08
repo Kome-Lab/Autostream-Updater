@@ -49,9 +49,10 @@ func TestSoftwareUpdateFullChainControlPanelProcess(t *testing.T) {
 	defer in.Close()
 	defer out.Close()
 	ready := false
+	setupPhase := "software_setup_config"
 	defer func() {
 		if !ready {
-			_ = json.NewEncoder(out).Encode(stPortChainCPResponse{ErrorCode: "cp_setup_failed"})
+			_ = json.NewEncoder(out).Encode(stPortChainCPResponse{ErrorCode: setupPhase})
 		}
 	}()
 	body, err := stPortChainReadRootFile(os.Getenv("AUTOSTREAM_ST_PORT_CHAIN_CONFIG"), false)
@@ -71,6 +72,7 @@ func TestSoftwareUpdateFullChainControlPanelProcess(t *testing.T) {
 		t.Setenv(target.latestVersionEnv, "v2.0.1")
 	}
 	version.Version = "v2.0.0" // The synthetic target application's starting version.
+	setupPhase = "software_setup_database"
 	f, err := stPortChainOpenCP(ctx, cfg.stPortChainCPConfig)
 	if err != nil {
 		t.Fatal("open isolated actual CP stores")
@@ -78,15 +80,32 @@ func TestSoftwareUpdateFullChainControlPanelProcess(t *testing.T) {
 	defer f.db.Close()
 	defer f.reads.Close()
 	defer f.client.CloseIdleConnections()
+	setupPhase = "software_setup_authority"
 	if err := softwareUpdateChainSeed(ctx, f, cfg); err != nil {
+		for message, phase := range map[string]string{
+			"read fixture policy":                         "software_setup_policy_read",
+			"read exact bootstrap ownership":              "software_setup_ownership_read",
+			"replace bootstrap target through policy CAS": "software_setup_policy_cas",
+			"read replaced CP policy bindings":            "software_setup_binding_read",
+			"verify independent CP revisions":             "software_setup_revision_check",
+			"restart authority changed":                   "software_setup_restart_check",
+			"setup refuses existing jobs":                 "software_setup_existing_job",
+		} {
+			if err.Error() == message {
+				setupPhase = phase
+				break
+			}
+		}
 		t.Fatal("initialize bounded software target authority")
 	}
+	setupPhase = "software_setup_tls"
 	cert, certErr := stPortChainReadRootFile(cfg.TLSCert, false)
 	key, keyErr := stPortChainReadRootFile(cfg.TLSKey, true)
 	identity, tlsErr := tls.X509KeyPair(cert, key)
 	if certErr != nil || keyErr != nil || tlsErr != nil {
 		t.Fatal("load isolated normal TLS identity")
 	}
+	setupPhase = "software_setup_listener"
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		t.Fatal("bind isolated CP listener")
@@ -96,6 +115,7 @@ func TestSoftwareUpdateFullChainControlPanelProcess(t *testing.T) {
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{identity}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}, ErrorLog: log.New(io.Discard, "", 0)}
 	defer server.Close()
 	go func() { _ = server.Serve(tls.NewListener(listener, server.TLSConfig)) }()
+	setupPhase = "software_setup_login"
 	if f.login(ctx) != nil {
 		t.Fatal("authenticate isolated operator with actual CP HTTPS")
 	}
@@ -151,8 +171,19 @@ func softwareUpdateChainSeed(ctx context.Context, f *stPortChainCP, cfg software
 	if f.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM system_update_jobs").Scan(&jobs) != nil || jobs != 0 {
 		return errors.New("setup refuses existing jobs")
 	}
+	ownership, err := f.updates.GetSystemUpdateExecutionHost(ctx, stPortChainHost)
+	if err != nil || ownership.AgentServiceID != stPortChainAgent || ownership.PolicyRevision != policy.ProjectionRevision || ownership.OwnershipEpoch < 1 {
+		return errors.New("read exact bootstrap ownership")
+	}
+	// CP's listener is owned by controlPanelSystemUpdateService, so its policy
+	// target must have no explicit listener binding. Use the real policy CAS to
+	// replace the initial Worker target and its revision-bound listener rows.
+	policy.Targets = []store.UpdaterPolicyTarget{{TargetID: "control-panel", ServiceID: "control-panel", ServiceType: "control_panel", DeploymentMode: "systemd", DatabaseName: "autostream_panel"}}
+	policy, err = f.policies.SavePullUpdaterPolicy(ctx, f.updates, stPortChainAgent, policy.Revision, ownership.OwnershipEpoch, policy)
+	if err != nil {
+		return errors.New("replace bootstrap target through policy CAS")
+	}
 	policy.Revision, policy.ProjectionRevision, policy.LocalExecutorPolicyRevision = cfg.Software.Source, cfg.Software.Projection, cfg.Software.Executor
-	policy.Targets = []store.UpdaterPolicyTarget{{TargetID: "control-panel", ServiceID: "control-panel", ServiceType: "control_panel", DeploymentMode: "systemd", DatabaseName: "autostream_panel", LocalListenPort: 18080}}
 	projection, err := softwareUpdateChainProjection(f, policy)
 	if err != nil {
 		return err
@@ -171,12 +202,21 @@ func softwareUpdateChainSeed(ctx context.Context, f *stPortChainCP, cfg software
 		{"UPDATE update_agent_policies SET revision=?,projection_revision=?,local_executor_policy_revision=?,policy_json=? WHERE service_id=?", []any{cfg.Software.Source, cfg.Software.Projection, cfg.Software.Executor, encoded, stPortChainAgent}},
 		{"UPDATE system_update_execution_hosts SET ownership_epoch=3,policy_revision=? WHERE execution_host_id=?", []any{cfg.Software.Projection, stPortChainHost}},
 		{"UPDATE services SET ownership_epoch=3 WHERE service_id=?", []any{stPortChainAgent}},
-		{"INSERT INTO update_agent_target_databases (updater_service_id,target_id,binding_policy_revision,database_name,updated_at) VALUES (?,?,?,?,?)", []any{stPortChainAgent, "control-panel", cfg.Software.Source, "autostream_panel", time.Now().UTC()}},
-		{"INSERT INTO update_agent_target_local_listeners (updater_service_id,target_id,binding_policy_revision,local_listen_port,updated_at) VALUES (?,?,?,?,?)", []any{stPortChainAgent, "control-panel", cfg.Software.Source, 18080, time.Now().UTC()}},
+		{"UPDATE update_agent_target_databases SET binding_policy_revision=? WHERE updater_service_id=? AND target_id=?", []any{cfg.Software.Source, stPortChainAgent, "control-panel"}},
 	} {
 		if _, err := f.db.ExecContext(ctx, stmt.sql, stmt.args...); err != nil {
 			return errors.New("seed bounded disposable authority")
 		}
+	}
+	// Read through the production snapshot reader before accepting setup. In
+	// particular, it must reject any explicit CP listener or stale Worker row.
+	bound, err := f.policies.GetUpdaterPolicy(ctx, stPortChainAgent)
+	if err != nil || len(bound.Targets) != 1 || bound.Targets[0].ServiceID != "control-panel" || bound.Targets[0].LocalListenPort != 0 || bound.Targets[0].DatabaseName != "autostream_panel" {
+		return errors.New("read replaced CP policy bindings")
+	}
+	verified, err := softwareUpdateChainProjection(f, bound)
+	if err != nil || verified.SHA256 != bound.LocalExecutorPolicySHA256 || bound.Revision != cfg.Software.Source || bound.ProjectionRevision != cfg.Software.Projection || bound.LocalExecutorPolicyRevision != cfg.Software.Executor {
+		return errors.New("verify independent CP revisions")
 	}
 	return nil
 }
@@ -187,16 +227,34 @@ func softwareUpdateChainCommand(ctx context.Context, f *stPortChainCP, cfg softw
 	switch command.Command {
 	case "init":
 		policy, err := f.policies.GetUpdaterPolicy(ctx, stPortChainAgent)
+		if err != nil {
+			return stPortChainCPResponse{ErrorCode: "software_profile_policy_unavailable"}
+		}
+		response := stPortChainCPResponse{DBSourcePolicyRevision: policy.Revision, DBProjectionRevision: policy.ProjectionRevision, DBExecutorRevision: policy.LocalExecutorPolicyRevision}
 		projection, projectionErr := softwareUpdateChainProjection(f, policy)
+		if projectionErr != nil {
+			response.ErrorCode = "software_profile_projection_unavailable"
+			return response
+		}
+		if projection.SHA256 != policy.LocalExecutorPolicySHA256 {
+			response.ErrorCode = "software_profile_digest_mismatch"
+			return response
+		}
 		agent, agentErr := f.auth.GetService(ctx, stPortChainAgent)
+		if agentErr != nil {
+			response.ErrorCode = "software_profile_identity_unavailable"
+			return response
+		}
 		token, tokenErr := security.DecryptSecret(agent.NodeTokenCiphertext, agent.NodeTokenNonce, f.key)
-		if err != nil || projectionErr != nil || projection.SHA256 != policy.LocalExecutorPolicySHA256 || agentErr != nil || tokenErr != nil || token == "" {
-			return stPortChainCPResponse{ErrorCode: "fixture_identity_unavailable"}
+		if tokenErr != nil || token == "" {
+			response.ErrorCode = "software_profile_token_unavailable"
+			return response
 		}
 		f.rememberSecret(token)
 		quote := func(s string) string { b, _ := json.Marshal(s); return string(b) }
 		identity := fmt.Sprintf("panel_url: %s\nnode_id: %s\nruntime_token: %s\nservice_name: %s\n", quote(cfg.PanelURL), quote(stPortChainAgent), quote(token), quote(stPortChainAgent))
-		return stPortChainCPResponse{OK: true, RootPolicy: projection.Policy, AgentIdentityYAML: identity}
+		response.OK, response.RootPolicy, response.AgentIdentityYAML = true, projection.Policy, identity
+		return response
 	case "create", "retry_create":
 		if command.IdempotencyKey == "" || len(command.IdempotencyKey) > 160 {
 			return stPortChainCPResponse{ErrorCode: "invalid_create_intent"}

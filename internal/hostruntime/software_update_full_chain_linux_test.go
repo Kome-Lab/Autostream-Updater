@@ -294,6 +294,10 @@ func softwareUpdateChainSafeCode(value string) string {
 		return "none"
 	case "software_claim_orphan_recovered", "remote_stage_missing", "rollback_succeeded", "update_succeeded", "system_update_not_cancellable", "host_lifecycle_busy":
 		return value
+	case "software_profile_policy_unavailable", "software_profile_projection_unavailable", "software_profile_digest_mismatch", "software_profile_identity_unavailable", "software_profile_token_unavailable":
+		return value
+	case "software_setup_config", "software_setup_database", "software_setup_authority", "software_setup_policy_read", "software_setup_ownership_read", "software_setup_policy_cas", "software_setup_binding_read", "software_setup_revision_check", "software_setup_restart_check", "software_setup_existing_job", "software_setup_tls", "software_setup_listener", "software_setup_login":
+		return value
 	default:
 		return "other"
 	}
