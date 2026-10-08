@@ -115,6 +115,7 @@ func softwareUpdateChainTransport(f *stPortChainCP, wire *softwareUpdateChainCPW
 		report := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/report") && buffer.Code == http.StatusOK
 		terminal := false
 		progressPhase := ""
+		progressValue := -1
 		jobID := ""
 		wire.mu.Lock()
 		if claim {
@@ -141,9 +142,9 @@ func softwareUpdateChainTransport(f *stPortChainCP, wire *softwareUpdateChainCPW
 				Outcome string `json:"outcome"`
 			}
 			if json.Unmarshal(payload, &shape) == nil && shape.Phase != "" {
-				progressPhase = shape.Phase
 				var progress contracts.UpdaterProgressEnvelope
 				if json.Unmarshal(payload, &progress) == nil {
+					progressPhase, progressValue = progress.Phase, progress.Progress
 					wire.ProgressConfig = progress.DesiredRevision
 					wire.ProgressCount++
 				}
@@ -178,8 +179,8 @@ func softwareUpdateChainTransport(f *stPortChainCP, wire *softwareUpdateChainCPW
 			f.lastTerminalSHA = sha
 		}
 		drop := (f.fault == "claim_after" && claim) || (f.fault == "terminal_after" && terminal) ||
-			(f.fault == "progress_claimed_after" && progressPhase == "claimed") ||
-			(f.fault == "progress_verifying_after" && progressPhase == "verifying")
+			(f.fault == "progress_claimed_after" && progressPhase == "accepted" && progressValue == 5) ||
+			(f.fault == "progress_verifying_after" && progressPhase == "preparing" && progressValue == 40)
 		if drop {
 			f.fault = ""
 			f.dropped++

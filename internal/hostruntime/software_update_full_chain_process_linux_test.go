@@ -104,6 +104,7 @@ type softwareUpdateChainCountingClient struct {
 	fault                       string
 	deliveryLosses              atomic.Int64
 	blockedReconciles           atomic.Int64
+	stageRequiredResponse       atomic.Bool
 }
 
 func (c *softwareUpdateChainCountingClient) Stage(ctx context.Context, p MutationPlan, f LocalExecutorMutationFence) (MutationStageResult, error) {
@@ -130,7 +131,12 @@ func (c *softwareUpdateChainCountingClient) ReconcileV2(ctx context.Context, p M
 		return ApplyResult{}, errors.New("isolated same-process reconcile delivery stopped before root")
 	}
 	c.reconciles.Add(1)
-	return c.LocalExecutorClient.ReconcileV2(ctx, p, f, g)
+	result, err := c.LocalExecutorClient.ReconcileV2(ctx, p, f, g)
+	var response *LocalExecutorClientError
+	if errors.As(err, &response) && response.Code == "stage_required" {
+		c.stageRequiredResponse.Store(true)
+	}
+	return result, err
 }
 func (c *softwareUpdateChainCountingClient) arm(fault string) error {
 	if fault != "stage_after" && fault != "apply_after" {
@@ -155,12 +161,13 @@ func (c *softwareUpdateChainCountingClient) takeFault(expected, next string) boo
 }
 func (c *softwareUpdateChainCountingClient) snapshot() any {
 	return struct {
-		Stage             int64 `json:"stage"`
-		Apply             int64 `json:"apply"`
-		Reconcile         int64 `json:"reconcile"`
-		DeliveryLosses    int64 `json:"delivery_losses"`
-		BlockedReconciles int64 `json:"blocked_reconciles"`
-	}{c.stages.Load(), c.applies.Load(), c.reconciles.Load(), c.deliveryLosses.Load(), c.blockedReconciles.Load()}
+		Stage                 int64 `json:"stage"`
+		Apply                 int64 `json:"apply"`
+		Reconcile             int64 `json:"reconcile"`
+		DeliveryLosses        int64 `json:"delivery_losses"`
+		BlockedReconciles     int64 `json:"blocked_reconciles"`
+		StageRequiredResponse bool  `json:"stage_required_response"`
+	}{c.stages.Load(), c.applies.Load(), c.reconciles.Load(), c.deliveryLosses.Load(), c.blockedReconciles.Load(), c.stageRequiredResponse.Load()}
 }
 
 func softwareUpdateChainProbeExpiredGrant(ctx context.Context, agent *HostPullAgent, panel *V2PanelClient, binding HostAgentBinding, policy HostAgentPolicy) error {

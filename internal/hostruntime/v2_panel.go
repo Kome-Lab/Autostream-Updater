@@ -442,6 +442,11 @@ func mapV2JobReport(
 		if !ok {
 			return v2PanelMappedReport{}, errors.New("v2 updater progress status is unsupported")
 		}
+		// Software artifact metadata verification is preparation; application
+		// health retains the health_checking status and verifying wire phase.
+		if command.DesiredOperation.Operation == contracts.UpdaterDesiredSoftwareUpdate && report.Status == "verifying" {
+			phase = "preparing"
+		}
 		progress := contracts.UpdaterProgressEnvelope{
 			ProtocolVersion:    2,
 			CommandID:          command.CommandID,

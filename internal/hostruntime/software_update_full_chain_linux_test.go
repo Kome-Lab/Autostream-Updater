@@ -3,6 +3,7 @@
 package hostruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -100,9 +101,11 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 		defer recovery.stop()
 		response := recovery.call(t, stPortChainCommand{Command: "recover", JobID: orphan.ID, LeaseGeneration: 1})
 		settled := h.readSoftware(t, orphan.ID)
-		if !response.OK || response.RootCalls != 0 || response.ActiveJobID != "" || response.ActivePlanPresent || settled.ID != orphan.ID || settled.Status != "failed" || settled.Code != "software_claim_orphan_recovered" || settled.LeaseGeneration != 2 || settled.PolicyRevision != h.projection || settled.OwnershipEpoch != 3 {
+		calls := softwareUpdateChainDecodeCalls(t, response)
+		if !response.OK || response.RootCalls != 0 || response.ActiveJobID != "" || response.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 0 || calls.Inspections < 1 || calls.StageRequiredResponse || settled.ID != orphan.ID || settled.Status != "failed" || settled.Code != "execution_failed" || settled.LeaseGeneration != 2 || settled.PolicyRevision != h.projection || settled.OwnershipEpoch != 3 {
 			t.Fatal("explicit real-root absence proof did not settle only the exact orphan job without a software mutation")
 		}
+		h.requireSettledSoftwareClaimIntent(t, settled, 1)
 		h.requireDownloads(t, 0, 0)
 		h.requireUnchangedBaseline(t)
 		observation := h.cp.call(t, stPortChainCommand{Command: "observe", JobID: orphan.ID})
@@ -127,7 +130,7 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 		}
 		response := h.agent.call(t, stPortChainCommand{Command: "poll"})
 		fresh = h.readSoftware(t, fresh.ID)
-		if response.OK || response.ActiveJobID != fresh.ID || !response.ActivePlanPresent || fresh.Status != "reconciling" || fresh.Progress != 99 || fresh.Sequence < 1 || fresh.PolicyRevision != h.projection || fresh.OwnershipEpoch != 3 {
+		if response.OK || response.ActiveJobID != fresh.ID || !response.ActivePlanPresent || fresh.Status != "reconciling" || fresh.Code != "" || fresh.Progress != 99 || fresh.Sequence < 1 || fresh.PolicyRevision != h.projection || fresh.OwnershipEpoch != 3 {
 			t.Fatal("lost Apply delivery did not retain the exact plan and uncertain central update")
 		}
 		observation := h.cp.call(t, stPortChainCommand{Command: "observe", JobID: fresh.ID})
@@ -161,7 +164,7 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 		response := h.agent.call(t, stPortChainCommand{Command: "poll"})
 		calls := softwareUpdateChainDecodeCalls(t, response)
 		fresh = h.readSoftware(t, fresh.ID)
-		if response.OK || response.ActiveJobID != fresh.ID || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 1 || fresh.Status != "succeeded" || fresh.Progress != 100 || fresh.LeaseGeneration != 2 || fresh.PolicyRevision != h.projection || fresh.OwnershipEpoch != 3 || normalizeDigest(fresh.ArtifactDigest) != normalizeDigest(h.artifactDigest) {
+		if response.OK || response.ActiveJobID != fresh.ID || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 1 || calls.StageRequiredResponse || fresh.Status != "succeeded" || fresh.Code != "" || fresh.Progress != 100 || fresh.LeaseGeneration != 2 || fresh.PolicyRevision != h.projection || fresh.OwnershipEpoch != 3 || normalizeDigest(fresh.ArtifactDigest) != normalizeDigest(h.artifactDigest) {
 			t.Fatal("actual root/Agent restart did not reconcile and report the original applied result without reapplying")
 		}
 		observation := h.cp.call(t, stPortChainCommand{Command: "observe", JobID: fresh.ID})
@@ -216,6 +219,12 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 		if baseline := h.agent.call(t, stPortChainCommand{Command: "observe"}); !baseline.OK || !baseline.TargetVerified {
 			t.Fatal("final real root PID/listener/HTTP sandwich failed")
 		}
+		authority := h.cp.call(t, stPortChainCommand{Command: "observe", JobID: fresh.ID})
+		frozen := bytes.Equal(authority.RootPolicy, h.initialPolicy)
+		t.Logf("SOFTWARE final CP authority: ok=%t phase=%s source=%d projection=%d executor=%d frozen_root_policy=%t", authority.OK, softwareUpdateChainSafeCode(authority.ErrorCode), softwareUpdateChainSafeCount(authority.DBSourcePolicyRevision), softwareUpdateChainSafeCount(authority.DBProjectionRevision), softwareUpdateChainSafeCount(authority.DBExecutorPolicyRevision), frozen)
+		if !authority.OK || authority.DBSourcePolicyRevision != h.source || authority.DBProjectionRevision != h.projection || authority.DBExecutorPolicyRevision != h.executor || !frozen {
+			t.Fatal("actual final CP authority differs from the independent revision tuple or its original frozen configuration/policy projection")
+		}
 		h.writeSoftwareEvidence(t, orphan, fresh)
 	})
 }
@@ -233,12 +242,32 @@ func softwareUpdateChainDecodeJob(t *testing.T, response stPortChainResponse) so
 	t.Helper()
 	var job softwareUpdateChainJob
 	if !response.OK || json.Unmarshal(response.Job, &job) != nil || job.ID == "" || job.TargetID != "control-panel" {
+		status := response.FailureHTTPStatus
+		if status < 100 || status > 599 {
+			status = 0
+		}
+		t.Logf("SOFTWARE CP job response: ok=%t phase=%s http_status=%d code=%s source=%d projection=%d executor=%d", response.OK, softwareUpdateChainSafeCode(response.ErrorCode), status, softwareUpdateChainSafeCreateCode(response.FailureCode), softwareUpdateChainSafeCount(response.DBSourcePolicyRevision), softwareUpdateChainSafeCount(response.DBProjectionRevision), softwareUpdateChainSafeCount(response.DBExecutorPolicyRevision))
 		t.Fatal("independent actual CP software job observation failed")
 	}
 	// Keep authority diagnostics usable in failed CI without exposing job bodies,
 	// identity YAML, lease tokens, arbitrary server messages or artifact URLs.
 	t.Logf("SOFTWARE central job: status=%s code=%s P=%d F=%d generation=%d sequence=%d progress=%d artifact_present=%t", softwareUpdateChainSafeStatus(job.Status), softwareUpdateChainSafeCode(job.Code), softwareUpdateChainSafeCount(job.PolicyRevision), softwareUpdateChainSafeCount(job.OwnershipEpoch), softwareUpdateChainSafeGeneration(job.LeaseGeneration), softwareUpdateChainSafeCount(job.Sequence), softwareUpdateChainSafeCount(int64(job.Progress)), job.ArtifactDigest != "")
 	return job
+}
+
+// Mirror only immutable CP create/eligibility codes, never server text or its
+// target body. Unknown transport/authentication or future codes stay closed.
+func softwareUpdateChainSafeCreateCode(code string) string {
+	switch code {
+	case "system_update_port_contract_required", "idempotency_key_conflict", "system_update_port_idempotency_conflict", "system_update_target_unavailable", "system_update_target_busy", "system_update_target_active", "system_update_ownership_conflict":
+		return code
+	case "updater_missing", "updater_policy_failed", "updater_policy_pending", "updater_policy_mismatch", "updater_policy_target_type_mismatch", "updater_offline", "target_unreachable", "target_reachability_unknown", "unsupported_deployment_mode", "current_version_unknown":
+		return code
+	case "release_manifest_unavailable", "release_version_invalid", "update_not_available", "release_manifest_missing", "release_manifest_invalid", "manifest_unverified", "updater_version_incompatible":
+		return code
+	default:
+		return "unknown"
+	}
 }
 func (h *softwareUpdateChainHarness) readSoftware(t *testing.T, id string) softwareUpdateChainJob {
 	t.Helper()
@@ -282,7 +311,7 @@ func softwareUpdateChainSafeGeneration(value uint64) uint64 {
 }
 func softwareUpdateChainSafeStatus(value string) string {
 	switch value {
-	case "queued", "claimed", "verifying", "staging", "applying", "reconciling", "succeeded", "failed", "rolled_back", "cancelled":
+	case "queued", "claimed", "downloading", "verifying", "staging", "stopping", "installing", "starting", "health_checking", "rolling_back", "reconciling", "succeeded", "failed", "rolled_back", "canceled":
 		return value
 	default:
 		return "unknown"
@@ -292,9 +321,11 @@ func softwareUpdateChainSafeCode(value string) string {
 	switch value {
 	case "":
 		return "none"
-	case "software_claim_orphan_recovered", "remote_stage_missing", "rollback_succeeded", "update_succeeded", "system_update_not_cancellable", "host_lifecycle_busy":
+	case "execution_failed", "system_update_not_cancellable", "host_lifecycle_busy":
 		return value
 	case "software_profile_policy_unavailable", "software_profile_projection_unavailable", "software_profile_digest_mismatch", "software_profile_identity_unavailable", "software_profile_token_unavailable":
+		return value
+	case "software_observer_policy_unavailable", "software_observer_owner_unavailable", "software_observer_binding_mismatch", "software_observer_projection_mismatch", "create_rejected":
 		return value
 	case "software_setup_config", "software_setup_database", "software_setup_authority", "software_setup_policy_read", "software_setup_ownership_read", "software_setup_policy_cas", "software_setup_binding_read", "software_setup_revision_check", "software_setup_restart_check", "software_setup_existing_job", "software_setup_tls", "software_setup_listener", "software_setup_login":
 		return value

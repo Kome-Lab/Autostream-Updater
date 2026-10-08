@@ -146,6 +146,9 @@ func TestSoftwareClaimRecoveryIntentBlocksInstallerUntilAuthenticatedSettlement(
 		t.Fatal(err)
 	}
 	intent := newSoftwareClaimRecoveryIntent(request.SoftwareClaimRecovery.Request, auth.ServiceID, auth.ExecutionHostID, auth)
+	// Preserve legacy settled-marker compatibility. Schema 2 settlement needs
+	// the actual authenticated clear receipt, exercised by the history tests.
+	intent.SchemaVersion = 1
 	intent.Attempts = []softwareClaimRecoveryAttempt{{LeaseGeneration: 1, StartedAt: manualHostUpgradeTestActivationNow}}
 	if err := saveSoftwareClaimRecoveryIntent(fixture.runtime.paths.hostStateRoot, "", intent); err != nil {
 		t.Fatal(err)

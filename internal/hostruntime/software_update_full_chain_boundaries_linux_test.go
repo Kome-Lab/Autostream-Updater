@@ -6,18 +6,20 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/example/autostream-contracts/pkg/contracts"
 )
 
 type softwareUpdateChainCalls struct {
-	Stage             int `json:"stage"`
-	Apply             int `json:"apply"`
-	Reconcile         int `json:"reconcile"`
-	DeliveryLosses    int `json:"delivery_losses"`
-	BlockedReconciles int `json:"blocked_reconciles"`
-	Inspections       int `json:"inspections"`
+	Stage                 int  `json:"stage"`
+	Apply                 int  `json:"apply"`
+	Reconcile             int  `json:"reconcile"`
+	DeliveryLosses        int  `json:"delivery_losses"`
+	BlockedReconciles     int  `json:"blocked_reconciles"`
+	Inspections           int  `json:"inspections"`
+	StageRequiredResponse bool `json:"stage_required_response"`
 }
 type softwareUpdateChainBoundaryEvidence struct {
 	Boundary           string                   `json:"boundary"`
@@ -32,6 +34,8 @@ func softwareUpdateChainPreApplyBoundaries(t *testing.T, h *softwareUpdateChainH
 	if !t.Run("InitialProgressLossTerminalRecovery", func(t *testing.T) {
 		h.startFixedAgent(t)
 		job := h.createSoftware(t, "software-initial-progress-loss")
+		beforeAuthority := h.cp.call(t, stPortChainCommand{Command: "observe", JobID: job.ID})
+		beforeWire := softwareUpdateChainDecodeWire(t, beforeAuthority)
 		h.armCPFault(t, "progress_claimed_after")
 		response := h.agent.call(t, stPortChainCommand{Command: "poll"})
 		before := h.readSoftware(t, job.ID)
@@ -40,7 +44,7 @@ func softwareUpdateChainPreApplyBoundaries(t *testing.T, h *softwareUpdateChainH
 		}
 		h.agent.stop()
 		journal, _ := h.readJournal(t)
-		if journal.ActiveJob == nil || journal.ActiveJob.ID != job.ID || journal.ActivePlan != nil || len(journal.Pending) != 1 {
+		if journal.ActiveJob == nil || journal.ActiveJob.ID != job.ID || journal.ActivePlan != nil || len(journal.Pending) != 1 || journal.Pending[0].JobID != job.ID || journal.Pending[0].Report.Status != "claimed" || journal.Pending[0].Report.Progress != 5 || journal.Pending[0].Report.Sequence != 1 {
 			t.Fatal("initial response loss did not preserve the exact pending progress before explicit recovery")
 		}
 		recovery := h.start(t, "recovery", h.testBinary, "TestSoftwareUpdateFullChainRecoveryProcess", h.uid, h.gid)
@@ -48,8 +52,14 @@ func softwareUpdateChainPreApplyBoundaries(t *testing.T, h *softwareUpdateChainH
 		settled := recovery.call(t, stPortChainCommand{Command: "recover", JobID: job.ID, LeaseGeneration: before.LeaseGeneration})
 		job = h.readSoftware(t, job.ID)
 		calls := softwareUpdateChainDecodeCalls(t, settled)
-		if !settled.OK || settled.ActiveJobID != "" || settled.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 0 || job.Status != "failed" || job.Code != "software_claim_orphan_recovered" || job.LeaseGeneration != 2 {
+		if !settled.OK || settled.ActiveJobID != "" || settled.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 0 || calls.Inspections < 1 || calls.StageRequiredResponse || job.Status != "failed" || job.Code != "execution_failed" || job.LeaseGeneration != 2 {
 			t.Fatal("exact initial-progress recovery did not terminalize only the nonexecuting original claim")
+		}
+		h.requireSettledSoftwareClaimIntent(t, job, before.LeaseGeneration)
+		afterAuthority := h.cp.call(t, stPortChainCommand{Command: "observe", JobID: job.ID})
+		afterWire := softwareUpdateChainDecodeWire(t, afterAuthority)
+		if afterWire.GrantCount != beforeWire.GrantCount || afterAuthority.ConsumeCount != beforeAuthority.ConsumeCount {
+			t.Fatal("terminal-only initial-progress recovery issued or consumed a mutation grant")
 		}
 		h.requireDownloads(t, h.agentDownloads, h.rootDownloads)
 		h.requireUnchangedBaseline(t)
@@ -64,7 +74,7 @@ func softwareUpdateChainPreApplyBoundaries(t *testing.T, h *softwareUpdateChainH
 		response := h.agent.call(t, stPortChainCommand{Command: "poll"})
 		before := h.readSoftware(t, job.ID)
 		original, _ := h.readJournal(t)
-		if response.OK || response.ActiveJobID != job.ID || !response.ActivePlanPresent || response.RootCalls != 0 || original.ActivePlan == nil || before.Status != "verifying" || before.Progress != 40 || before.LeaseGeneration != 1 {
+		if response.OK || response.ActiveJobID != job.ID || !response.ActivePlanPresent || response.RootCalls != 0 || original.ActivePlan == nil || original.ActivePlan.JobID != job.ID || original.ActiveStageFailure != nil || len(original.Pending) != 1 || original.Pending[0].JobID != job.ID || original.Pending[0].Report.Status != "verifying" || original.Pending[0].Report.Progress != 40 || original.Pending[0].Report.Sequence != uint64(before.Sequence) || before.Status != "downloading" || before.Progress != 40 || before.LeaseGeneration != 1 {
 			t.Fatal("real verified download/progress delivery loss did not preserve the pre-Stage plan")
 		}
 		h.agentDownloads++
@@ -72,7 +82,7 @@ func softwareUpdateChainPreApplyBoundaries(t *testing.T, h *softwareUpdateChainH
 		settled := h.agent.call(t, stPortChainCommand{Command: "poll"})
 		job = h.readSoftware(t, job.ID)
 		calls := softwareUpdateChainDecodeCalls(t, settled)
-		if !settled.OK || settled.ActiveJobID != "" || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 1 || job.Status != "failed" || job.Code != "remote_stage_missing" || job.LeaseGeneration != 2 {
+		if !settled.OK || settled.ActiveJobID != "" || settled.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 1 || !calls.StageRequiredResponse || job.Status != "failed" || job.Code != "execution_failed" || job.LeaseGeneration != 2 {
 			t.Fatal("saved pre-Stage plan did not reconcile missing root state without downloading, staging or applying")
 		}
 		h.requireDownloads(t, h.agentDownloads, h.rootDownloads)
@@ -170,7 +180,7 @@ func (h *softwareUpdateChainHarness) stageInterrupted(t *testing.T, key string) 
 	job = h.readSoftware(t, job.ID)
 	journal, _ := h.readJournal(t)
 	calls := softwareUpdateChainDecodeCalls(t, response)
-	if response.OK || response.ActiveJobID != job.ID || !response.ActivePlanPresent || journal.ActivePlan == nil || calls.Stage != 1 || calls.Apply != 0 || calls.Reconcile != 0 || calls.DeliveryLosses != 1 || job.Status != "staging" || job.Progress != 55 || job.LeaseGeneration != 1 {
+	if response.OK || response.ActiveJobID != job.ID || !response.ActivePlanPresent || journal.ActivePlan == nil || calls.Stage != 1 || calls.Apply != 0 || calls.Reconcile != 0 || calls.DeliveryLosses != 1 || calls.StageRequiredResponse || job.Status != "downloading" || job.Progress != 55 || job.LeaseGeneration != 1 {
 		t.Fatal("real successful Stage lost response did not preserve its original plan and durable staged root state")
 	}
 	h.requireRootLedger(t, job.ID, remoteLedgerStaged)
@@ -213,13 +223,35 @@ func softwareUpdateChainDecodeCalls(t *testing.T, response stPortChainResponse) 
 	if json.Unmarshal(response.SoftwareWire, &counts) != nil {
 		t.Fatal("actual software socket call counts unavailable")
 	}
-	t.Logf("SOFTWARE real socket calls: Stage=%d Apply=%d Reconcile=%d Inspect=%d delivery_losses=%d blocked_reconciles=%d", softwareUpdateChainSafeCount(int64(counts.Stage)), softwareUpdateChainSafeCount(int64(counts.Apply)), softwareUpdateChainSafeCount(int64(counts.Reconcile)), softwareUpdateChainSafeCount(int64(counts.Inspections)), softwareUpdateChainSafeCount(int64(counts.DeliveryLosses)), softwareUpdateChainSafeCount(int64(counts.BlockedReconciles)))
+	t.Logf("SOFTWARE real socket calls: Stage=%d Apply=%d Reconcile=%d Inspect=%d delivery_losses=%d blocked_reconciles=%d stage_required_response=%t", softwareUpdateChainSafeCount(int64(counts.Stage)), softwareUpdateChainSafeCount(int64(counts.Apply)), softwareUpdateChainSafeCount(int64(counts.Reconcile)), softwareUpdateChainSafeCount(int64(counts.Inspections)), softwareUpdateChainSafeCount(int64(counts.DeliveryLosses)), softwareUpdateChainSafeCount(int64(counts.BlockedReconciles)), counts.StageRequiredResponse)
 	return counts
 }
 func (h *softwareUpdateChainHarness) requireRolledBackRecovery(t *testing.T, job softwareUpdateChainJob, response stPortChainResponse, calls softwareUpdateChainCalls, generation uint64) {
 	t.Helper()
-	if !response.OK || response.ActiveJobID != "" || response.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 1 || job.Status != "rolled_back" || job.Progress != 100 || job.LeaseGeneration != generation || job.PolicyRevision != h.projection || job.OwnershipEpoch != 3 {
+	if !response.OK || response.ActiveJobID != "" || response.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 1 || calls.StageRequiredResponse || job.Status != "rolled_back" || job.Code != "" || job.Progress != 100 || job.LeaseGeneration != generation || job.PolicyRevision != h.projection || job.OwnershipEpoch != 3 {
 		t.Fatal("fresh-lease recovery did not settle original staged-only intent with one real Reconcile and no Stage/Apply")
+	}
+}
+func (h *softwareUpdateChainHarness) requireSettledSoftwareClaimIntent(t *testing.T, job softwareUpdateChainJob, originalGeneration uint64) {
+	t.Helper()
+	intent, exists, intentErr := loadSoftwareClaimRecoveryIntent(HostPullAgentStateDir, func(info os.FileInfo) bool {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		return ok && stat.Uid == h.uid && stat.Gid == h.gid && stat.Nlink == 1
+	})
+	identity, identityErr := LoadManagedBootstrapConfig(HostAgentIdentityPath, true)
+	digest, digestErr := h.rootPolicy.SHA256()
+	exact := SoftwareClaimRecoveryRequest{JobID: job.ID, LeaseGeneration: originalGeneration, TargetID: "control-panel", CurrentVersion: "v2.0.0", TargetVersion: "v2.0.1", ConfigRevision: 1, OwnershipEpoch: 3}
+	verified := intentErr == nil && exists && intent.Settled && intent.Original == exact && intent.Request == exact &&
+		identityErr == nil && intent.UpdaterID == identity.NodeID && intent.HostID == h.rootPolicy.HostID &&
+		intent.SourcePolicyRevision == h.source && intent.ProjectionRevision == h.projection && intent.ExecutorPolicyRevision == h.executor &&
+		digestErr == nil && intent.ExecutorPolicySHA256 == digest && len(intent.Attempts) == 1 &&
+		intent.Attempts[0].LeaseGeneration == originalGeneration && !intent.Attempts[0].ConfirmedReread
+	journal, _ := h.readJournal(t)
+	empty := journal.ActiveJob == nil && journal.ActivePlan == nil && journal.ActiveStageFailure == nil &&
+		journal.ActivePortPlan == nil && journal.ActivePortPolicy == nil && len(journal.Pending) == 0
+	t.Logf("SOFTWARE terminal-only reason proof: exact_settled_intent=%t empty_journal=%t source=%d projection=%d executor=%d", verified, empty, softwareUpdateChainSafeCount(intent.SourcePolicyRevision), softwareUpdateChainSafeCount(intent.ProjectionRevision), softwareUpdateChainSafeCount(intent.ExecutorPolicyRevision))
+	if !verified || !empty {
+		t.Fatal("terminal-only public failure lacks its exact settled recovery intent and fully cleared nonexecuting journal")
 	}
 }
 func (h *softwareUpdateChainHarness) requireRootLedger(t *testing.T, jobID, state string) executorMutationLedger {

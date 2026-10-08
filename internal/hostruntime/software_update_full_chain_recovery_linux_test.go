@@ -82,9 +82,10 @@ func (c *softwareUpdateChainRecoveryClient) InspectSoftwareClaimRecovery(ctx con
 }
 func (c *softwareUpdateChainRecoveryClient) snapshot() any {
 	return struct {
-		Stage       int64 `json:"stage"`
-		Apply       int64 `json:"apply"`
-		Reconcile   int64 `json:"reconcile"`
-		Inspections int64 `json:"inspections"`
-	}{c.stages.Load(), c.applies.Load(), c.reconciles.Load(), c.inspections.Load()}
+		Stage                 int64 `json:"stage"`
+		Apply                 int64 `json:"apply"`
+		Reconcile             int64 `json:"reconcile"`
+		Inspections           int64 `json:"inspections"`
+		StageRequiredResponse bool  `json:"stage_required_response"`
+	}{c.stages.Load(), c.applies.Load(), c.reconciles.Load(), c.inspections.Load(), c.stageRequiredResponse.Load()}
 }

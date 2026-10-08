@@ -112,10 +112,29 @@ func inspectSoftwareClaimRecoveryRoot(ctx context.Context, policy LocalExecutorP
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		return ok && stat.Uid == policy.AgentUID && stat.Gid == policy.AgentGID
 	}
-	intent, hasIntent, err := loadSoftwareClaimRecoveryIntent(rt.paths.hostStateRoot, owner)
-	if err != nil || (hasIntent && (!intent.Original.sameIntent(request.SoftwareClaimRecovery.Request) ||
-		!intent.policyMatches(current))) {
+	snapshot, hasIntent, err := loadSoftwareClaimRecoverySnapshot(rt.paths.hostStateRoot, owner)
+	intent := snapshot.Intent
+	if err != nil || (hasIntent && !intent.policyMatches(current)) {
 		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery durable intent disagrees with the request")
+	}
+	rotating := hasIntent && !intent.Original.sameIntent(request.SoftwareClaimRecovery.Request)
+	if rotating && (intent.SchemaVersion != 2 || !intent.Settled || intent.TerminalClear == nil ||
+		intent.Original.JobID == request.SoftwareClaimRecovery.Request.JobID) {
+		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery cannot replace an unsettled or legacy root intent")
+	}
+	blockedJobs := map[string]bool{request.SoftwareClaimRecovery.Request.JobID: true}
+	if hasIntent {
+		blockedJobs[intent.Original.JobID] = true
+		if validateSoftwareClaimRecoveryPolicy(intent.Original, binding, current) != nil {
+			return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery previous intent no longer matches current policy")
+		}
+	}
+	for _, archive := range snapshot.Archives {
+		if !archive.Intent.policyMatches(current) || validateSoftwareClaimRecoveryPolicy(archive.Intent.Original, binding, current) != nil ||
+			(rotating && archive.Intent.Original.JobID == request.SoftwareClaimRecovery.Request.JobID) {
+			return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery immutable archive has another identity or policy")
+		}
+		blockedJobs[archive.Intent.Original.JobID] = true
 	}
 	journal, err := readManualHostUpgradeJournal(rt)
 	if err != nil || validateJournalData(journal) != nil || journal.ActivePlan != nil || journal.ActivePortPlan != nil ||
@@ -123,16 +142,19 @@ func inspectSoftwareClaimRecoveryRoot(ctx context.Context, policy LocalExecutorP
 		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery journal contains execution or pending report state")
 	}
 	cursorIntent := intent
-	if !hasIntent {
+	if !hasIntent || rotating {
 		// This is a bounded read-only preflight, never a migration or claim.
 		// Durable intent is required before a subsequent CP request can occur.
 		cursorIntent = newSoftwareClaimRecoveryIntent(request.SoftwareClaimRecovery.Request, current.ServiceID, current.ExecutionHostID, current)
+		if rotating {
+			cursorIntent.PreviousSettledRawSHA256 = softwareClaimRecoveryRawSHA256(snapshot.Raw)
+		}
 	}
 	maximumGeneration := request.SoftwareClaimRecovery.Request.LeaseGeneration
-	if hasIntent {
+	if hasIntent && !rotating {
 		maximumGeneration++
 	}
-	if journal.ActiveJob != nil && ((hasIntent && intent.Settled) ||
+	if journal.ActiveJob != nil && ((hasIntent && intent.Settled && !rotating) ||
 		!softwareClaimRecoveryCursorMatches(cursorIntent, *journal.ActiveJob) ||
 		journal.ActiveJob.EffectiveType() != rootTarget.ServiceType || journal.ActiveJob.DeploymentMode != rootTarget.DeploymentMode ||
 		journal.ActiveJob.LeaseGeneration < 1 || journal.ActiveJob.LeaseGeneration > maximumGeneration ||
@@ -178,8 +200,10 @@ func inspectSoftwareClaimRecoveryRoot(ctx context.Context, policy LocalExecutorP
 	if err != nil || observed.Agent.Version != state.ActiveAgentVersion || observed.Executor.Version != state.ActiveExecutorVersion {
 		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery installed runtime pair is unconfirmed")
 	}
-	if err := scanSoftwareClaimRecoveryRootRecords(request.SoftwareClaimRecovery.Request.JobID, policy, rt); err != nil {
-		return SoftwareClaimRecoveryProof{}, err
+	for jobID := range blockedJobs {
+		if err := scanSoftwareClaimRecoveryRootRecords(jobID, policy, rt); err != nil {
+			return SoftwareClaimRecoveryProof{}, err
+		}
 	}
 	if ctx.Err() != nil {
 		return SoftwareClaimRecoveryProof{}, ctx.Err()
@@ -190,6 +214,7 @@ func inspectSoftwareClaimRecoveryRoot(ctx context.Context, policy LocalExecutorP
 		ExecutorPolicyRevision: policy.PolicyRevision, ExecutorPolicySHA256: digest,
 		OwnershipEpoch: current.OwnershipEpoch, RuntimeVersion: observed.Agent.Version,
 		NoMutation: true, ObservedAt: time.Now().UTC(),
+		PriorSettledRawSHA256: cursorIntent.PreviousSettledRawSHA256,
 	}
 	return proof, proof.Validate()
 }
@@ -329,14 +354,22 @@ func scanSoftwareClaimRecoveryRemoteRecords(jobID, root string, rt manualHostUpg
 // The parent mutation dispatcher calls this after acquiring the canonical
 // lifecycle lock. A malformed intent blocks just as an unsettled one does.
 func softwareClaimRecoveryIntentBlocksHost(policy LocalExecutorPolicy) error {
-	if _, err := os.Lstat(filepath.Join(HostPullAgentStateDir, softwareClaimRecoveryIntentName)); errors.Is(err, os.ErrNotExist) {
+	return softwareClaimRecoveryIntentBlocksHostRuntime(policy, defaultManualHostUpgradeRuntime())
+}
+
+func softwareClaimRecoveryIntentBlocksHostRuntime(policy LocalExecutorPolicy, rt manualHostUpgradeRuntime) error {
+	_, headErr := os.Lstat(filepath.Join(rt.paths.hostStateRoot, softwareClaimRecoveryIntentName))
+	_, historyErr := os.Lstat(filepath.Join(rt.paths.hostStateRoot, softwareClaimRecoveryHistoryName))
+	if errors.Is(headErr, os.ErrNotExist) && errors.Is(historyErr, os.ErrNotExist) {
 		return nil
 	}
-	rt := defaultManualHostUpgradeRuntime()
 	if err := validateManualHostUpgradeStateRoots(rt); err != nil {
 		return errors.New("software claim recovery lifecycle marker is unsafe")
 	}
-	intent, exists, err := loadSoftwareClaimRecoveryIntent(HostPullAgentStateDir, func(info os.FileInfo) bool {
+	intent, exists, err := loadSoftwareClaimRecoveryIntent(rt.paths.hostStateRoot, func(info os.FileInfo) bool {
+		if rt.allowTestPaths {
+			return managedSnapshotOwnedByCurrentUser(info)
+		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		return ok && stat.Uid == policy.AgentUID && stat.Gid == policy.AgentGID
 	})

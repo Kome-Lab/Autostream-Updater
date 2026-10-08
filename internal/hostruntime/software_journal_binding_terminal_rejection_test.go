@@ -40,6 +40,9 @@ func TestSoftwareJournalTerminalRecoveryRejectsChangedDurableMarker(t *testing.T
 		mutate func(*softwareClaimRecoveryIntent)
 	}{
 		{"settled", func(s *softwareClaimRecoveryIntent) { s.Settled = true; s.SettledAt = time.Now().UTC() }},
+		{"settled_legacy", func(s *softwareClaimRecoveryIntent) {
+			s.SchemaVersion, s.Settled, s.SettledAt = 1, true, time.Now().UTC()
+		}},
 		{"other_updater", func(s *softwareClaimRecoveryIntent) { s.UpdaterID = "updater-other" }},
 		{"other_host", func(s *softwareClaimRecoveryIntent) { s.HostID = "host-other" }},
 		{"source", func(s *softwareClaimRecoveryIntent) { s.SourcePolicyRevision++ }},
@@ -52,6 +55,16 @@ func TestSoftwareJournalTerminalRecoveryRejectsChangedDurableMarker(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			journal, stateDir, _, fresh, request, proof, intent := newSoftwareJournalTerminalFixture(t, false)
 			test.mutate(&intent)
+			if test.name == "settled" {
+				// Reject a structurally valid current-format settled marker, rather
+				// than failing fixture setup because its required receipt is absent.
+				intent.TerminalClear = &softwareClaimRecoveryTerminalClearReceipt{
+					ClaimRequest: HostPullClaimRequest{UpdaterID: intent.UpdaterID, HostID: intent.HostID,
+						ActiveJobID: intent.Original.JobID, LeaseGeneration: int64(intent.Request.LeaseGeneration + 1),
+						Fence: intent.Original.OwnershipEpoch},
+					RootNoMutation: proof, ObservedAt: intent.SettledAt,
+				}
+			}
 			if err := intent.validate(); err != nil {
 				t.Fatalf("negative marker must remain structurally valid: %v", err)
 			}

@@ -64,10 +64,17 @@ sudo -u autostream-host-agent /usr/local/bin/autostream-host-agent recover-softw
   --config-revision 1 --ownership-epoch 3
 ```
 
-Recovery retains a bounded local intent, repeats root proof, reclaims only
-that exact central job with its current generation and submits a failed
-terminal result without download, Stage, mutation grant or Apply. Its original
-central record remains. Fresh lease identity, command, configuration and
+Recovery retains a bounded local intent, repeats root proof and reclaims only
+that exact central job with its current generation. A fresh lease for a
+nonterminal job permits a failed report without download, Stage, mutation grant
+or Apply. The internal reason is `software_claim_orphan_recovered`; the V2
+contract records the public code `execution_failed`. The receipt records this
+accepted result only when report acceptance was directly observed. An already
+terminal clear, including recovery after a lost report acknowledgment, records
+no accepted result and sends no additional failed report. Read the actual
+terminal status and code from the authenticated CP rather than inferring an
+outcome or internal reason from the clear. The original central record remains.
+Fresh lease identity, command, configuration and
 policy mismatches refuse reporting. A same-job first progress acknowledgment
 loss is handled only after the exact pending report and root absence have
 been proven; foreign or terminal pending reports are refused.
@@ -80,9 +87,21 @@ generation. Terminal response loss retains state until the exact structured
 same-job terminal proof permits settling the cursor and marker. Other host
 mutations remain blocked while the marker is unsettled.
 
-Read back the original job's failed terminal outcome and preserved identity.
-After exact recovery convergence, start the Agent and use the normal Control
-Panel flow to create a new job for the desired CP version.
+Do not remove a previous settled marker to recover another job. The runtime
+requires its exact authenticated clear receipt and preserves its raw bytes in
+immutable history before replacing the current intent. Root inspection checks
+the new, previous and linked jobs for execution records, including terminal
+records. A legacy settled marker without a receipt permits only the same-job
+historical check. Missing or unsafe history, changed authority, exhausted
+history bounds, or uncertain persistence must stop a successor recovery.
+
+Read back the actual terminal outcome, preserved identity, exact clear receipt,
+settled marker and local cursor convergence. A directly observed failed report
+must agree with the public `failed / execution_failed` result. A clear-only
+receipt does not establish that result or its internal reason. After exact
+recovery convergence, start the Agent and read the CP's actual current version.
+Create a CP-only job through the normal Control Panel flow only if an update
+is still needed; do not resubmit an already applied version.
 
 ```sh
 sudo systemctl start autostream-host-agent.service
@@ -111,6 +130,12 @@ reports, then enters reconcile with the original plan. It performs no download,
 Stage or Apply. An uncertain claim preserves the original journal bytes and
 requires another exact read. A changed digest, policy, target, owner, version,
 plan, unknown state or unsettled terminal marker fails closed.
+
+Accept the original plan's actual root terminal result and authenticated CP
+clear, then confirm active plan, cursor and pending reports have converged.
+This path does not require a terminal-only marker and must not replace an
+applied success with a failed result. Read the CP's actual version before
+deciding whether a new update job is needed.
 
 If these supported checks refuse recovery, preserve the evidence and resolve
 the specific missing proof. Do not edit the DB, lease, journal, ledger, slots,

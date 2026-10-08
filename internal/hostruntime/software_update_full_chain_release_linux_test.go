@@ -58,10 +58,14 @@ func TestSoftwareUpdateFullChainReleaseProcess(t *testing.T) {
 		release.Assets = append(release.Assets, githubReleaseAsset{ID: id, Name: name, URL: "https://api.github.com" + softwareUpdateChainRepo + "/releases/assets/" + strconv.FormatInt(id, 10), Digest: "sha256:" + stPortChainDigest(data), State: "uploaded"})
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+softwareUpdateChainRepo+"/releases/tags/v2.0.1", func(w http.ResponseWriter, r *http.Request) {
+	serveRelease := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(release)
-	})
+	}
+	// CP's normal latest-version gate and both production downloaders verify
+	// the same immutable release, manifest, sidecar and architecture metadata.
+	mux.HandleFunc("GET "+softwareUpdateChainRepo+"/releases/latest", serveRelease)
+	mux.HandleFunc("GET "+softwareUpdateChainRepo+"/releases/tags/v2.0.1", serveRelease)
 	mux.HandleFunc("GET "+softwareUpdateChainRepo+"/git/ref/tags/v2.0.1", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ref": "refs/tags/v2.0.1", "object": map[string]string{"type": "commit", "sha": fixture.Commit}})

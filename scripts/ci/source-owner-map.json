@@ -1784,7 +1784,7 @@
       },
       {
         "path": "internal/hostruntime/host_pull_execution.go",
-        "sha256": "c0bfe187a44d7496e354ecc440a89147750024051fbb196507681e5627b2dd3d",
+        "sha256": "513e56411c41785a8b9e40db3966e8d7489ba9243b55410462dd65db35a4fe44",
         "symbols": [
           "*HostPullAgent.executeOnce",
           "*HostPullAgent.executorReady",
@@ -1795,7 +1795,7 @@
           "HostPullExecutionControlPlane",
           "newHostPullSessionID"
         ],
-        "physical_lines": 252
+        "physical_lines": 253
       },
       {
         "path": "internal/hostruntime/host_pull_execution_grants.go",
@@ -1907,7 +1907,7 @@
       },
       {
         "path": "internal/hostruntime/software_claim_recovery.go",
-        "sha256": "c892cda26faf038eaebd73874feafa2bb1239e2be711bc2d851f742ed5df813d",
+        "sha256": "0e4018b67e951e892d1733fe5fe92dbcadbfeeb29dad66f171307dbc457d9f95",
         "symbols": [
           "CompleteSoftwareClaimRecoveryClear",
           "HasSoftwareClaimRecoveryIntent",
@@ -1935,11 +1935,11 @@
           "softwareClaimRecoveryPolicy",
           "validateSoftwareClaimRecoveryPolicy"
         ],
-        "physical_lines": 486
+        "physical_lines": 477
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_intent.go",
-        "sha256": "70aed4971509a335eca4c58ea003abfa0336ec3cc34d759b235c4b1e77530ad4",
+        "sha256": "69829a867fad553f966cb7af961f7dca1525800d3bf4dcd80c661c26250e7ede",
         "symbols": [
           "loadSoftwareClaimRecoveryIntent",
           "newSoftwareClaimRecoveryIntent",
@@ -1954,7 +1954,7 @@
           "validate",
           "wasAttempted"
         ],
-        "physical_lines": 230
+        "physical_lines": 206
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_client_linux.go",
@@ -1977,7 +1977,7 @@
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_root_linux.go",
-        "sha256": "3bbcb0dc7e199961b555ccfc594c14b72ff7659d8374c706eb537f829aa84cdb",
+        "sha256": "609d94217c0cfc017ee0ce004bfea307aed451e58079e73499e8b785cbcaccdd",
         "symbols": [
           "defaultSoftwareClaimRecoveryRootRuntime",
           "handleLocalExecutorSoftwareClaimRecovery",
@@ -1988,7 +1988,66 @@
           "softwareClaimRecoveryIntentBlocksHost",
           "softwareClaimRecoveryRootRuntime"
         ],
-        "physical_lines": 347
+        "physical_lines": 380
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_receipt.go",
+        "sha256": "9d12fd5d2a598e1ef6224a7a5a76238e6e48b6482a1de330cb4266de9911968b",
+        "symbols": [
+          "CompleteSoftwareClaimRecoveryClear",
+          "settleSoftwareClaimRecovery",
+          "softwareClaimRecoveryProofMatchesIntent",
+          "softwareClaimRecoveryTerminalClearReceipt",
+          "softwareClaimRecoveryWireResult",
+          "validate"
+        ],
+        "physical_lines": 102
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_history_reader.go",
+        "sha256": "4d0d458b5b336cb34d6ad31cd316abfcfecabe2c4e1554c081dc870ec61bf45e",
+        "symbols": [
+          "loadSoftwareClaimRecoverySnapshot",
+          "readSoftwareClaimRecoveryArchives",
+          "readSoftwareClaimRecoveryRaw",
+          "sameSoftwareClaimRecoveryAuthority",
+          "softwareClaimRecoveryArchiveIntents",
+          "softwareClaimRecoveryRawDigestValid",
+          "softwareClaimRecoveryRawSHA256",
+          "softwareClaimRecoverySnapshot",
+          "validateSoftwareClaimRecoveryHistory"
+        ],
+        "physical_lines": 170
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_history_store.go",
+        "sha256": "740ef8d8de3e5d87d12808c4583b63f7a3ad97454909dfdfe01e1529268bef39",
+        "symbols": [
+          "defaultSoftwareClaimRecoveryHistoryStoreRuntime",
+          "openSoftwareClaimRecoveryArchiveForSync",
+          "preserveSoftwareClaimRecoveryRawArchive",
+          "softwareClaimRecoveryHistoryStoreRuntime",
+          "transitionSoftwareClaimRecoveryIntent"
+        ],
+        "physical_lines": 134
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_history_owner_unix.go",
+        "sha256": "9d7a75529cc5e6284fad84b4b259032e5db454d9bab94d218385243f27ff4730",
+        "symbols": [
+          "softwareClaimRecoveryDirectoryOwnerSafe",
+          "softwareClaimRecoveryRecordOwnerSafe"
+        ],
+        "physical_lines": 27
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_history_owner_windows.go",
+        "sha256": "0bcf528f71e676f7bb5db18736c8c893c5b29427cee9da24a3d54822ed4977c6",
+        "symbols": [
+          "softwareClaimRecoveryDirectoryOwnerSafe",
+          "softwareClaimRecoveryRecordOwnerSafe"
+        ],
+        "physical_lines": 13
       }
     ]
   },

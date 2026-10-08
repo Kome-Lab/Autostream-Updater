@@ -71,6 +71,11 @@ func TestSoftwareUpdateFullChainControlPanelProcess(t *testing.T) {
 	for _, target := range append(append([]versionUpdateTarget{controlPanelVersionUpdateTarget}, nodeVersionUpdateTargets...), dockerVersionUpdateTarget) {
 		t.Setenv(target.latestVersionEnv, "v2.0.1")
 	}
+	// A version override is deliberately manifest_unverified in the real CP.
+	// Keep this target on its fixed GitHub HTTPS release/manifest/checksum path;
+	// only DNS/TLS and the immutable provider bytes are isolated by the harness.
+	t.Setenv(controlPanelVersionUpdateTarget.latestVersionEnv, "")
+	t.Setenv(controlPanelVersionUpdateTarget.updateCheckURLEnv, "")
 	version.Version = "v2.0.0" // The synthetic target application's starting version.
 	setupPhase = "software_setup_database"
 	f, err := stPortChainOpenCP(ctx, cfg.stPortChainCPConfig)
@@ -262,7 +267,15 @@ func softwareUpdateChainCommand(ctx context.Context, f *stPortChainCP, cfg softw
 		body, _ := json.Marshal(map[string]string{"operation": "software_update", "target_id": "control-panel", "strategy": "when_idle", "idempotency_key": command.IdempotencyKey})
 		status, body, err := f.request(ctx, http.MethodPost, "/system-updates", body)
 		if err != nil || status != http.StatusAccepted {
-			return stPortChainCPResponse{ErrorCode: "create_rejected", FailureStage: "create", FailureHTTPStatus: status}
+			var failure struct {
+				Code string `json:"code"`
+			}
+			if err == nil && len(body) <= stPortChainBound {
+				_ = json.Unmarshal(body, &failure)
+			}
+			// Only source-derived closed codes cross the private pipe. The actual
+			// response may also contain a target or recovery details: omit it.
+			return stPortChainCPResponse{ErrorCode: "create_rejected", FailureStage: "create", FailureHTTPStatus: status, FailureCode: softwareUpdateChainCreateCode(failure.Code)}
 		}
 		var job store.SystemUpdateJob
 		if json.Unmarshal(body, &job) != nil || job.TargetID != "control-panel" || job.PolicyRevision != cfg.Software.Projection || job.OwnershipEpoch != 3 {
@@ -270,7 +283,10 @@ func softwareUpdateChainCommand(ctx context.Context, f *stPortChainCP, cfg softw
 		}
 		return stPortChainCPResponse{OK: true, Job: body}
 	case "observe", "lookup":
-		result := stPortChainCPResponse{OK: true, DBSourcePolicyRevision: cfg.Software.Source, DBProjectionRevision: cfg.Software.Projection, DBExecutorRevision: cfg.Software.Executor}
+		result := softwareUpdateChainObservedAuthority(ctx, f)
+		if !result.OK {
+			return result
+		}
 		f.mu.Lock()
 		result.ClaimCount, result.ConsumeCount, result.TerminalCount, result.DroppedCount = f.claims, f.consumes, f.terminals, f.dropped
 		result.TerminalBodySHA256, result.LastTerminalBodySHA256 = f.firstTerminalSHA, f.lastTerminalSHA
@@ -336,5 +352,56 @@ func softwareUpdateChainCommand(ctx context.Context, f *stPortChainCP, cfg softw
 		return stPortChainCPResponse{OK: true}
 	default:
 		return stPortChainCPResponse{ErrorCode: "unknown_command"}
+	}
+}
+
+// Observation reads the current persisted authority independently of the
+// tuple supplied to fixture setup. The returned projection stays private and
+// lets the consumer compare it with the original frozen root-policy bytes.
+func softwareUpdateChainObservedAuthority(ctx context.Context, f *stPortChainCP) stPortChainCPResponse {
+	policy, err := f.policies.GetUpdaterPolicy(ctx, stPortChainAgent)
+	if err != nil {
+		return stPortChainCPResponse{ErrorCode: "software_observer_policy_unavailable"}
+	}
+	response := stPortChainCPResponse{DBSourcePolicyRevision: policy.Revision, DBProjectionRevision: policy.ProjectionRevision, DBExecutorRevision: policy.LocalExecutorPolicyRevision}
+	if policy.UpdaterID != stPortChainAgent || policy.ExecutionHostID != stPortChainHost || policy.TransportMode != store.SystemUpdateTransportPullV2 || len(policy.Targets) != 1 {
+		response.ErrorCode = "software_observer_binding_mismatch"
+		return response
+	}
+	target := policy.Targets[0]
+	if target.TargetID != "control-panel" || target.ServiceID != "control-panel" || target.ServiceType != "control_panel" || target.HostID != stPortChainHost || target.DeploymentMode != "systemd" || target.LocalListenPort != 0 || target.DatabaseName != "autostream_panel" {
+		response.ErrorCode = "software_observer_binding_mismatch"
+		return response
+	}
+	owner, err := f.updates.GetSystemUpdateExecutionHost(ctx, stPortChainHost)
+	if err != nil {
+		response.ErrorCode = "software_observer_owner_unavailable"
+		return response
+	}
+	if owner.ExecutionHostID != stPortChainHost || owner.AgentServiceID != stPortChainAgent || owner.TransportMode != store.SystemUpdateTransportPullV2 || owner.OwnershipEpoch != 3 || owner.PolicyRevision != policy.ProjectionRevision {
+		response.ErrorCode = "software_observer_binding_mismatch"
+		return response
+	}
+	projection, err := softwareUpdateChainProjection(f, policy)
+	if err != nil || projection.SHA256 != policy.LocalExecutorPolicySHA256 {
+		response.ErrorCode = "software_observer_projection_mismatch"
+		return response
+	}
+	response.OK, response.RootPolicy = true, projection.Policy
+	return response
+}
+
+// These are the closed create/eligibility errors from the immutable CP's
+// createSystemUpdate, buildSystemUpdateTarget and approved pull-policy paths.
+func softwareUpdateChainCreateCode(code string) string {
+	switch code {
+	case "system_update_port_contract_required", "idempotency_key_conflict", "system_update_port_idempotency_conflict", "system_update_target_unavailable", "system_update_target_busy", "system_update_target_active", "system_update_ownership_conflict":
+		return code
+	case "updater_missing", "updater_policy_failed", "updater_policy_pending", "updater_policy_mismatch", "updater_policy_target_type_mismatch", "updater_offline", "target_unreachable", "target_reachability_unknown", "unsupported_deployment_mode", "current_version_unknown":
+		return code
+	case "release_manifest_unavailable", "release_version_invalid", "update_not_available", "release_manifest_missing", "release_manifest_invalid", "manifest_unverified", "updater_version_incompatible":
+		return code
+	default:
+		return "unknown"
 	}
 }

@@ -171,19 +171,20 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 		}
 		leaseGeneration = int64(active.LeaseGeneration)
 	}
-	job, clearActive, err := panel.ClaimHost(ctx, HostPullClaimRequest{
+	claimRequest := HostPullClaimRequest{
 		UpdaterID:       a.Bootstrap.NodeID,
 		HostID:          binding.ExecutionHostID,
 		LeaseGeneration: leaseGeneration,
 		Fence:           binding.OwnershipEpoch,
 		ActiveJobID:     activeID,
-	})
+	}
+	job, clearActive, err := panel.ClaimHost(ctx, claimRequest)
 	if err != nil {
 		return err
 	}
 	if clearActive {
 		if terminalOnly {
-			return a.CompleteSoftwareClaimRecoveryClear(job)
+			return a.CompleteSoftwareClaimRecoveryClear(ctx, binding, policy, job, claimRequest)
 		}
 		if active == nil || job == nil {
 			return errors.New("terminal pull recovery proof does not match the active job")

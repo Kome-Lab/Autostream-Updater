@@ -71,6 +71,7 @@ type SoftwareClaimRecoveryProof struct {
 	RuntimeVersion         string    `json:"runtime_version"`
 	NoMutation             bool      `json:"no_mutation"`
 	ObservedAt             time.Time `json:"observed_at"`
+	PriorSettledRawSHA256  string    `json:"prior_settled_raw_sha256,omitempty"`
 }
 
 func (p SoftwareClaimRecoveryProof) Validate() error {
@@ -79,7 +80,8 @@ func (p SoftwareClaimRecoveryProof) Validate() error {
 		p.SourcePolicyRevision < 1 || p.ProjectionRevision < 1 || p.ExecutorPolicyRevision < 1 ||
 		!digestPattern.MatchString(p.ExecutorPolicySHA256) || p.OwnershipEpoch < 1 ||
 		p.RuntimeVersion != strings.TrimSpace(p.RuntimeVersion) || !versionPattern.MatchString(p.RuntimeVersion) ||
-		!p.NoMutation || p.ObservedAt.IsZero() {
+		!p.NoMutation || p.ObservedAt.IsZero() ||
+		(p.PriorSettledRawSHA256 != "" && !softwareClaimRecoveryRawDigestValid(p.PriorSettledRawSHA256)) {
 		return errors.New("software claim recovery absence proof is invalid")
 	}
 	return nil
@@ -212,15 +214,20 @@ func (a *HostPullAgent) recoverSoftwareClaim(ctx context.Context, request Softwa
 	if !ok || a.OpenJournal == nil {
 		return errors.New("software claim recovery execution dependencies are incomplete")
 	}
-	intent, exists, err := loadSoftwareClaimRecoveryIntent(a.StateDir, managedSnapshotOwnedByCurrentUser)
+	snapshot, exists, err := loadSoftwareClaimRecoverySnapshot(a.StateDir, managedSnapshotOwnedByCurrentUser)
 	if err != nil {
 		return err
 	}
-	if exists && (!intent.Original.sameIntent(request) || intent.UpdaterID != a.Bootstrap.NodeID ||
+	intent := snapshot.Intent
+	if exists && (intent.UpdaterID != a.Bootstrap.NodeID ||
 		intent.HostID != binding.ExecutionHostID || !intent.policyMatches(policy)) {
 		return errors.New("software claim recovery cannot replace another durable intent or policy")
 	}
-	if exists && intent.Settled {
+	rotating := exists && !intent.Original.sameIntent(request)
+	if rotating && (intent.SchemaVersion != 2 || !intent.Settled || intent.TerminalClear == nil || intent.Original.JobID == request.JobID) {
+		return errors.New("software claim recovery cannot replace an unsettled or legacy durable intent")
+	}
+	if exists && intent.Settled && !rotating {
 		return nil
 	}
 	// Read strictly before OpenJournal can scrub legacy data. The root reader
@@ -231,8 +238,13 @@ func (a *HostPullAgent) recoverSoftwareClaim(ctx context.Context, request Softwa
 		return err
 	}
 	active := data.ActiveJob
-	if !exists {
+	previousRaw := ""
+	if !exists || rotating {
 		intent = newSoftwareClaimRecoveryIntent(request, a.Bootstrap.NodeID, binding.ExecutionHostID, policy)
+		if rotating {
+			previousRaw = softwareClaimRecoveryRawSHA256(snapshot.Raw)
+			intent.PreviousSettledRawSHA256 = previousRaw
+		}
 	}
 	expected := request.LeaseGeneration
 	if active != nil {
@@ -244,7 +256,7 @@ func (a *HostPullAgent) recoverSoftwareClaim(ctx context.Context, request Softwa
 		if request.LeaseGeneration < active.LeaseGeneration {
 			return errors.New("software claim recovery requires a current generation at least as new as the retained exact job cursor")
 		}
-	} else if exists {
+	} else if exists && !rotating {
 		if request.LeaseGeneration < intent.Original.LeaseGeneration ||
 			(!generationReadConfirmed && (request.LeaseGeneration == intent.Original.LeaseGeneration || intent.wasAttempted(request.LeaseGeneration))) {
 			return softwareClaimRecoveryGenerationRereadError()
@@ -253,8 +265,12 @@ func (a *HostPullAgent) recoverSoftwareClaim(ctx context.Context, request Softwa
 	if intent.wasAttempted(expected) && !generationReadConfirmed {
 		return softwareClaimRecoveryGenerationRereadError()
 	}
-	if _, err := a.inspectSoftwareClaimRecovery(ctx, request, binding, policy); err != nil {
+	proof, err := a.inspectSoftwareClaimRecovery(ctx, request, binding, policy)
+	if err != nil {
 		return err
+	}
+	if proof.PriorSettledRawSHA256 != intent.PreviousSettledRawSHA256 {
+		return errors.New("software claim recovery root proof does not bind the exact preserved raw history")
 	}
 	previous := softwareClaimRecoveryIntentSHA256(intent)
 	if !exists {
@@ -263,11 +279,21 @@ func (a *HostPullAgent) recoverSoftwareClaim(ctx context.Context, request Softwa
 	intent.Request = request
 	intent.Request.LeaseGeneration = expected
 	intent.Attempts = append(intent.Attempts, softwareClaimRecoveryAttempt{LeaseGeneration: expected, StartedAt: time.Now().UTC(), ConfirmedReread: generationReadConfirmed})
-	if err := saveSoftwareClaimRecoveryIntent(a.StateDir, previous, intent); err != nil {
+	if rotating {
+		if err := transitionSoftwareClaimRecoveryIntent(a.StateDir, previousRaw, intent, proof, defaultSoftwareClaimRecoveryHistoryStoreRuntime()); err != nil {
+			return err
+		}
+	} else {
+		if err := saveSoftwareClaimRecoveryIntent(a.StateDir, previous, intent); err != nil {
+			return err
+		}
+	}
+	proof, err = a.inspectSoftwareClaimRecovery(ctx, intent.Request, binding, policy)
+	if err != nil {
 		return err
 	}
-	if _, err := a.inspectSoftwareClaimRecovery(ctx, intent.Request, binding, policy); err != nil {
-		return err
+	if proof.PriorSettledRawSHA256 != intent.PreviousSettledRawSHA256 {
+		return errors.New("software claim recovery root history changed after durable head transition; no claim was sent")
 	}
 	// Preserve an exact first progress acknowledgement until authenticated
 	// fresh-lease adoption. OpenJournal would discard it before the claim.
@@ -280,18 +306,23 @@ func softwareClaimRecoveryGenerationRereadError() error {
 }
 
 func (a *HostPullAgent) claimSoftwareClaimRecovery(ctx context.Context, panel HostPullExecutionControlPlane, binding HostAgentBinding, policy HostAgentPolicy, intent softwareClaimRecoveryIntent) error {
-	if _, err := a.inspectSoftwareClaimRecovery(ctx, intent.Request, binding, policy); err != nil {
+	proof, err := a.inspectSoftwareClaimRecovery(ctx, intent.Request, binding, policy)
+	if err != nil {
 		return err
 	}
-	job, clear, err := panel.ClaimHost(ctx, HostPullClaimRequest{
+	if !softwareClaimRecoveryProofMatchesIntent(proof, intent) {
+		return errors.New("software claim recovery root proof does not match its complete durable history")
+	}
+	claimRequest := HostPullClaimRequest{
 		UpdaterID: a.Bootstrap.NodeID, HostID: binding.ExecutionHostID,
 		ActiveJobID: intent.Request.JobID, LeaseGeneration: int64(intent.Request.LeaseGeneration), Fence: intent.Request.OwnershipEpoch,
-	})
+	}
+	job, clear, err := panel.ClaimHost(ctx, claimRequest)
 	if err != nil {
 		return softwareClaimRecoveryGenerationRereadError()
 	}
 	if clear {
-		return a.settleSoftwareClaimRecovery(intent, job)
+		return a.settleSoftwareClaimRecovery(ctx, binding, policy, intent, job, claimRequest, false)
 	}
 	if job == nil || job.ProtocolVersion != 2 || job.ID != intent.Request.JobID ||
 		job.LeaseGeneration != intent.Request.LeaseGeneration+1 || !job.RecoveryRequired || job.RecoveryClear ||
@@ -304,9 +335,12 @@ func (a *HostPullAgent) claimSoftwareClaimRecovery(ctx context.Context, panel Ho
 	if err := validateHostPullClaim(*job, a.Bootstrap.NodeID, binding, policy); err != nil || !softwareClaimRecoveryJobMatches(intent, *job) {
 		return errors.New("software claim recovery fresh lease does not match the durable terminal-only intent")
 	}
-	proof, err := a.inspectSoftwareClaimRecovery(ctx, intent.Request, binding, policy)
+	proof, err = a.inspectSoftwareClaimRecovery(ctx, intent.Request, binding, policy)
 	if err != nil {
 		return err
+	}
+	if !softwareClaimRecoveryProofMatchesIntent(proof, intent) {
+		return errors.New("software claim recovery fresh lease lacks its exact immutable root history")
 	}
 	if err := a.Journal.SetTerminalSoftwareClaimRecovery(*job, intent.Request, proof); err != nil {
 		return err
@@ -335,6 +369,9 @@ func (a *HostPullAgent) ResumeSoftwareClaimRecovery(ctx context.Context, binding
 	if err != nil {
 		return err
 	}
+	if !softwareClaimRecoveryProofMatchesIntent(proof, intent) {
+		return errors.New("software claim recovery terminal report lacks its exact immutable root history")
+	}
 	if err := a.Journal.SetTerminalSoftwareClaimRecovery(job, intent.Request, proof); err != nil {
 		return err
 	}
@@ -349,14 +386,15 @@ func (a *HostPullAgent) ResumeSoftwareClaimRecovery(ctx context.Context, binding
 	}); err != nil {
 		return err
 	}
-	terminal, clear, err := panel.ClaimHost(ctx, HostPullClaimRequest{
+	clearRequest := HostPullClaimRequest{
 		UpdaterID: a.Bootstrap.NodeID, HostID: binding.ExecutionHostID, ActiveJobID: job.ID,
 		LeaseGeneration: int64(job.LeaseGeneration), Fence: intent.Request.OwnershipEpoch,
-	})
+	}
+	terminal, clear, err := panel.ClaimHost(ctx, clearRequest)
 	if err != nil || !clear {
 		return errors.New("software claim recovery terminal result awaits authenticated same-job clear; the durable intent remains")
 	}
-	return a.settleSoftwareClaimRecovery(intent, terminal)
+	return a.settleSoftwareClaimRecovery(ctx, binding, policy, intent, terminal, clearRequest, true)
 }
 
 func softwareClaimRecoveryJobMatches(intent softwareClaimRecoveryIntent, job UpdateJob) bool {
@@ -429,53 +467,6 @@ func (a *HostPullAgent) HasSoftwareClaimRecoveryIntent(jobID string) (bool, erro
 		return false, errors.New("another terminal-only software claim recovery intent blocks normal job processing")
 	}
 	return true, nil
-}
-
-func (a *HostPullAgent) settleSoftwareClaimRecovery(intent softwareClaimRecoveryIntent, terminal *UpdateJob) error {
-	anchor := UpdateJob{ProtocolVersion: 2, ID: intent.Original.JobID, AgentServiceID: intent.UpdaterID}
-	if terminal == nil || validateV2RecoveryClear(anchor, *terminal, intent.UpdaterID) != nil {
-		return errors.New("software claim recovery clear does not prove the exact requested job")
-	}
-	if a.Journal == nil || a.Journal.ActivePlan() != nil || a.Journal.ActivePortPlan() != nil {
-		return errors.New("software claim recovery cannot clear a journal with execution state")
-	}
-	active := a.Journal.Active()
-	if active != nil && !softwareClaimRecoveryCursorMatches(intent, *active) {
-		return errors.New("software claim recovery cannot clear another active cursor")
-	}
-	pending := a.Journal.Pending()
-	data, err := readSoftwareClaimRecoveryJournal(a.StateDir)
-	if err != nil || !softwareClaimRecoveryPendingAllowed(data) || len(data.Pending) != len(pending) {
-		return errors.New("software claim recovery cannot clear unrelated or terminal pending reports")
-	}
-	if len(pending) != 0 {
-		// The exact structured CP terminal clear above is the only authority
-		// for retiring this original nonexecuting progress cursor.
-		if err := a.Journal.DropJobReports(intent.Original.JobID); err != nil {
-			return err
-		}
-	}
-	if err := a.Journal.ClearActive(); err != nil {
-		return err
-	}
-	previous := softwareClaimRecoveryIntentSHA256(intent)
-	intent.Settled = true
-	intent.SettledAt = time.Now().UTC()
-	return saveSoftwareClaimRecoveryIntent(a.StateDir, previous, intent)
-}
-
-// CompleteSoftwareClaimRecoveryClear is called by the ordinary recovery loop
-// before its generic clear/cleanup path. It retains the original history and
-// validates exactly the same terminal proof as the explicit CLI.
-func (a *HostPullAgent) CompleteSoftwareClaimRecoveryClear(terminal *UpdateJob) error {
-	intent, exists, err := loadSoftwareClaimRecoveryIntent(a.StateDir, managedSnapshotOwnedByCurrentUser)
-	if err != nil || !exists || intent.Settled {
-		if err != nil {
-			return err
-		}
-		return errors.New("software claim recovery clear has no durable intent")
-	}
-	return a.settleSoftwareClaimRecovery(intent, terminal)
 }
 
 func (a *HostPullAgent) lockSoftwareClaimRecoveryLifecycle(ctx context.Context) (func(), error) {
