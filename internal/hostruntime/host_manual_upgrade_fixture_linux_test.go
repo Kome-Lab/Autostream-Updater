@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Kome-Lab/Autostream-Updater/internal/version"
 )
 
 func assertManualHostUpgradeLinuxRejectedBeforeMutation(
@@ -180,7 +182,7 @@ func newManualHostUpgradeLinuxFixture(
 		manualHostUpgradeTestTargetVersion + "_linux_amd64"
 	manifest.Archive.Name = manifest.Archive.Root + ".tar.gz"
 	manifest.Compatibility.MinimumPanelVersion =
-		manualHostUpgradeTestTargetVersion
+		version.MinimumControlPanelVersion
 	manifest.Compatibility.RollbackCompatible = true
 	manifest.Compatibility.DatabaseSchema = "none"
 	manifestPayload, err := json.Marshal(manifest)

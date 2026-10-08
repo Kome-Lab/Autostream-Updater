@@ -68,18 +68,18 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_fixture_linux_test.go",
-        "sha256": "fd68673fb35fe2c8d56555318db4209cd7295abb41bf75d2a3af518d1dc08c25",
+        "sha256": "4d932f0ea00da6f5a1b60d39cc36a41f263f8650dfde9bb238266a095ee61e7e",
         "symbols": [
           "assertManualHostUpgradeLinuxRejectedBeforeMutation",
           "newManualHostUpgradeLinuxFixture",
           "removeManualHostUpgradeLinuxStateRoot",
           "writeManualHostUpgradeLinuxCheckpoint"
         ],
-        "physical_lines": 371
+        "physical_lines": 373
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_fixture_state_linux_test.go",
-        "sha256": "a23161cca20e8eed0c2599a9cad498112d70fd340aaec47132e055865885f91e",
+        "sha256": "6b60d28765db11a0697f94327614e3b8e375309b7d38ae40b235aabef7348987",
         "symbols": [
           "assertManualHostUpgradeRecoveryUnitConverged",
           "configureManualHostUpgradeDowngradeArtifact",
@@ -91,7 +91,7 @@
           "manualHostUpgradeLinuxWriteChecksums",
           "manualHostUpgradeLinuxWriteFile"
         ],
-        "physical_lines": 248
+        "physical_lines": 250
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_linux_test.go",
@@ -195,9 +195,9 @@
       },
       {
         "path": "authoring/install-autostream-updater-agent/artifact-verification.sh.inc",
-        "sha256": "90dbbfd0aca657e725dfb4d53d7ca6d3fd56d9e7efe10fb404942940f53f0c6a",
+        "sha256": "f69df2f402a37a1c387ff48c88aafcf153676e5190d71fce4223f09ba0e4bfca",
         "symbols": [],
-        "physical_lines": 331
+        "physical_lines": 335
       },
       {
         "path": "authoring/install-autostream-updater-agent/bootstrap.sh.inc",
@@ -279,9 +279,9 @@
       },
       {
         "path": "install/install-autostream-updater-agent",
-        "sha256": "253de13618f2bc77fdf1f7ba9858cd27d0e2529bf16869f9d7bfeeea425e0cbc",
+        "sha256": "d00d7f94f08bfab36ed80828ea941393ee7c3f19a3781f6d5e421b11fd21c970",
         "symbols": [],
-        "physical_lines": 3589
+        "physical_lines": 3593
       }
     ]
   },
@@ -307,7 +307,7 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_artifact_linux.go",
-        "sha256": "4d8184767f486f95508cd7f8593c8345069cbea936624f4d73498a43381f180d",
+        "sha256": "3c2cf2adc1b3e301b1d22f30d2ac5f443f7d7b1b65ec7ce348b028f3cf553bd0",
         "symbols": [
           "inspectManualHostUpgradeArtifact",
           "isManualHostInstallerStageName",
@@ -318,11 +318,11 @@
           "validateManualHostUpgradeArtifactTree",
           "verifyManualHostUpgradeChecksumInventory"
         ],
-        "physical_lines": 406
+        "physical_lines": 410
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_blockers_linux.go",
-        "sha256": "5f1752e95271ad1e8c622ce05f29271e8cf41d133a9c46ef6d790fa2f197e4a7",
+        "sha256": "92975e7429c097823e0257a22f4736be5d416780e94d82de00b90709e8244cbb",
         "symbols": [
           "inspectManualHostUpdateCheckpoint",
           "inspectManualHostUpgradeDurableBlockers",
@@ -335,7 +335,7 @@
           "scanManualHostUpdateCheckpoints",
           "validateManualHostUpgradeStateRoots"
         ],
-        "physical_lines": 398
+        "physical_lines": 418
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_bootstrap_linux.go",
@@ -762,7 +762,7 @@
       },
       {
         "path": "scripts/ci/host-agent-upgrade/bundle-and-command-fixture.sh",
-        "sha256": "9a1a165f55fc5849ff45eeebfe70f68d9f7c00e261a1f9bb17c0e6d159dfe20a",
+        "sha256": "9dd83d0cadf99ea62d3fb16523b991edb26e5d9f2f21aac6e29a06cf4a3d98f2",
         "symbols": [],
         "physical_lines": 496
       },
@@ -786,7 +786,7 @@
       },
       {
         "path": "scripts/ci/host-agent-upgrade/recovery-and-guard-assertions.sh",
-        "sha256": "3271ee261febe1492c0cb6d6e0718fe5812e87ca1a4c5944613acd5be1b4b15f",
+        "sha256": "f3a9ff5811ce8557e53dc106cbc5c0c22470d9b93c0896af622b9af14957b577",
         "symbols": [],
         "physical_lines": 441
       },
@@ -841,7 +841,7 @@
       },
       {
         "path": "internal/hostruntime/host_pull_execution_fixture_test.go",
-        "sha256": "292dad85b5c73d41b14da2c08b7b99610fc5922151260d5811d08536751bce54",
+        "sha256": "3c132754d066793eb2bc6ef11451c8732d333df885cade4591034d287c16d267",
         "symbols": [
           "hostPullRefreshV2CommandDigest",
           "hostPullV2CommandBase",
@@ -850,11 +850,11 @@
           "newHostPullExecutionHarness",
           "newHostPullPortExecutionHarness"
         ],
-        "physical_lines": 252
+        "physical_lines": 272
       },
       {
         "path": "internal/hostruntime/host_pull_execution_grant_test.go",
-        "sha256": "378c7f1e3f33c027e41db41e43a967d9ef2c6fab3ce2d36fadeb3688b3a6aa5c",
+        "sha256": "4b4c5862b4cae3227b3cfe5c28927c6131138d1be1aec4a801c2c5e8554b2027",
         "symbols": [
           "TestHostPullClaimRejectsMalformedLeaseCredential",
           "TestHostPullRejectsTamperedV2SoftwareGrantBinding",
@@ -865,7 +865,7 @@
           "TestHostPullV2RecoveryClearUsesDedicatedSyntheticTerminalProof",
           "TestValidateV2RecoveryClearRejectsIdentityAndCredentialMutants"
         ],
-        "physical_lines": 264
+        "physical_lines": 267
       },
       {
         "path": "internal/hostruntime/host_pull_execution_port_test.go",
@@ -1705,9 +1705,9 @@
     "destinations": [
       {
         "path": "authoring/install-autostream-local-executor/artifact-verification.sh.inc",
-        "sha256": "226e3de19d4975422d6a530132ee7622be55935c2674a5abe13ae0a0cb1a1863",
+        "sha256": "666f5ebb4f56b5c2536938483f6d615e08873a7712092c77882f44b2b8d4b3d2",
         "symbols": [],
-        "physical_lines": 276
+        "physical_lines": 280
       },
       {
         "path": "authoring/install-autostream-local-executor/cleanup.sh.inc",
@@ -1753,9 +1753,9 @@
       },
       {
         "path": "install/install-autostream-local-executor",
-        "sha256": "c576bf4952880c0da500269db778974382ab49d6cd206eafdc6ea232c64b2105",
+        "sha256": "ab3c138a16ca01fa46e793ea2e8643de3a83024fb29449174bb397bbd72b46a3",
         "symbols": [],
-        "physical_lines": 1524
+        "physical_lines": 1528
       }
     ]
   },
@@ -1766,11 +1766,11 @@
     "original_sha256": "3e31860816ec24ff6d261397eef240445f6f235d69e9b179c0a5189a0b1c47db",
     "before_physical_lines": 1324,
     "disposition": "responsibility-split",
-    "responsibility": "claim verification;desired operation dispatch;software update path;self-update path;report/recovery",
+    "responsibility": "claim verification;desired operation dispatch;software update path;self-update path;report/recovery;frozen software revision authority and bounded recovery",
     "destinations": [
       {
         "path": "internal/hostruntime/host_pull_claim_validation.go",
-        "sha256": "e52a56310b1da7f2e345d440b9e75f882410757cdeba850f021dcc8ac70b7586",
+        "sha256": "c59b69ab77d180c999ed85c7e0ee26e8a48a06ea9e44f8d7a1bd0b8ab471291f",
         "symbols": [
           "hostPullPolicyTarget",
           "isV2RecoveryClearStatus",
@@ -1780,11 +1780,11 @@
           "validateHostPullClaim",
           "validateV2RecoveryClear"
         ],
-        "physical_lines": 202
+        "physical_lines": 212
       },
       {
         "path": "internal/hostruntime/host_pull_execution.go",
-        "sha256": "89e99e2063653b6696aa65539c0dd4697c705cde2706da7734a1a9227c3e460c",
+        "sha256": "c0bfe187a44d7496e354ecc440a89147750024051fbb196507681e5627b2dd3d",
         "symbols": [
           "*HostPullAgent.executeOnce",
           "*HostPullAgent.executorReady",
@@ -1795,11 +1795,11 @@
           "HostPullExecutionControlPlane",
           "newHostPullSessionID"
         ],
-        "physical_lines": 186
+        "physical_lines": 252
       },
       {
         "path": "internal/hostruntime/host_pull_execution_grants.go",
-        "sha256": "23b9598a500be9ddbbf7fd39c61b98a21067493ab33b8aef5a35275124506dea",
+        "sha256": "d45ef9a33db7b88ed2554dd79b63f7eb0fc6da282f2e492b8880d1029b673133",
         "symbols": [
           "*HostPullAgent.emitExecutionReport",
           "*HostPullAgent.flushExecutionReports",
@@ -1807,7 +1807,7 @@
           "validateV2PortExecutionGrant",
           "validateV2SoftwareExecutionGrant"
         ],
-        "physical_lines": 184
+        "physical_lines": 189
       },
       {
         "path": "internal/hostruntime/host_pull_port_execution.go",
@@ -1835,16 +1835,16 @@
       },
       {
         "path": "internal/hostruntime/host_pull_software_execution.go",
-        "sha256": "7b844ecc0b0b77c0f2a0d47aa6ca7974993f4673f8069fb558e34ae0d1f5e3c5",
+        "sha256": "8f0f6b8a8a4c2deaf94434360a406f7c61f6113b7f30a2b67b3e0f6a1c37637c",
         "symbols": [
           "*HostPullAgent.processExecutionJob",
           "localExecutorErrorCode"
         ],
-        "physical_lines": 128
+        "physical_lines": 126
       },
       {
         "path": "internal/hostruntime/host_pull_software_mutation.go",
-        "sha256": "979060b83ce95c7dbff755073d920aad724f5776a58ec5c1cb825810179c0873",
+        "sha256": "8f4d14ff3c8a3034e907c37a3eab1eed9442b3aa869390223a3c545cd6ce13f2",
         "symbols": [
           "*HostPullAgent.finishExecutionResult",
           "*HostPullAgent.invokeExecutionMutation",
@@ -1852,7 +1852,143 @@
           "*HostPullAgent.recoverExecutionPlan",
           "hostPullExecutionNow"
         ],
-        "physical_lines": 200
+        "physical_lines": 195
+      },
+      {
+        "path": "internal/hostruntime/software_claim_binding.go",
+        "sha256": "3ce40509d4e71b0c9d7e03623ee37305ec337bbae8b1ea245488b2c9bf64934e",
+        "symbols": [
+          "SoftwareUpdateJobBinding",
+          "UnmarshalJSON",
+          "Validate",
+          "isV2SoftwareJob",
+          "softwareClaimFence",
+          "softwareClaimPolicyMatches",
+          "validateIntent"
+        ],
+        "physical_lines": 81
+      },
+      {
+        "path": "internal/hostruntime/software_claim_snapshot.go",
+        "sha256": "33d1c8637f667ba411d9699c86b3dcbddeb54fbf673b1cfec26b33d44f566253",
+        "symbols": [
+          "bindSoftwareClaim",
+          "sameSoftwareJobIdentity",
+          "softwareClaimIdentityMatches"
+        ],
+        "physical_lines": 79
+      },
+      {
+        "path": "internal/hostruntime/software_journal_binding.go",
+        "sha256": "0ff1b6752922e964ca317322479cc8fbf442083f4b0c55565e94c6e34edd70e4",
+        "symbols": [
+          "AdoptRecoveredSoftwareClaim",
+          "AdoptRecoveredSoftwareClaimAfterGenerationRead",
+          "SetTerminalSoftwareClaimRecovery",
+          "journalLegacySoftwareBindingMatches",
+          "sameJournalSoftwarePlanIntent",
+          "saveSoftwareRecoveryAdoptionLocked",
+          "validateJournalSoftwareJob",
+          "validateJournalSoftwarePendingForRestart",
+          "validateJournalSoftwarePlan"
+        ],
+        "physical_lines": 269
+      },
+      {
+        "path": "internal/hostruntime/software_plan_recovery.go",
+        "sha256": "ad92d67b145402eb1c2f04bfac6c860c329cf09b95f98b25db8c7898a6071f02",
+        "symbols": [
+          "RecoverSoftwarePlanAfterGenerationRead",
+          "readSoftwarePlanRecoveryJournal",
+          "softwarePlanRecoveryGenerationRereadError",
+          "validateSoftwarePlanRecoveryOriginal"
+        ],
+        "physical_lines": 168
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery.go",
+        "sha256": "c892cda26faf038eaebd73874feafa2bb1239e2be711bc2d851f742ed5df813d",
+        "symbols": [
+          "CompleteSoftwareClaimRecoveryClear",
+          "HasSoftwareClaimRecoveryIntent",
+          "InspectSoftwareClaim",
+          "PrepareSoftwareClaimRecoveryClaim",
+          "RecoverSoftwareClaim",
+          "RecoverSoftwareClaimAfterGenerationRead",
+          "ResumeSoftwareClaimRecovery",
+          "SoftwareClaimRecoveryInspection",
+          "SoftwareClaimRecoveryInspector",
+          "SoftwareClaimRecoveryProof",
+          "SoftwareClaimRecoveryRequest",
+          "Validate",
+          "claimSoftwareClaimRecovery",
+          "inspectSoftwareClaimRecovery",
+          "lockSoftwareClaimRecoveryLifecycle",
+          "recoverSoftwareClaim",
+          "sameIntent",
+          "settleSoftwareClaimRecovery",
+          "sha256",
+          "softwareClaimRecoveryCursorMatches",
+          "softwareClaimRecoveryGenerationRereadError",
+          "softwareClaimRecoveryInspector",
+          "softwareClaimRecoveryJobMatches",
+          "softwareClaimRecoveryPolicy",
+          "validateSoftwareClaimRecoveryPolicy"
+        ],
+        "physical_lines": 486
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_intent.go",
+        "sha256": "70aed4971509a335eca4c58ea003abfa0336ec3cc34d759b235c4b1e77530ad4",
+        "symbols": [
+          "loadSoftwareClaimRecoveryIntent",
+          "newSoftwareClaimRecoveryIntent",
+          "policyMatches",
+          "readSoftwareClaimRecoveryJournal",
+          "saveSoftwareClaimRecoveryIntent",
+          "softwareClaimRecoveryAttempt",
+          "softwareClaimRecoveryIntent",
+          "softwareClaimRecoveryIntentSHA256",
+          "softwareClaimRecoveryJournalFromData",
+          "softwareClaimRecoveryPendingAllowed",
+          "validate",
+          "wasAttempted"
+        ],
+        "physical_lines": 230
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_client_linux.go",
+        "sha256": "316e90fb9bb868103e208831cc237d85e8a88494f4bd3cd5dbb2ba298dca5e41",
+        "symbols": [
+          "InspectSoftwareClaimRecovery",
+          "acquireSoftwareClaimRecoveryLifecycleLock"
+        ],
+        "physical_lines": 94
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_other.go",
+        "sha256": "2ca5b4e2e953e6044594ab6336159a240e2dda6090687b55c5ed3d746370ef0a",
+        "symbols": [
+          "InspectSoftwareClaimRecovery",
+          "acquireSoftwareClaimRecoveryLifecycleLock",
+          "softwareClaimRecoveryIntentBlocksHost"
+        ],
+        "physical_lines": 24
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_root_linux.go",
+        "sha256": "3bbcb0dc7e199961b555ccfc594c14b72ff7659d8374c706eb537f829aa84cdb",
+        "symbols": [
+          "defaultSoftwareClaimRecoveryRootRuntime",
+          "handleLocalExecutorSoftwareClaimRecovery",
+          "inspectSoftwareClaimRecoveryRoot",
+          "rejectSoftwareClaimRecoveryStateFile",
+          "scanSoftwareClaimRecoveryRemoteRecords",
+          "scanSoftwareClaimRecoveryRootRecords",
+          "softwareClaimRecoveryIntentBlocksHost",
+          "softwareClaimRecoveryRootRuntime"
+        ],
+        "physical_lines": 347
       }
     ]
   },
@@ -2053,7 +2189,7 @@
     "destinations": [
       {
         "path": "internal/hostruntime/host_pull_agent.go",
-        "sha256": "b2307694c352d86390f8f1bb003117d0cbd77df2a298e8d848898ec13e865eb9",
+        "sha256": "2a6b03bf857bd31a03713d9ddc15e5b026fab1042987c62e2033f3c7843aac25",
         "symbols": [
           "HostDockerPortObservation",
           "HostPullAgent",
@@ -2063,11 +2199,11 @@
           "HostTargetObserver",
           "NewHostPullAgent"
         ],
-        "physical_lines": 288
+        "physical_lines": 291
       },
       {
         "path": "internal/hostruntime/host_pull_control_loop.go",
-        "sha256": "e9341f4ea0bb49a84e8c31dd0efc976bd5cfc59188c2631b958c37f6979741e4",
+        "sha256": "59fa124e0fcd3fbb56a22c45869f90255a96a640ee35b8dc8f419b6e1f936850",
         "symbols": [
           "*HostPullAgent.Run",
           "recoveryOnlyHostPullControlPlane",
@@ -2075,7 +2211,7 @@
           "recoveryOnlyHostPullControlPlane.IssueMutationGrant",
           "recoveryOnlyHostPullControlPlane.Report"
         ],
-        "physical_lines": 246
+        "physical_lines": 251
       },
       {
         "path": "internal/hostruntime/host_pull_credential_heartbeat.go",
@@ -2216,7 +2352,7 @@
       },
       {
         "path": "scripts/ci/host-agent-prepare/bundle-fixture-and-input-rejections.sh",
-        "sha256": "bb5a00c29b532bdf4c957a5dbba5234b4a2bc3457fc067f1a5711bab707ff92a",
+        "sha256": "8e1dbd8ff0ef136766a74e4033ef61a9d340937d0edd5fe24da00305f5bb50af",
         "symbols": [],
         "physical_lines": 305
       },

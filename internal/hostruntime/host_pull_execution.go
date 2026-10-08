@@ -130,10 +130,38 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 	if err := a.validateRuntimeForClaim(ctx, binding, policy); err != nil {
 		return err
 	}
-	if err := a.flushExecutionReports(ctx, panel); err != nil {
+	active := a.Journal.Active()
+	activeIDForRecovery := ""
+	if active != nil {
+		activeIDForRecovery = active.ID
+	}
+	terminalOnly, err := a.HasSoftwareClaimRecoveryIntent(activeIDForRecovery)
+	if err != nil {
 		return err
 	}
-	active := a.Journal.Active()
+	if terminalOnly && active == nil {
+		return softwareClaimRecoveryGenerationRereadError()
+	}
+	if terminalOnly {
+		if err := a.PrepareSoftwareClaimRecoveryClaim(ctx, binding, policy, *active); err != nil {
+			return err
+		}
+	}
+	leaseAvailable := true
+	if active != nil && isV2SoftwareJob(*active) {
+		if leaseState, ok := panel.(interface{ HasActiveLease(UpdateJob) bool }); ok {
+			leaseAvailable = leaseState.HasActiveLease(*active)
+		}
+	}
+	if terminalOnly {
+		// The retained intent is settled only with a fresh exact same-job lease
+		// or authenticated terminal clear; it never enters normal execution.
+	} else if leaseAvailable {
+		if err := a.flushExecutionReports(ctx, panel); err != nil {
+			return err
+		}
+	}
+	active = a.Journal.Active()
 	activeID := ""
 	leaseGeneration := int64(1)
 	if active != nil {
@@ -154,6 +182,9 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 		return err
 	}
 	if clearActive {
+		if terminalOnly {
+			return a.CompleteSoftwareClaimRecoveryClear(job)
+		}
 		if active == nil || job == nil {
 			return errors.New("terminal pull recovery proof does not match the active job")
 		}
@@ -165,6 +196,13 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 			!isTerminalUpdateStatus(job.Status) {
 			return errors.New("terminal pull recovery proof does not match the active job")
 		}
+		if isV2SoftwareJob(*active) {
+			// Restart retains software reports until exact terminal proof. Only
+			// this authenticated same-job clear permits dropping their old lease.
+			if err := a.Journal.DropJobReports(active.ID); err != nil {
+				return err
+			}
+		}
 		if err := cleanupJobDirectory(a.StateDir, active.ID); err != nil {
 			return fmt.Errorf("clean terminal pull recovery job state: %w", err)
 		}
@@ -172,6 +210,27 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 	}
 	if job == nil {
 		return nil
+	}
+	if terminalOnly {
+		// Root absence and the immutable recovery marker authorize terminal
+		// settlement only; Resume uses its dedicated journal admission guard.
+		if err := a.bindSoftwareClaim(panel, binding, policy, nil, job); err != nil {
+			return err
+		}
+		return a.ResumeSoftwareClaimRecovery(ctx, binding, policy, *job)
+	}
+	if err := a.bindSoftwareClaim(panel, binding, policy, active, job); err != nil {
+		if active == nil && !job.RecoveryRequired && softwareClaimIdentityMatches(*job, a.Bootstrap.NodeID, binding, policy) &&
+			job.SoftwareUpdate != nil && job.SoftwareUpdate.validateIntent() == nil {
+			job.SoftwareClaimRejected = true
+			if journalErr := a.Journal.SetActive(job); journalErr != nil {
+				return errors.Join(err, journalErr)
+			}
+		}
+		return err
+	}
+	if job.SoftwareClaimRejected {
+		return errors.New("software claim is retained for explicit terminal-only recovery")
 	}
 	if err := validateHostPullClaim(*job, a.Bootstrap.NodeID, binding, policy); err != nil {
 		return err
@@ -181,6 +240,13 @@ func (a *HostPullAgent) executeOnce(ctx context.Context, binding HostAgentBindin
 	}
 	if active != nil && !sameRecoveredJobIntent(*active, *job) {
 		return fmt.Errorf("refusing recovered claim %s because its immutable intent changed", job.ID)
+	}
+	if active != nil && isV2SoftwareJob(*active) && !leaseAvailable && job.LeaseGeneration == active.LeaseGeneration+1 {
+		// Only an authenticated exact same-job recovery lease invalidates the
+		// old report cursor. Claim errors or intent drift preserve every report.
+		if err := a.Journal.AdoptRecoveredSoftwareClaim(*job); err != nil {
+			return err
+		}
 	}
 	return a.processExecutionJob(ctx, panel, binding, policy, *job)
 }

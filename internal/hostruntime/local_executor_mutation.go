@@ -29,6 +29,9 @@ func handleLocalExecutorMutation(
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "target_busy")
 	}
 	defer unlockLifecycle()
+	if err := softwareClaimRecoveryIntentBlocksHost(policy); err != nil {
+		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "target_busy")
+	}
 	if manager, ok := ctx.Value(portPolicyContextKey{}).(portPolicyStore); ok {
 		current, loadErr := manager.Snapshot()
 		if loadErr != nil {
@@ -233,6 +236,8 @@ func validateV2SoftwareMutationGrantBinding(
 ) error {
 	if contracts.ValidateUpdaterMutationGrantBinding(now, binding) != nil ||
 		plan.Validate() != nil ||
+		fence.SourcePolicyRevision < 1 || fence.OwnershipEpoch < 1 ||
+		fence.OwnershipPolicyRevision < 1 || fence.ExecutorPolicyRevision < 1 ||
 		binding.Operation != contracts.UpdaterMutationOperation(operation) ||
 		binding.SessionID != plan.SessionID ||
 		(operation != "apply" && operation != "reconcile") {
@@ -249,7 +254,7 @@ func validateV2SoftwareMutationGrantBinding(
 		desired.SoftwareUpdate.TargetVersion != plan.TargetVersion ||
 		authorization.JobID != plan.JobID ||
 		authorization.HostID != plan.HostID ||
-		authorization.DesiredRevision != fence.OwnershipPolicyRevision ||
+		authorization.DesiredRevision != target.ExpectedConfigRevision ||
 		authorization.Fence != fence.OwnershipEpoch ||
 		lease.LeaseGeneration != int64(plan.LeaseGeneration) ||
 		target.TargetKind != contracts.UpdaterTargetApplication ||
@@ -264,7 +269,7 @@ func validateV2SoftwareMutationGrantBinding(
 	if policy == nil || rootTarget == nil || policy.Validate() != nil ||
 		policy.HostID != authorization.HostID ||
 		policy.SourcePolicyRevision != fence.SourcePolicyRevision ||
-		policy.ProjectionRevision != authorization.DesiredRevision ||
+		policy.ProjectionRevision != fence.OwnershipPolicyRevision ||
 		policy.PolicyRevision != fence.ExecutorPolicyRevision ||
 		rootTarget.ServiceID != target.ServiceID ||
 		rootTarget.ServiceType != string(target.ServiceType) ||

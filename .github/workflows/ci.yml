@@ -15,7 +15,7 @@ concurrency:
 env:
   GOMAXPROCS: "2"
   GOTOOLCHAIN: local
-  UPDATER_APPLICATION_SHA: 9a9af039795adbbe9db786da4980d17ef195e525
+  UPDATER_APPLICATION_SHA: ${{ github.sha }}
 
 jobs:
   source-maintainability:
@@ -35,9 +35,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "${UPDATER_APPLICATION_SHA}" = "${GITHUB_SHA}"
           python3 -m unittest discover -s scripts/ci -p 'test_artifact_assembly.py' -v
-          python3 -m unittest discover -s scripts/ci -p 'test_verify_bundle9_sources.py' -v
-          python3 scripts/ci/verify_bundle9_sources.py \
+          python3 -m unittest discover -s scripts/ci -p 'test_verify_source_integrity.py' -v
+          python3 scripts/ci/test_host_runtime_compatibility.py -v
+          python3 scripts/ci/verify_source_integrity.py \
             --repository Autostream-Updater --tree "$(git rev-parse HEAD)"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -68,6 +71,23 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/normal-go-evidence"
           go test -json -p 1 ./... |
             tee "${RUNNER_TEMP}/normal-go-evidence/go-test.json"
+      - name: Require software binding and recovery evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/software-unit-evidence/runtime" "${RUNNER_TEMP}/software-unit-evidence/cli"
+          pattern="$(paste -sd '|' scripts/ci/required-software-update-unit-tests.txt)"
+          go test -json -count=1 -p 1 ./internal/hostruntime -run "^(${pattern})$" |
+            tee "${RUNNER_TEMP}/software-unit-evidence/runtime/tests.json"
+          bash scripts/ci/verify-go-test-evidence.sh \
+            "${RUNNER_TEMP}/software-unit-evidence/runtime" internal/hostruntime \
+            scripts/ci/required-software-update-unit-tests.txt
+          pattern="$(paste -sd '|' scripts/ci/required-software-update-cli-tests.txt)"
+          go test -json -count=1 -p 1 ./cmd/autostream-updater-agent -run "^(${pattern})$" |
+            tee "${RUNNER_TEMP}/software-unit-evidence/cli/tests.json"
+          bash scripts/ci/verify-go-test-evidence.sh \
+            "${RUNNER_TEMP}/software-unit-evidence/cli" cmd/autostream-updater-agent \
+            scripts/ci/required-software-update-cli-tests.txt
       - name: Vet
         run: go vet -p 1 ./...
       - name: Build production entrypoints
@@ -137,6 +157,14 @@ jobs:
           path: ${{ runner.temp }}/normal-go-evidence/
           if-no-files-found: warn
           retention-days: 7
+      - name: Upload required software unit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: software-update-unit-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/software-unit-evidence/
+          if-no-files-found: error
+          retention-days: 14
 
   application-probes:
     name: Five-service fresh application identity probes
@@ -501,10 +529,10 @@ jobs:
           commit_epoch="$(git show -s --format=%ct "${UPDATER_APPLICATION_SHA}")"
           build_date="$(date -u -d "@${commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')"
           bash scripts/ci/build-release-bundles.sh \
-            v0.0.0 "${UPDATER_APPLICATION_SHA}" "${build_date}" \
+            v2.0.1 "${UPDATER_APPLICATION_SHA}" "${build_date}" \
             "${RUNNER_TEMP}/rollback-candidate"
           bash scripts/ci/verify-release-bundles.sh \
-            "${RUNNER_TEMP}/rollback-candidate" v0.0.0 "${UPDATER_APPLICATION_SHA}"
+            "${RUNNER_TEMP}/rollback-candidate" v2.0.1 "${UPDATER_APPLICATION_SHA}"
       - name: Upload verified rollback candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -836,6 +864,47 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  software-update-integration:
+    name: Software update with CP ${{ matrix.control_panel_sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    needs: go
+    strategy:
+      fail-fast: false
+      matrix:
+        control_panel_sha:
+          - 0315845e3af01eff6b97c6164db3ddc3109b55af
+          - 9c75188147daf8435d005651a8266ae31ce39653
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.UPDATER_APPLICATION_SHA }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Run actual fixed CP, Agent, root and normal installer oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          bash scripts/ci/run-software-update-full-chain.sh \
+            '${{ matrix.control_panel_sha }}' \
+            "${RUNNER_TEMP}/software-update-evidence"
+      - name: Upload credential-screened software update evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: software-update-evidence-${{ github.sha }}-cp-${{ matrix.control_panel_sha }}
+          path: |
+            ${{ runner.temp }}/software-update-evidence/artifacts/
+            ${{ runner.temp }}/software-update-evidence/equal/go/
+            ${{ runner.temp }}/software-update-evidence/equal/artifacts/
+            ${{ runner.temp }}/software-update-evidence/distinct/go/
+            ${{ runner.temp }}/software-update-evidence/distinct/artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
   replacement-gate:
     name: Post-removal final integration gate
     runs-on: ubuntu-24.04
@@ -849,6 +918,7 @@ jobs:
       - privileged-linux
       - installers
       - docker-fixture
+      - software-update-integration
     env:
       CONTROL_PANEL_SHA: fade8df68aacc2ce484a2ace470f12789eb83f82
       PRE_REMOVAL_UPDATER_SHA: ce27d4b7c849b75735cbbdb7720bea71b70e4bc1

@@ -36,15 +36,16 @@ const stPortChainRoot = "/run/autostream-st-port-full-chain"
 const stPortChainWorkerStateDir = "/var/lib/autostream/worker"
 
 type stPortChainCommand struct {
-	Command        string `json:"command"`
-	Mode           string `json:"mode,omitempty"`
-	LocalPort      int    `json:"local_port,omitempty"`
-	PublishedPort  int    `json:"published_port,omitempty"`
-	ContainerPort  int    `json:"container_port,omitempty"`
-	AdvertisedPort int    `json:"advertised_port,omitempty"`
-	IdempotencyKey string `json:"idempotency_key,omitempty"`
-	JobID          string `json:"job_id,omitempty"`
-	Fault          string `json:"fault,omitempty"`
+	Command         string `json:"command"`
+	Mode            string `json:"mode,omitempty"`
+	LocalPort       int    `json:"local_port,omitempty"`
+	PublishedPort   int    `json:"published_port,omitempty"`
+	ContainerPort   int    `json:"container_port,omitempty"`
+	AdvertisedPort  int    `json:"advertised_port,omitempty"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+	JobID           string `json:"job_id,omitempty"`
+	LeaseGeneration uint64 `json:"lease_generation,omitempty"`
+	Fault           string `json:"fault,omitempty"`
 }
 
 type stPortChainResponse struct {
@@ -78,6 +79,7 @@ type stPortChainResponse struct {
 	TerminalBodySHA256       string                                 `json:"terminal_body_sha256,omitempty"`
 	LastTerminalBodySHA256   string                                 `json:"last_terminal_body_sha256,omitempty"`
 	SystemUpdates            json.RawMessage                        `json:"system_updates,omitempty"`
+	SoftwareWire             json.RawMessage                        `json:"software_wire,omitempty"`
 	C11Phase                 string                                 `json:"c11_phase,omitempty"`
 	C11JobID                 string                                 `json:"c11_job_id,omitempty"`
 	C11BodySHA256            string                                 `json:"c11_body_sha256,omitempty"`
@@ -165,12 +167,12 @@ func (p *stPortChainProcess) call(t *testing.T, command stPortChainCommand) stPo
 			// The response also carries private credentials and hashes: never log it.
 			code := "other"
 			switch response.ErrorCode {
-			case "agent_operation_failed", "agent_operation_recovered", "create_rejected", "baseline_not_ready", "response_lost", "canonical_get_failed", "canonical_get_invalid", "invalid_create_intent", "create_response_invalid", "snapshot_unavailable":
+			case "agent_operation_failed", "agent_operation_recovered", "create_rejected", "baseline_not_ready", "response_lost", "canonical_get_failed", "canonical_get_invalid", "invalid_create_intent", "create_response_invalid", "snapshot_unavailable", "software_recovery_rejected":
 				code = response.ErrorCode
 			}
 			stage := "none"
 			switch response.FailureStage {
-			case "register", "policy", "recovery_policy", "heartbeat", "execute", "flush", "create":
+			case "register", "policy", "recovery_policy", "heartbeat", "execute", "flush", "create", "expiry":
 				stage = response.FailureStage
 			}
 			status := response.FailureHTTPStatus
@@ -178,6 +180,10 @@ func (p *stPortChainProcess) call(t *testing.T, command stPortChainCommand) stPo
 				status = 0
 			}
 			wireCode := stPortChainSafeWireCode(response.FailureCode)
+			switch response.FailureCode {
+			case "claim_revision_mismatch", "expired_lease_rejected":
+				wireCode = response.FailureCode
+			}
 			if wireCode == "" {
 				wireCode = "unknown"
 			}
@@ -704,6 +710,10 @@ func stPortChainCopy(t *testing.T, source, target string, mode os.FileMode) {
 }
 
 func stPortChainWriteCA(t *testing.T) {
+	stPortChainWriteNamedCA(t, []string{"localhost"})
+}
+
+func stPortChainWriteNamedCA(t *testing.T, dnsNames []string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -713,7 +723,7 @@ func stPortChainWriteCA(t *testing.T) {
 	if err != nil {
 		t.Fatal("generate isolated TLS identity")
 	}
-	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "ST-PORT isolated CP"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}}
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "ST-PORT isolated CP"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, DNSNames: append([]string(nil), dnsNames...), IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}}
 	cert, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal("issue isolated TLS certificate")

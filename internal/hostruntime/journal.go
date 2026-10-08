@@ -105,6 +105,13 @@ func OpenJournal(stateDir string) (*Journal, error) {
 	if err := j.reconcileActiveClearMarkerLocked(true); err != nil {
 		return nil, err
 	}
+	retainSoftwarePending := false
+	if len(j.data.Pending) > 0 && j.data.ActiveJob != nil && isV2SoftwareJob(*j.data.ActiveJob) {
+		if err := validateJournalSoftwarePendingForRestart(j.data); err != nil {
+			return nil, err
+		}
+		retainSoftwarePending = true
+	}
 	// Older journals may contain raw lease tokens. Discard them and immediately
 	// rewrite the protected journal without credentials; a fresh process must
 	// obtain a new recovery lease instead of reusing a short-lived bearer value.
@@ -117,11 +124,10 @@ func OpenJournal(stateDir string) (*Journal, error) {
 		j.data.ActiveJob.ReleaseToken = ""
 		scrubbed = true
 	}
-	// A restarted process cannot safely reuse an old execution lease. Drop
-	// tokenless pending reports and preserve the active cursor so the next poll
-	// obtains a fresh recovery claim and report sequence instead of becoming
-	// stuck retrying an unauthorised report forever.
-	if len(j.data.Pending) > 0 {
+	// A saved v2 software cursor retains its credential-free reports until an
+	// authenticated recovery claim atomically replaces the old lease. Other
+	// journals keep their existing restart scrubbing behavior.
+	if len(j.data.Pending) > 0 && !retainSoftwarePending {
 		j.data.Pending = nil
 		scrubbed = true
 	}
@@ -136,6 +142,11 @@ func OpenJournal(stateDir string) (*Journal, error) {
 func validateJournalData(data journalData) error {
 	if data.ActiveJob != nil && data.ActiveJob.validateOperationUnion() != nil {
 		return errors.New("update journal active job operation is invalid")
+	}
+	if data.ActiveJob != nil {
+		if err := validateJournalSoftwareJob(*data.ActiveJob); err != nil {
+			return err
+		}
 	}
 	if data.ActiveJob != nil && isPortContractV2(*data.ActiveJob) {
 		job := data.ActiveJob
@@ -160,6 +171,11 @@ func validateJournalData(data journalData) error {
 					data.ActivePortPlan.JobID != data.ActiveJob.ID ||
 					data.ActivePortPlan.Validate() != nil)) {
 			return errors.New("update journal active plan binding is invalid")
+		}
+		if data.ActivePlan != nil {
+			if err := validateJournalSoftwarePlan(*data.ActiveJob, *data.ActivePlan, false); err != nil {
+				return err
+			}
 		}
 	}
 	if data.ActiveStageFailure != nil {
@@ -211,6 +227,31 @@ func (j *Journal) SetActive(job *UpdateJob) error {
 		return errors.New("active update job operation is invalid")
 	}
 	copy := cloneV2PanelJob(*job)
+	if err := validateJournalSoftwareJob(copy); err != nil {
+		return err
+	}
+	if active := j.data.ActiveJob; active != nil {
+		if active.ID != copy.ID || active.EffectiveOperation() != copy.EffectiveOperation() {
+			return errors.New("active update job must be durably cleared before replacement")
+		}
+		if active.EffectiveOperation() == updateJobOperationSoftwareUpdate {
+			if !sameRecoveredJobIntent(*active, copy) && !journalLegacySoftwareBindingMatches(*active, copy, j.data.ActivePlan) {
+				return errors.New("active software job intent cannot be replaced")
+			}
+			if active.LeaseGeneration != copy.LeaseGeneration {
+				for _, pending := range j.data.Pending {
+					if pending.JobID == active.ID {
+						return errors.New("active software lease cannot replace pending reports")
+					}
+				}
+			}
+			if j.data.ActivePlan != nil {
+				if err := validateJournalSoftwarePlan(copy, *j.data.ActivePlan, false); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	if j.data.ActiveJob != nil && j.data.ActiveJob.ID == copy.ID && isPortContractV2(copy) {
 		if !sameRecoveredJobIntent(*j.data.ActiveJob, copy) {
 			return errors.New("active port job intent cannot be replaced")
@@ -227,6 +268,16 @@ func (j *Journal) SetActive(job *UpdateJob) error {
 	}
 	copy.LeaseToken = ""
 	copy.ReleaseToken = ""
+	nextSeq := job.ReportSequence
+	if nextSeq == 0 {
+		nextSeq = job.Sequence + 1
+	}
+	if nextSeq == 0 {
+		nextSeq = 1
+	}
+	if j.data.ActiveJob != nil && j.data.ActiveJob.LeaseGeneration == copy.LeaseGeneration && nextSeq < j.data.NextSeq {
+		nextSeq = j.data.NextSeq
+	}
 	if j.data.ActiveJob == nil ||
 		j.data.ActiveJob.ID != copy.ID ||
 		j.data.ActiveJob.EffectiveOperation() != copy.EffectiveOperation() {
@@ -236,13 +287,7 @@ func (j *Journal) SetActive(job *UpdateJob) error {
 		j.data.ActiveStageFailure = nil
 	}
 	j.data.ActiveJob = &copy
-	j.data.NextSeq = job.ReportSequence
-	if j.data.NextSeq == 0 {
-		j.data.NextSeq = job.Sequence + 1
-	}
-	if j.data.NextSeq == 0 {
-		j.data.NextSeq = 1
-	}
+	j.data.NextSeq = nextSeq
 	return j.saveLocked()
 }
 
@@ -257,6 +302,14 @@ func (j *Journal) SetActivePlan(plan MutationPlan) error {
 		j.data.ActiveJob.ID != plan.JobID ||
 		plan.Validate() != nil {
 		return errors.New("active update plan does not match the journal job")
+	}
+	if err := validateJournalSoftwarePlan(*j.data.ActiveJob, plan, true); err != nil {
+		return err
+	}
+	if stored := j.data.ActivePlan; stored != nil &&
+		(!sameJournalSoftwarePlanIntent(*stored, plan) || plan.LeaseGeneration < stored.LeaseGeneration ||
+			plan.LeaseGeneration != j.data.ActiveJob.LeaseGeneration) {
+		return errors.New("active software plan intent cannot be replaced")
 	}
 	copy := plan
 	j.data.ActivePlan = &copy

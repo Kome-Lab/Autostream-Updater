@@ -40,7 +40,7 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 		job.HostID != binding.ExecutionHostID ||
 		job.TransportMode != HostTransportPullV2 ||
 		job.OwnershipEpoch != binding.OwnershipEpoch ||
-		(!isPortContractV2(job) && job.PolicyRevision != policy.Revision) ||
+		(!isPortContractV2(job) && !isV2SoftwareJob(job) && job.PolicyRevision != policy.Revision) ||
 		job.LeaseGeneration == 0 ||
 		job.ReportSequence == 0 {
 		return errors.New("pull_v2 claim ownership or lease binding is invalid")
@@ -57,6 +57,10 @@ func validateHostPullClaim(job UpdateJob, serviceID string, binding HostAgentBin
 		target.ServiceType != job.EffectiveType() ||
 		target.DeploymentMode != job.DeploymentMode {
 		return errors.New("pull_v2 claim target does not match the active policy")
+	}
+	if isV2SoftwareJob(job) && (job.SoftwareClaimRejected || !softwareClaimIdentityMatches(job, serviceID, binding, policy) ||
+		!softwareClaimPolicyMatches(job, policy, target)) {
+		return errors.New("software claim does not match its fixed configuration and policy authority")
 	}
 	if job.EffectiveOperation() == updateJobOperationPortReconfigure {
 		port := job.PortReconfigure
@@ -139,7 +143,13 @@ func sameRecoveredJobIntent(active, recovered UpdateJob) bool {
 		return false
 	}
 	if active.EffectiveOperation() == updateJobOperationSoftwareUpdate {
-		return active.PortReconfigure == nil && recovered.PortReconfigure == nil
+		if active.SoftwareClaimRejected != recovered.SoftwareClaimRejected || active.PortReconfigure != nil || recovered.PortReconfigure != nil {
+			return false
+		}
+		if active.SoftwareUpdate == nil || recovered.SoftwareUpdate == nil {
+			return active.SoftwareUpdate == recovered.SoftwareUpdate
+		}
+		return *active.SoftwareUpdate == *recovered.SoftwareUpdate
 	}
 	return samePortMutationGrantBinding(
 		active.PortReconfigure,
@@ -148,11 +158,11 @@ func sameRecoveredJobIntent(active, recovered UpdateJob) bool {
 }
 
 // ClaimHost validates the complete fresh lease and authorization before this
-// comparison. Only a v2 port recovery may replace its transport identity; the
+// comparison. A v2 software/port recovery may replace its transport identity; the
 // caller still compares every immutable job and port-intent field separately.
 func sameRecoveredJobLease(active, recovered UpdateJob) bool {
 	if active.ProtocolVersion != 2 || recovered.ProtocolVersion != 2 ||
-		!isPortContractV2(active) || !isPortContractV2(recovered) {
+		(!isPortContractV2(active) || !isPortContractV2(recovered)) && (!isV2SoftwareJob(active) || !isV2SoftwareJob(recovered)) {
 		return active.CommandID == recovered.CommandID
 	}
 	if active.LeaseGeneration == recovered.LeaseGeneration {

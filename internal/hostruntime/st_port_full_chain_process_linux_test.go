@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	controlversion "github.com/Kome-Lab/Autostream-Updater/internal/version"
 )
 
 // This entry is a separate OS process. The fixture controls cadence only:
@@ -45,11 +47,18 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 		t.Fatal("canonical Agent identity is unavailable")
 	}
 	portClient := &stPortChainCountingClient{LocalExecutorClient: LocalExecutorClient{SocketPath: LocalExecutorSocketPath}}
-	agent, err := NewHostPullAgent(identity, HostPullAgentOptions{
+	options := HostPullAgentOptions{
 		PortExecutor: portClient,
 		AgentVersion: "v2.0.0",
 		Logf:         func(string, ...any) {},
-	})
+	}
+	var softwareClient *softwareUpdateChainCountingClient
+	if os.Getenv("AUTOSTREAM_SOFTWARE_UPDATE_FULL_CHAIN") == "1" {
+		softwareClient = &softwareUpdateChainCountingClient{LocalExecutorClient: LocalExecutorClient{SocketPath: LocalExecutorSocketPath}}
+		options.Executor = softwareClient
+		options.AgentVersion = controlversion.Current()
+	}
+	agent, err := NewHostPullAgent(identity, options)
 	if err != nil {
 		t.Fatal("production Agent initialization failed")
 	}
@@ -89,7 +98,7 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 		targetVerified := false
 		var baselineObservation *stPortChainBaselineObservation
 		switch command.Command {
-		case "poll", "observe":
+		case "poll", "observe", "expire_grant":
 			stage = "register"
 			binding, registerErr := agent.ControlPlane.RegisterHostAgent(stepCtx, identity, agent.capabilities(HostAgentBinding{}, nil, nil, false))
 			operationErr = registerErr
@@ -107,12 +116,20 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 					if operationErr == nil {
 						observations, failed := agent.observe(stepCtx, selected)
 						baselineObservation = stPortChainCaptureBaseline(observations, failed)
-						targetVerified = !failed && len(observations) == 1 && observations[0].ServiceID == "worker-smoke" && observations[0].Availability == TargetAvailabilityAvailable && observations[0].PortContractVersion == 2 && observations[0].PolicyTransitionVersion == 1
+						expectedTarget := "worker-smoke"
+						if softwareClient != nil {
+							expectedTarget = "control-panel"
+						}
+						targetVerified = !failed && len(observations) == 1 && observations[0].ServiceID == expectedTarget && observations[0].Availability == TargetAvailabilityAvailable && observations[0].PortContractVersion == 2 && observations[0].PolicyTransitionVersion == 1
 						stage = "heartbeat"
 						operationErr = agent.ControlPlane.HeartbeatHostAgent(stepCtx, identity, "online", agent.capabilities(binding, &selected, observations, failed))
 						if operationErr == nil && command.Command == "poll" {
 							stage = "execute"
 							operationErr = agent.executeOnce(stepCtx, binding, selected)
+						}
+						if operationErr == nil && command.Command == "expire_grant" && softwareClient != nil {
+							stage = "expiry"
+							operationErr = softwareUpdateChainProbeExpiredGrant(stepCtx, agent, panel, binding, selected)
 						}
 					}
 				}
@@ -126,6 +143,12 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 				operationErr = agent.flushExecutionReports(stepCtx, panel)
 			}
 		case "metrics":
+		case "arm_socket_fault":
+			if softwareClient == nil {
+				operationErr = errors.New("software socket fixture is not selected")
+			} else {
+				operationErr = softwareClient.arm(command.Fault)
+			}
 		case "stop":
 			stop()
 			return
@@ -134,6 +157,11 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 		}
 		stop()
 		response := stPortChainResponse{OK: operationErr == nil, RootCalls: int(portClient.calls.Load()), TargetVerified: targetVerified, BaselineObservation: baselineObservation, PanelFailures: observedPanel.failures()}
+		if softwareClient != nil {
+			response.RootCalls += int(softwareClient.stages.Load() + softwareClient.applies.Load() + softwareClient.reconciles.Load())
+			response.SoftwareWire, _ = json.Marshal(softwareClient.snapshot())
+			response.ActivePlanPresent = agent.Journal.ActivePlan() != nil
+		}
 		response.FirstRootFailure, response.LastRootFailure = portClient.failures()
 		if operationErr == nil && len(response.PanelFailures) != 0 {
 			response.ErrorCode = "agent_operation_recovered"
@@ -143,11 +171,19 @@ func TestSTPortFullChainRuntimeProcess(t *testing.T) {
 			response.ErrorCode = "agent_operation_failed"
 			response.FailureStage = stage
 			response.FailureClass = stPortChainClassifyError(operationErr)
+			if softwareClient != nil && operationErr.Error() == "pull_v2 claim ownership or lease binding is invalid" {
+				response.FailureCode = "claim_revision_mismatch"
+			}
 			var panelErr *PanelHTTPError
 			if errors.As(operationErr, &panelErr) && panelErr.Status >= 100 && panelErr.Status <= 599 {
 				response.FailureHTTPStatus = panelErr.Status
 			}
-			response.ActivePlanPresent = agent.Journal.ActivePortPlan() != nil
+			if softwareClient == nil {
+				response.ActivePlanPresent = agent.Journal.ActivePortPlan() != nil
+			}
+			if command.Command == "expire_grant" && operationErr.Error() == "v2 updater mutation grant operation is invalid" {
+				response.FailureCode = "expired_lease_rejected"
+			}
 		}
 		if active := agent.Journal.Active(); active != nil {
 			response.ActiveJobID = active.ID

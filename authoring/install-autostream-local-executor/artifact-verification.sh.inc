@@ -1,3 +1,4 @@
+readonly MINIMUM_PANEL_VERSION="v2.0.0"
 
 validate_root_owned_release_source() {
   local source=$1
@@ -181,6 +182,7 @@ verify_release_checksum_inventory "${EXTRACTED_ROOT}"
 
 jq -e \
   --arg version "${VERSION}" \
+  --arg minimum_panel_version "${MINIMUM_PANEL_VERSION}" \
   --arg arch "${ARCH}" \
   --arg archive_name "${ARCHIVE_NAME}" \
   --arg artifact_id "${ARTIFACT_ID}" \
@@ -206,7 +208,9 @@ jq -e \
        ["database_schema", "minimum_agent_version", "minimum_panel_version",
         "rollback_compatible"]) and
      (.minimum_agent_version == null) and
-     (.minimum_panel_version == $version) and
+     (.minimum_panel_version == $minimum_panel_version) and
+     (($version | ltrimstr("v") | split(".") | map(tonumber)) >=
+      ($minimum_panel_version | ltrimstr("v") | split(".") | map(tonumber))) and
      (.rollback_compatible == true) and
      (.database_schema == "none"))' \
   "${EXTRACTED_ROOT}/${ARTIFACT_MANIFEST_NAME}" >/dev/null || \

@@ -28,6 +28,9 @@ func inspectManualHostUpgradeDurableBlockers(
 	if err := validateManualHostUpgradeStateRoots(rt); err != nil {
 		return err
 	}
+	if err := rejectManualHostUpgradeSoftwareClaimRecovery(rt, policy); err != nil {
+		return err
+	}
 	current, err := rt.selfUpdate.loadPersistedState()
 	if errors.Is(err, os.ErrNotExist) && allowMissingState &&
 		state.Phase == HostSelfUpdatePhaseStable {
@@ -102,6 +105,23 @@ func inspectManualHostUpgradeDurableBlockers(
 	}
 	if err := rejectManualHostUpgradeGrant(rt); err != nil {
 		return err
+	}
+	return nil
+}
+
+func rejectManualHostUpgradeSoftwareClaimRecovery(rt manualHostUpgradeRuntime, policy LocalExecutorPolicy) error {
+	intent, exists, err := loadSoftwareClaimRecoveryIntent(rt.paths.hostStateRoot, func(info os.FileInfo) bool {
+		if rt.allowTestPaths {
+			return managedSnapshotOwnedByCurrentUser(info)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		return ok && stat.Uid == policy.AgentUID && stat.Gid == policy.AgentGID
+	})
+	if err != nil {
+		return errors.New("software claim recovery durable intent is unsafe")
+	}
+	if exists && !intent.Settled {
+		return errors.New("software claim recovery must settle before a manual runtime upgrade")
 	}
 	return nil
 }

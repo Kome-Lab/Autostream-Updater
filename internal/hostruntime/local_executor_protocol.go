@@ -38,6 +38,7 @@ type LocalExecutorRequest struct {
 	HostSelfUpdateGeneration string                                 `json:"host_self_update_generation,omitempty"`
 	HostSelfUpdateGrant      *HostSelfUpdateGrantAuthorization      `json:"host_self_update_grant,omitempty"`
 	RuntimeCredential        *RuntimeCredentialMutation             `json:"runtime_credential,omitempty"`
+	SoftwareClaimRecovery    *SoftwareClaimRecoveryInspection       `json:"software_claim_recovery,omitempty"`
 	SourcePolicyRevision     int64                                  `json:"source_policy_revision,omitempty"`
 	OwnershipEpoch           int64                                  `json:"ownership_epoch,omitempty"`
 	OwnershipPolicyRevision  int64                                  `json:"ownership_policy_revision,omitempty"`
@@ -50,11 +51,27 @@ func (r LocalExecutorRequest) Validate() error {
 	if r.ServiceID != strings.TrimSpace(r.ServiceID) || !identifierPattern.MatchString(r.ServiceID) {
 		return errors.New("local executor service_id is invalid")
 	}
+	if r.Operation != localExecutorSoftwareClaimRecoveryOperation && r.SoftwareClaimRecovery != nil {
+		return errors.New("local executor operation must not include a software claim recovery inspection")
+	}
 	if !strings.HasPrefix(r.Operation, "host_self_update_") &&
 		r.HostSelfUpdateGrant != nil {
 		return errors.New("local executor operation must not include a host self-update grant")
 	}
 	switch r.Operation {
+	case localExecutorSoftwareClaimRecoveryOperation:
+		if r.Version != LocalExecutorMutationProtocolVersion || r.SoftwareClaimRecovery == nil ||
+			r.SoftwareClaimRecovery.Request.Validate() != nil ||
+			r.ServiceID != r.SoftwareClaimRecovery.Request.TargetID ||
+			!digestPattern.MatchString(r.SoftwareClaimRecovery.ExecutorPolicySHA256) ||
+			r.SourcePolicyRevision < 1 || r.OwnershipPolicyRevision < 1 || r.ExecutorPolicyRevision < 1 ||
+			r.OwnershipEpoch != r.SoftwareClaimRecovery.Request.OwnershipEpoch ||
+			r.Plan != nil || r.PortPlan != nil || r.HostSelfUpdate != nil || r.HostSelfUpdateProof != nil ||
+			r.HostSelfUpdateGeneration != "" || r.HostSelfUpdateGrant != nil || r.RuntimeCredential != nil ||
+			!r.MutationGrant.Empty() || r.MutationGrantV2Binding != nil {
+			return errors.New("local executor software claim recovery inspection is invalid")
+		}
+		return nil
 	case "probe":
 		if r.Version != LocalExecutorProtocolVersion ||
 			r.Plan != nil ||
@@ -353,16 +370,17 @@ type LocalExecutorFailure struct {
 }
 
 type LocalExecutorResponse struct {
-	Version           int                           `json:"version"`
-	Probe             *LocalExecutorProbe           `json:"probe,omitempty"`
-	Stage             *MutationStageResult          `json:"stage,omitempty"`
-	Result            *ApplyResult                  `json:"result,omitempty"`
-	PortResult        *SystemdPortReconfigureResult `json:"port_result,omitempty"`
-	HostSelfUpdate    *HostSelfUpdateRuntimeStatus  `json:"host_self_update,omitempty"`
-	RuntimeCredential *RuntimeCredentialStatus      `json:"runtime_credential,omitempty"`
-	SessionID         string                        `json:"session_id,omitempty"`
-	PlanSHA256        string                        `json:"plan_sha256,omitempty"`
-	Error             *LocalExecutorFailure         `json:"error,omitempty"`
+	Version               int                           `json:"version"`
+	Probe                 *LocalExecutorProbe           `json:"probe,omitempty"`
+	Stage                 *MutationStageResult          `json:"stage,omitempty"`
+	Result                *ApplyResult                  `json:"result,omitempty"`
+	PortResult            *SystemdPortReconfigureResult `json:"port_result,omitempty"`
+	HostSelfUpdate        *HostSelfUpdateRuntimeStatus  `json:"host_self_update,omitempty"`
+	RuntimeCredential     *RuntimeCredentialStatus      `json:"runtime_credential,omitempty"`
+	SoftwareClaimRecovery *SoftwareClaimRecoveryProof   `json:"software_claim_recovery,omitempty"`
+	SessionID             string                        `json:"session_id,omitempty"`
+	PlanSHA256            string                        `json:"plan_sha256,omitempty"`
+	Error                 *LocalExecutorFailure         `json:"error,omitempty"`
 }
 
 func (r LocalExecutorResponse) Validate() error {
@@ -388,11 +406,20 @@ func (r LocalExecutorResponse) Validate() error {
 	if r.RuntimeCredential != nil {
 		outcomes++
 	}
+	if r.SoftwareClaimRecovery != nil {
+		outcomes++
+	}
 	if r.Error != nil {
 		outcomes++
 	}
 	if outcomes != 1 {
 		return errors.New("local executor response must contain exactly one outcome")
+	}
+	if r.SoftwareClaimRecovery != nil {
+		if r.Version != LocalExecutorMutationProtocolVersion || r.SessionID != "" || r.PlanSHA256 != "" {
+			return errors.New("local executor software claim recovery response binding is invalid")
+		}
+		return r.SoftwareClaimRecovery.Validate()
 	}
 	if r.Probe != nil {
 		if r.Version != LocalExecutorProtocolVersion || r.SessionID != "" || r.PlanSHA256 != "" {
@@ -461,6 +488,7 @@ func EncodeLocalExecutorRequest(w io.Writer, request LocalExecutorRequest) error
 		HostSelfUpdateGeneration: request.HostSelfUpdateGeneration,
 		HostSelfUpdateGrant:      hostSelfUpdateGrantAuthorizationToWire(request.HostSelfUpdateGrant),
 		RuntimeCredential:        runtimeCredentialMutationToWire(request.RuntimeCredential),
+		SoftwareClaimRecovery:    request.SoftwareClaimRecovery,
 		SourcePolicyRevision:     request.SourcePolicyRevision,
 		OwnershipEpoch:           request.OwnershipEpoch,
 		OwnershipPolicyRevision:  request.OwnershipPolicyRevision,
@@ -484,6 +512,7 @@ func DecodeLocalExecutorRequest(r io.Reader) (LocalExecutorRequest, error) {
 		HostSelfUpdateGeneration: wire.HostSelfUpdateGeneration,
 		HostSelfUpdateGrant:      hostSelfUpdateGrantAuthorizationFromWire(wire.HostSelfUpdateGrant),
 		RuntimeCredential:        runtimeCredentialMutationFromWire(wire.RuntimeCredential),
+		SoftwareClaimRecovery:    wire.SoftwareClaimRecovery,
 		SourcePolicyRevision:     wire.SourcePolicyRevision,
 		OwnershipEpoch:           wire.OwnershipEpoch,
 		OwnershipPolicyRevision:  wire.OwnershipPolicyRevision,
@@ -508,6 +537,7 @@ type localExecutorRequestWire struct {
 	HostSelfUpdateGeneration string                                 `json:"host_self_update_generation,omitempty"`
 	HostSelfUpdateGrant      *hostSelfUpdateGrantAuthorizationWire  `json:"host_self_update_grant,omitempty"`
 	RuntimeCredential        *runtimeCredentialMutationWire         `json:"runtime_credential,omitempty"`
+	SoftwareClaimRecovery    *SoftwareClaimRecoveryInspection       `json:"software_claim_recovery,omitempty"`
 	SourcePolicyRevision     int64                                  `json:"source_policy_revision,omitempty"`
 	OwnershipEpoch           int64                                  `json:"ownership_epoch,omitempty"`
 	OwnershipPolicyRevision  int64                                  `json:"ownership_policy_revision,omitempty"`

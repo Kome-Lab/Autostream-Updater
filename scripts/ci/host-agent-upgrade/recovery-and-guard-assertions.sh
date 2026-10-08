@@ -396,9 +396,9 @@ assert_committed_runtime_pair_active() {
     printf '%s\n' 'the committed Host runtime pair is not the exact verified candidate bytes' >&2
     exit 1
   }
-  [[ $("${agent}" --version) == $'autostream-host-agent v1.9.11\ncommit: 0123456789abcdef0123456789abcdef01234567\nbuild_date: 2026-07-31T00:00:00Z' &&
-    $("${executor}" --version) == $'autostream-local-executor v1.9.11\ncommit: 0123456789abcdef0123456789abcdef01234567\nbuild_date: 2026-07-31T00:00:00Z\nmutation_protocol: 2\nrecovery_protocol: 2' ]] || {
-    printf '%s\n' 'the committed Host runtime pair identity is not v1.9.11' >&2
+  [[ $("${agent}" --version) == $'autostream-host-agent v2.0.1\ncommit: 0123456789abcdef0123456789abcdef01234567\nbuild_date: 2026-07-31T00:00:00Z' &&
+    $("${executor}" --version) == $'autostream-local-executor v2.0.1\ncommit: 0123456789abcdef0123456789abcdef01234567\nbuild_date: 2026-07-31T00:00:00Z\nmutation_protocol: 2\nrecovery_protocol: 2' ]] || {
+    printf '%s\n' 'the committed Host runtime fixture pair identity is not v2.0.1' >&2
     exit 1
   }
   agent_pid="$(/usr/bin/systemctl show \

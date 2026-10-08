@@ -57,6 +57,11 @@ func (a *HostPullAgent) Run(ctx context.Context) error {
 	if a == nil || !a.currentIdentity().IsManagedBootstrap() || a.ControlPlane == nil || a.OpenJournal == nil {
 		return errors.New("host pull agent dependencies are incomplete")
 	}
+	unlock, err := a.lockSoftwareClaimRecoveryLifecycle(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	journal, err := a.OpenJournal(a.StateDir)
 	if err != nil {
 		return fmt.Errorf("open host pull agent journal: %w", err)

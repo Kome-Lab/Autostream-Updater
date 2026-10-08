@@ -7,7 +7,7 @@ unset \
   AUTOSTREAM_RUNTIME_FIXTURE_AGENT_VERSION \
   AUTOSTREAM_RUNTIME_FIXTURE_EXECUTOR_VERSION \
   AUTOSTREAM_RUNTIME_FIXTURE_RECOVERY_PROTOCOL
-readonly VERSION=v1.9.11
+readonly VERSION=v2.0.1
 readonly BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567
 readonly BUILD_DATE=2026-07-31T00:00:00Z
 case "$(uname -m)" in
@@ -186,7 +186,7 @@ case "${1:-}" in
   --version)
     [[ $# -eq 1 ]] || exit 90
     printf '%s\n' \
-      'autostream-host-agent v1.9.11' \
+      'autostream-host-agent v2.0.1' \
       'commit: 0123456789abcdef0123456789abcdef01234567' \
       'build_date: 2026-07-31T00:00:00Z'
     ;;
@@ -302,7 +302,7 @@ unset AUTOSTREAM_FIXTURE_EXECUTABLE
 case "${1:-}" in
   --version)
     printf '%s\n' \
-      'autostream-local-executor v1.9.11' \
+      'autostream-local-executor v2.0.1' \
       'commit: 0123456789abcdef0123456789abcdef01234567' \
       'build_date: 2026-07-31T00:00:00Z' \
       'mutation_protocol: 2' \
@@ -488,7 +488,7 @@ cat > "${PACKAGE_ROOT}/artifact-manifest.json" <<EOF
   },
   "compatibility": {
     "minimum_agent_version": null,
-    "minimum_panel_version": "${VERSION}",
+    "minimum_panel_version": "v2.0.0",
     "rollback_compatible": true,
     "database_schema": "none"
   }

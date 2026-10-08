@@ -290,6 +290,9 @@ func serveLocalExecutorConnection(
 		response = handleLocalExecutorRequestWithSystemdState(
 			requestContext, policy, request, verifier, httpClient, systemdState,
 		)
+	} else if request.Operation == localExecutorSoftwareClaimRecoveryOperation {
+		response = handleLocalExecutorSoftwareClaimRecovery(requestContext, policy, request,
+			defaultSoftwareClaimRecoveryRootRuntime(httpClient))
 	} else {
 		rt := defaultExecutorMutationRuntime()
 		rt.httpClient = httpClient
@@ -313,6 +316,8 @@ func localExecutorRequestContext(
 		requestTimeout = localExecutorRequestTimeout
 	case localExecutorHostSelfUpdateWatchdogOperation:
 		requestTimeout = localExecutorHostSelfUpdateWatchdogClientTimeout
+	case localExecutorSoftwareClaimRecoveryOperation:
+		requestTimeout = localExecutorHostSelfUpdateTimeout
 	case "host_self_update_status",
 		"host_self_update_activate",
 		"host_self_update_reconcile":

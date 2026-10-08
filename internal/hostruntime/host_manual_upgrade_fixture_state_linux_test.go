@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Kome-Lab/Autostream-Updater/internal/version"
 )
 
 func configureManualHostUpgradeLegacyRecoveryUnit(
@@ -121,7 +123,7 @@ func configureManualHostUpgradeDowngradeArtifact(
 	manifest.Archive.Root = "autostream-host-agent_" +
 		manualHostUpgradeTestOldVersion + "_linux_amd64"
 	manifest.Archive.Name = manifest.Archive.Root + ".tar.gz"
-	manifest.Compatibility.MinimumPanelVersion = manualHostUpgradeTestOldVersion
+	manifest.Compatibility.MinimumPanelVersion = version.MinimumControlPanelVersion
 	payload, err = json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)

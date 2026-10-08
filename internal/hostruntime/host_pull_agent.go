@@ -70,6 +70,7 @@ type HostPullAgentOptions struct {
 	HeartbeatInterval         time.Duration
 	ObserveTargets            HostTargetObserver
 	Executor                  LocalExecutorMutationClient
+	ClaimRecoveryInspector    SoftwareClaimRecoveryInspector
 	PortExecutor              LocalExecutorPortMutationClient
 	RuntimeCredentialExecutor LocalExecutorRuntimeCredentialClient
 	RuntimeTokenRotationPanel HostRuntimeTokenRotationControlPlane
@@ -100,6 +101,7 @@ type HostPullAgent struct {
 	HeartbeatInterval          time.Duration
 	ObserveTargets             HostTargetObserver
 	Executor                   LocalExecutorMutationClient
+	ClaimRecoveryInspector     SoftwareClaimRecoveryInspector
 	PortExecutor               LocalExecutorPortMutationClient
 	RuntimeCredentialExecutor  LocalExecutorRuntimeCredentialClient
 	RuntimeTokenRotationPanel  HostRuntimeTokenRotationControlPlane
@@ -235,6 +237,7 @@ func NewHostPullAgent(bootstrap Config, options HostPullAgentOptions) (*HostPull
 		HeartbeatInterval:         heartbeatInterval,
 		ObserveTargets:            observeTargets,
 		Executor:                  executor,
+		ClaimRecoveryInspector:    options.ClaimRecoveryInspector,
 		PortExecutor:              portExecutor,
 		RuntimeCredentialExecutor: runtimeCredentialExecutor,
 		RuntimeTokenRotationPanel: runtimeTokenRotationPanel,

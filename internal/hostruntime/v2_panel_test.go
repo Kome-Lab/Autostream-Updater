@@ -122,6 +122,7 @@ func TestV2PanelClientMapsLeaseReportsAndMutationGrant(t *testing.T) {
 	if err := client.Report(context.Background(), job.ID, progress); err != nil {
 		t.Fatalf("report progress: %v", err)
 	}
+	bindV2PanelSoftwareFixture(t, client, job)
 	grant, err := client.IssueMutationGrant(context.Background(), job.ID, MutationGrantRequest{
 		ServiceID:  "updater-01",
 		LeaseToken: "",
@@ -369,6 +370,7 @@ func TestV2PanelClientRejectsChangedReportAndGrantBinding(t *testing.T) {
 	if reports != 1 {
 		t.Fatalf("report requests = %d", reports)
 	}
+	bindV2PanelSoftwareFixture(t, client, job)
 	if _, err := client.IssueMutationGrant(context.Background(), job.ID, MutationGrantRequest{
 		ServiceID:  "updater-01",
 		LeaseToken: "wrong-lease",
@@ -386,8 +388,8 @@ func TestV2PanelClientRejectsChangedReportAndGrantBinding(t *testing.T) {
 			OwnershipEpoch:  9,
 			PolicyRevision:  7,
 		},
-	}); err == nil {
-		t.Fatal("mutation grant with a changed lease binding was accepted")
+	}); err == nil || !strings.Contains(err.Error(), "lease") {
+		t.Fatal("mutation grant did not reject the changed lease binding")
 	}
 }
 
@@ -418,7 +420,25 @@ func v2PanelSoftwareLease(t *testing.T, now time.Time) contracts.UpdaterLeaseEnv
 		DeploymentMode:         contracts.SystemUpdateDeploymentSystemd,
 		ExpectedConfigRevision: 4,
 	}
-	return v2PanelLease(t, now, desired, target, contracts.UpdaterCapabilityUpdate)
+	lease := v2PanelLease(t, now, desired, target, contracts.UpdaterCapabilityUpdate)
+	lease.Command.MutationAuthorization.DesiredRevision = target.ExpectedConfigRevision
+	hostPullRefreshV2CommandDigest(t, &lease.Command)
+	return lease
+}
+
+func bindV2PanelSoftwareFixture(t *testing.T, client *V2PanelClient, job *UpdateJob) {
+	t.Helper()
+	if !isV2SoftwareJob(*job) || job.SoftwareUpdate == nil {
+		t.Fatal("software fixture lease is missing")
+	}
+	job.PolicyRevision = 7
+	job.SoftwareUpdate.SourcePolicyRevision = 6
+	job.SoftwareUpdate.ProjectionRevision = 7
+	job.SoftwareUpdate.ExecutorPolicyRevision = 8
+	job.SoftwareUpdate.ExecutorPolicySHA256 = "sha256:" + strings.Repeat("3", 64)
+	if err := client.BindSoftwareUpdateClaim(*job); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func v2PanelPortLease(t *testing.T, now time.Time) contracts.UpdaterLeaseEnvelope {

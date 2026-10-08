@@ -255,9 +255,11 @@ func mapV2LeaseToUpdateJob(
 
 	switch desired := command.DesiredOperation; desired.Operation {
 	case contracts.UpdaterDesiredSoftwareUpdate:
-		if desired.SoftwareUpdate == nil {
+		if desired.SoftwareUpdate == nil || authorization.DesiredRevision != target.ExpectedConfigRevision {
 			return UpdateJob{}, errors.New("v2 software update intent is unavailable")
 		}
+		job.PolicyRevision = 0 // Software lease carries C, never host projection P.
+		job.SoftwareUpdate = &SoftwareUpdateJobBinding{ConfigRevision: authorization.DesiredRevision, CommandSHA256: command.CanonicalPayloadDigest}
 		job.CurrentVersion = desired.SoftwareUpdate.ExpectedCurrentVersion
 		job.TargetVersion = desired.SoftwareUpdate.TargetVersion
 	case contracts.UpdaterDesiredPortReconfigure:
@@ -600,6 +602,11 @@ func mapV2MutationGrantBinding(
 	authorization := lease.Command.MutationAuthorization
 	target := authorization.Target
 	operation := contracts.UpdaterMutationOperation(request.Operation)
+	if isV2SoftwareJob(job) && (job.SoftwareUpdate == nil || job.SoftwareUpdate.Validate() != nil ||
+		job.PolicyRevision != job.SoftwareUpdate.ProjectionRevision || authorization.DesiredRevision != job.SoftwareUpdate.ConfigRevision ||
+		target.ExpectedConfigRevision != job.SoftwareUpdate.ConfigRevision || lease.Command.CanonicalPayloadDigest != job.SoftwareUpdate.CommandSHA256) {
+		return contracts.UpdaterMutationGrantBinding{}, errors.New("software mutation grant lacks its fixed policy authority")
+	}
 	expectedJobOperation := ""
 	if lease.Command.DesiredOperation.Operation == contracts.UpdaterDesiredPortReconfigure {
 		expectedJobOperation = updateJobOperationPortReconfigure
@@ -697,6 +704,10 @@ func v2PortGrantMatchesDesired(
 
 func cloneV2PanelJob(job UpdateJob) UpdateJob {
 	copy := job
+	if job.SoftwareUpdate != nil {
+		binding := *job.SoftwareUpdate
+		copy.SoftwareUpdate = &binding
+	}
 	if job.PortReconfigure != nil {
 		copy.PortReconfigure = clonePortMutationBinding(job.PortReconfigure)
 	}

@@ -26,6 +26,9 @@ func (a *HostPullAgent) processExecutionJob(
 	if job.RecoveryRequired {
 		plan, err := a.recoverExecutionPlan(policy, job)
 		if err != nil {
+			if isV2SoftwareJob(job) {
+				return errors.New("software recovery requires its original plan or explicit inspected terminal-only recovery")
+			}
 			return terminal("failed", "recovery_plan_unavailable", "interrupted job has no trusted durable plan to reconcile", ApplyResult{})
 		}
 		if _, err := a.emitExecutionReport(ctx, panel, job, "reconciling", "", "inspecting interrupted host update state without reapplying", 99, "", ""); err != nil {
@@ -70,12 +73,7 @@ func (a *HostPullAgent) processExecutionJob(
 	if _, err := a.emitExecutionReport(ctx, panel, job, "staging", "", "root executor is staging the immutable release", 55, normalizeDigest(plan.ArtifactDigest), ""); err != nil {
 		return err
 	}
-	fence := LocalExecutorMutationFence{
-		SourcePolicyRevision:    policy.SourcePolicyRevision,
-		OwnershipEpoch:          binding.OwnershipEpoch,
-		OwnershipPolicyRevision: job.PolicyRevision,
-		ExecutorPolicyRevision:  policy.LocalExecutorPolicyRevision,
-	}
+	fence := softwareClaimFence(job, binding, policy)
 	if _, err := a.Executor.Stage(ctx, plan, fence); err != nil {
 		if failure, ok := stageFailureFromLocalExecutorError(job.ID, err); ok {
 			if journalErr := a.Journal.SetActiveStageFailure(failure); journalErr != nil {

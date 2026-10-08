@@ -28,6 +28,9 @@ readonly REPOSITORY_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pw
   printf 'release output already exists: %s\n' "${OUTPUT_DIRECTORY}" >&2
   exit 1
 }
+MINIMUM_PANEL_VERSION="$(python3 "${REPOSITORY_ROOT}/scripts/ci/host_runtime_compatibility.py" \
+  --root "${REPOSITORY_ROOT}" --source-version "${VERSION}")"
+readonly MINIMUM_PANEL_VERSION
 
 staging=$(mktemp -d)
 trap 'rm -rf -- "${staging}"' EXIT
@@ -78,6 +81,7 @@ for arch in amd64 arm64; do
 
   jq -n \
     --arg version "${VERSION}" \
+    --arg minimum_panel_version "${MINIMUM_PANEL_VERSION}" \
     --arg commit "${COMMIT}" \
     --arg build_date "${BUILD_DATE}" \
     --arg arch "${arch}" \
@@ -93,7 +97,7 @@ for arch in amd64 arm64; do
       archive: {name: $archive_name, root: $artifact_root},
       compatibility: {
         minimum_agent_version: null,
-        minimum_panel_version: $version,
+        minimum_panel_version: $minimum_panel_version,
         rollback_compatible: true,
         database_schema: "none"
       }
@@ -127,6 +131,7 @@ amd64_size=$(stat -c %s "${OUTPUT_DIRECTORY}/${amd64_archive}")
 arm64_size=$(stat -c %s "${OUTPUT_DIRECTORY}/${arm64_archive}")
 jq -n \
   --arg version "${VERSION}" \
+  --arg minimum_panel_version "${MINIMUM_PANEL_VERSION}" \
   --arg commit "${COMMIT}" \
   --arg published_at "${BUILD_DATE}" \
   --arg amd64_name "${amd64_archive}" \
@@ -153,7 +158,7 @@ jq -n \
     local_executor_mutation_enabled: true,
     local_executor_mutation_requires_root_policy: true,
     recovery_protocol_version: 2,
-    minimum_panel_version: $version,
+    minimum_panel_version: $minimum_panel_version,
     artifacts: [
       {os: "linux", arch: "amd64", name: $amd64_name, size: $amd64_size, sha256: $amd64_sha},
       {os: "linux", arch: "arm64", name: $arm64_name, size: $arm64_size, sha256: $arm64_sha}

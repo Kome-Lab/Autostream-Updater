@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Kome-Lab/Autostream-Updater/internal/version"
 )
 
 type manualHostArtifactManifest struct {
@@ -95,6 +97,7 @@ func inspectManualHostUpgradeArtifact(
 	expectedArchive := expectedRoot + ".tar.gz"
 	if manifest.SchemaVersion != 1 || manifest.Component != "host-agent" ||
 		!versionPattern.MatchString(manifest.SourceVersion) ||
+		strings.Contains(manifest.SourceVersion, "-") ||
 		!updaterReleaseCommitPattern.MatchString(manifest.Commit) ||
 		manifest.Platform.OS != "linux" ||
 		(manifest.Platform.Arch != "amd64" && manifest.Platform.Arch != "arm64") ||
@@ -103,7 +106,8 @@ func inspectManualHostUpgradeArtifact(
 		manifest.Archive.Root != expectedRoot ||
 		(!rt.allowTestPaths && filepath.Base(root) != expectedRoot) ||
 		manifest.Compatibility.MinimumAgentVersion != nil ||
-		manifest.Compatibility.MinimumPanelVersion != manifest.SourceVersion ||
+		manifest.Compatibility.MinimumPanelVersion != version.MinimumControlPanelVersion ||
+		!updaterReleaseSemverAtLeast(manifest.SourceVersion, version.MinimumControlPanelVersion) ||
 		!manifest.Compatibility.RollbackCompatible ||
 		manifest.Compatibility.DatabaseSchema != "none" {
 		return manualHostUpgradeArtifact{}, errors.New(

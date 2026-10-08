@@ -29,6 +29,8 @@ type UpdateJob struct {
 	TransportMode           string                              `json:"transport_mode,omitempty"`
 	OwnershipEpoch          int64                               `json:"ownership_epoch,omitempty"`
 	PolicyRevision          int64                               `json:"policy_revision,omitempty"`
+	SoftwareUpdate          *SoftwareUpdateJobBinding           `json:"software_update_binding,omitempty"`
+	SoftwareClaimRejected   bool                                `json:"software_claim_rejected,omitempty"`
 	TargetID                string                              `json:"target_id"`
 	TargetType              string                              `json:"target_type,omitempty"`
 	ServiceType             string                              `json:"service_type"`
@@ -71,6 +73,9 @@ func (j UpdateJob) EffectiveOperation() string {
 }
 
 func (j UpdateJob) validateOperationUnion() error {
+	if j.EffectiveOperation() != updateJobOperationSoftwareUpdate && (j.SoftwareUpdate != nil || j.SoftwareClaimRejected) {
+		return errors.New("non-software job unexpectedly contains a software authority")
+	}
 	switch j.EffectiveOperation() {
 	case updateJobOperationSoftwareUpdate:
 		if j.PortReconfigure != nil {

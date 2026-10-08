@@ -26,6 +26,13 @@ unit validation gates. Required integration jobs add machine-readable evidence:
 - the rollback-candidate job builds and fully verifies the amd64 and arm64
   release shape from that same Updater SHA, uploads it only as a short-lived
   artifact, and never tags, publishes, releases, or deploys it.
+- the software-update integration matrix uses the fixed v2.0.0 and v2.0.1
+  Control Panel sources with real MariaDB, Agent/root processes, local IPC and
+  the normal version-matched installer. Each source runs equal and distinct
+  configuration/policy revision tuples, claim/progress/Stage/apply response
+  loss, exact-generation recovery, and terminal acceptance in isolated
+  namespaces. Its checked application and immutable release provider are
+  synthetic fixtures, so this does not claim production deployment.
 
 Required Go test names live in `scripts/ci/required-*.txt`. The evidence
 verifier first requires exactly one matching source declaration and then
@@ -33,6 +40,13 @@ requires exactly one `run` and one `pass` event, with zero `skip` and zero
 `fail` events. Shell fixture names are bound to real scripts by
 `scripts/ci/required-shell-tests.tsv` and use the same run/pass/fail-closed
 model. A missing, renamed, skipped, or unexecuted required test cannot pass.
+
+The compiled `internal/version/release_compatibility.go` authority declares the
+minimum Control Panel version independently of the Updater release version.
+Installer fragments and inner/outer manifests must match that exact floor;
+protocol-major, artifact version/commit, digest and provenance checks still
+apply. Raising the Updater patch version does not implicitly raise the Panel
+floor. Build-only fixture versions do not select or publish a release.
 
 ## Stable release model
 

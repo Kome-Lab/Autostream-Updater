@@ -154,12 +154,7 @@ func (a *HostPullAgent) invokeExecutionMutation(
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	fence := LocalExecutorMutationFence{
-		SourcePolicyRevision:    policy.SourcePolicyRevision,
-		OwnershipEpoch:          binding.OwnershipEpoch,
-		OwnershipPolicyRevision: job.PolicyRevision,
-		ExecutorPolicyRevision:  policy.LocalExecutorPolicyRevision,
-	}
+	fence := softwareClaimFence(job, binding, policy)
 	if grant.V2Binding != nil {
 		v2Executor := requiredV2Executor
 		if v2Executor == nil {

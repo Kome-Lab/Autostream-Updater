@@ -102,6 +102,11 @@ func validateV2ExecutionGrantCommon(
 	portV2 := isPortContractV2(job)
 	revisionMatches := authorization.DesiredRevision == policy.Revision && authorization.DesiredRevision == job.PolicyRevision
 	configMatches := target.ExpectedConfigRevision == policyTarget.appliedConfigRevision()
+	if isV2SoftwareJob(job) {
+		revisionMatches = job.SoftwareUpdate != nil && authorization.DesiredRevision == job.SoftwareUpdate.ConfigRevision &&
+			softwareClaimPolicyMatches(job, policy, policyTarget) && command.CanonicalPayloadDigest == job.SoftwareUpdate.CommandSHA256
+		configMatches = job.SoftwareUpdate != nil && target.ExpectedConfigRevision == job.SoftwareUpdate.ConfigRevision
+	}
 	if portV2 {
 		revisionMatches = authorization.DesiredRevision == job.PortReconfigure.Target.ConfigRevision &&
 			job.PolicyRevision == job.PortReconfigure.Before.ProjectionRevision && portClaimPolicyMatches(job, policy, policyTarget)

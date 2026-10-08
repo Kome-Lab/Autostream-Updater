@@ -32,6 +32,12 @@ The compatibility boundary preserves the existing root-owned identity, policy, j
 socket, and state paths. A normal runtime upgrade must use the version-matched
 installer and must not issue a new Configure Token or delete recovery state.
 
+Software claims retain application configuration separately from policy
+revisions. A centrally claimed job without an executable local cursor needs
+the bounded procedure in [`docs/software-update-recovery.md`](docs/software-update-recovery.md).
+An installed fixed Agent/Executor pair is required; the old runtime cannot
+perform that recovery command.
+
 Docker Node listener approval remains an inline Compose configuration. At
 execution, the Local Executor stores the exact non-secret listener bytes under
 `/var/lib/autostream-local-executor/docker-listener-configs/<service>/<sha256>.json`

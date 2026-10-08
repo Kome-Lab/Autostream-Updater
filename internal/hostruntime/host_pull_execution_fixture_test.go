@@ -121,6 +121,7 @@ func hostPullV2SoftwareGrantBinding(
 			},
 		},
 	)
+	command.MutationAuthorization.DesiredRevision = target.appliedConfigRevision()
 	hostPullRefreshV2CommandDigest(t, &command)
 	return contracts.UpdaterMutationGrantBinding{
 		Lease: contracts.UpdaterLeaseEnvelope{
@@ -249,4 +250,23 @@ func hostPullRefreshV2CommandDigest(
 	}
 	command.CanonicalPayloadDigest = digest
 	command.MutationAuthorization.CanonicalArgumentDigest = digest
+}
+
+func bindHostPullSoftwareFixture(t *testing.T, job *UpdateJob, binding HostAgentBinding, policy HostAgentPolicy) {
+	t.Helper()
+	target, ok := hostPullPolicyTarget(policy, job.TargetID)
+	if !ok {
+		t.Fatal("software fixture target is unavailable")
+	}
+	command := hostPullV2CommandBase(job.AgentServiceID, binding, policy, *job, contracts.UpdaterCapabilityUpdate,
+		contracts.UpdaterTargetIdentity{TargetKind: contracts.UpdaterTargetApplication, ServiceID: job.TargetID,
+			ServiceType: contracts.SystemUpdateTargetType(job.EffectiveType()), DeploymentMode: contracts.SystemUpdateDeploymentMode(job.DeploymentMode), ExpectedConfigRevision: target.appliedConfigRevision()},
+		contracts.UpdaterDesiredOperation{Operation: contracts.UpdaterDesiredSoftwareUpdate, SoftwareUpdate: &contracts.UpdaterSoftwareUpdateDesiredOperation{
+			ExpectedCurrentVersion: job.CurrentVersion, TargetVersion: job.EffectiveVersion(), Strategy: contracts.SystemUpdateWhenIdle}})
+	command.MutationAuthorization.DesiredRevision = target.appliedConfigRevision()
+	hostPullRefreshV2CommandDigest(t, &command)
+	job.SoftwareUpdate = &SoftwareUpdateJobBinding{ConfigRevision: target.appliedConfigRevision(), ConfigSHA256: target.AppliedConfigSHA256,
+		CommandSHA256: command.CanonicalPayloadDigest, SourcePolicyRevision: policy.SourcePolicyRevision, ProjectionRevision: policy.Revision,
+		ExecutorPolicyRevision: policy.LocalExecutorPolicyRevision, ExecutorPolicySHA256: policy.LocalExecutorPolicySHA256}
+	job.PolicyRevision = policy.Revision
 }

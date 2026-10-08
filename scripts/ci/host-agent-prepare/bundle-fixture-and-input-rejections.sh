@@ -125,7 +125,7 @@ cat > "${PACKAGE_ROOT}/artifact-manifest.json" <<EOF
   },
   "compatibility": {
     "minimum_agent_version": null,
-    "minimum_panel_version": "${VERSION}",
+    "minimum_panel_version": "v2.0.0",
     "rollback_compatible": true,
     "database_schema": "none"
   }

@@ -126,6 +126,7 @@ func TestHostPullSelectsV2SoftwareMutationWithoutLegacyFallback(t *testing.T) {
 	job.ProtocolVersion = 2
 	job.CommandID = "command-software-one"
 	job.LeaseToken = ""
+	bindHostPullSoftwareFixture(t, &job, binding, policy)
 	plan, err := agent.prepareExecutionPlan(context.Background(), policy, job)
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +155,7 @@ func TestHostPullV2GrantFailsClosedOnLegacyOnlyExecutor(t *testing.T) {
 	job.ProtocolVersion = 2
 	job.CommandID = "command-software-one"
 	job.LeaseToken = ""
+	bindHostPullSoftwareFixture(t, &job, binding, policy)
 	plan, err := agent.prepareExecutionPlan(context.Background(), policy, job)
 	if err != nil {
 		t.Fatal(err)
@@ -211,6 +213,7 @@ func TestHostPullRejectsTamperedV2SoftwareGrantBinding(t *testing.T) {
 	job.ProtocolVersion = 2
 	job.CommandID = "command-software-one"
 	job.LeaseToken = ""
+	bindHostPullSoftwareFixture(t, &job, binding, policy)
 	plan, err := agent.prepareExecutionPlan(context.Background(), policy, job)
 	if err != nil {
 		t.Fatal(err)

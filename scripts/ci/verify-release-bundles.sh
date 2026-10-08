@@ -8,6 +8,7 @@ fi
 readonly ARTIFACT_DIRECTORY=$1
 readonly VERSION=$2
 readonly COMMIT=$3
+readonly REPOSITORY_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 [[ ${VERSION} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && ${COMMIT} =~ ^[0-9a-f]{40}$ ]] || {
   printf '%s\n' 'invalid release verification identity' >&2
   exit 1
@@ -16,6 +17,9 @@ readonly COMMIT=$3
   printf 'artifact directory is missing: %s\n' "${ARTIFACT_DIRECTORY}" >&2
   exit 1
 }
+MINIMUM_PANEL_VERSION="$(python3 "${REPOSITORY_ROOT}/scripts/ci/host_runtime_compatibility.py" \
+  --root "${REPOSITORY_ROOT}" --source-version "${VERSION}")"
+readonly MINIMUM_PANEL_VERSION
 
 work=$(mktemp -d)
 trap 'rm -rf -- "${work}"' EXIT
@@ -62,7 +66,8 @@ done
   done
 )
 
-jq -e --arg version "${VERSION}" --arg commit "${COMMIT}" '
+jq -e --arg version "${VERSION}" --arg commit "${COMMIT}" \
+  --arg minimum_panel_version "${MINIMUM_PANEL_VERSION}" '
   .schema_version == 1 and
   .release_id == $version and
   .channel == "host-agent" and
@@ -75,7 +80,9 @@ jq -e --arg version "${VERSION}" --arg commit "${COMMIT}" '
   .local_executor_mutation_enabled == true and
   .local_executor_mutation_requires_root_policy == true and
   .recovery_protocol_version == 2 and
-  .minimum_panel_version == $version and
+  .minimum_panel_version == $minimum_panel_version and
+  (($version | ltrimstr("v") | split(".") | map(tonumber)) >=
+   ($minimum_panel_version | ltrimstr("v") | split(".") | map(tonumber))) and
   (.artifacts | length) == 2 and
   ([.artifacts[].arch] | sort) == ["amd64", "arm64"] and
   all(.artifacts[];
@@ -129,6 +136,7 @@ for arch in amd64 arm64; do
 
   jq -e \
     --arg version "${VERSION}" \
+    --arg minimum_panel_version "${MINIMUM_PANEL_VERSION}" \
     --arg commit "${COMMIT}" \
     --arg arch "${arch}" \
     --arg archive "${archive}" \
@@ -139,7 +147,9 @@ for arch in amd64 arm64; do
       .commit == $commit and
       .platform == {os: "linux", arch: $arch} and
       .archive == {name: $archive, root: $root} and
-      .compatibility.minimum_panel_version == $version and
+      .compatibility.minimum_panel_version == $minimum_panel_version and
+      (($version | ltrimstr("v") | split(".") | map(tonumber)) >=
+       ($minimum_panel_version | ltrimstr("v") | split(".") | map(tonumber))) and
       .compatibility.rollback_compatible == true and
       .compatibility.database_schema == "none"
     ' "${root}/artifact-manifest.json" >/dev/null
