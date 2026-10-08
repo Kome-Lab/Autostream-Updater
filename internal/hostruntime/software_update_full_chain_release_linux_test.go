@@ -191,18 +191,29 @@ func softwareUpdateChainPrepareRelease(t *testing.T, h *stPortChainHarness, comm
 	if os.WriteFile(oldArchivePath, oldArchive, 0o600) != nil {
 		t.Fatal("persist isolated baseline")
 	}
-	oldRoot, err := ExtractTarGz(oldArchivePath, "/opt/autostream/control-panel/releases", 256<<20, 64)
-	if err != nil || VerifyInnerChecksums(oldRoot) != nil {
-		t.Fatal("baseline extraction/checksum failed")
+	// ExtractTarGz owns a new private 0700 wrapper. The installed releases
+	// directory already exists and must remain traversable by the smoke user.
+	oldRoot, err := ExtractTarGz(oldArchivePath, filepath.Join(dir, "baseline-unpack"), 256<<20, 64)
+	if err != nil {
+		t.Fatal("SOFTWARE baseline failure: phase=extract")
 	}
-	for name, data := range map[string][]byte{".version": []byte("v2.0.0\n"), ".artifact-sha256": []byte(stPortChainDigest(oldArchive) + "\n")} {
-		if os.WriteFile(filepath.Join(oldRoot, name), data, 0o444) != nil {
-			t.Fatal("install baseline markers")
-		}
+	if VerifyInnerChecksums(oldRoot) != nil {
+		t.Fatal("SOFTWARE baseline failure: phase=inner_checksum")
 	}
-	if os.Symlink(oldRoot, "/opt/autostream/control-panel/current") != nil {
-		t.Fatal("exclusive current link creation failed")
+	baselineDigest := stPortChainDigest(oldArchive)
+	installedRoot := filepath.Join("/opt/autostream/control-panel/releases", "v2.0.0-"+baselineDigest[:12])
+	// Initial fixture placement uses the same checked copy, mode restoration,
+	// immutable markers and directory durability as the production installer.
+	if installReleaseTree(oldRoot, installedRoot, baselineDigest, "v2.0.0") != nil {
+		t.Fatal("SOFTWARE baseline failure: phase=initial_install")
 	}
+	if verifyManagedReleaseChecksums(installedRoot) != nil {
+		t.Fatal("SOFTWARE baseline failure: phase=installed_checksum")
+	}
+	if os.Symlink(installedRoot, "/opt/autostream/control-panel/current") != nil {
+		t.Fatal("SOFTWARE baseline failure: phase=current_link")
+	}
+	t.Logf("SOFTWARE baseline prepared: extract_verified=true installed_verified=true archive_bytes=%d initial_version=v2.0.0", len(oldArchive))
 	return "sha256:" + stPortChainDigest(newArchive)
 }
 
