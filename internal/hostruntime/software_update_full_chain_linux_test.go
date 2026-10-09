@@ -105,6 +105,7 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 		return
 	}
 	if !t.Run("FixedRootOrphanTerminalOnly", func(t *testing.T) {
+		h.waitClaimRecoveryServices(t)
 		recovery := h.start(t, "recovery", h.testBinary, "TestSoftwareUpdateFullChainRecoveryProcess", h.uid, h.gid)
 		defer recovery.stop()
 		response := recovery.call(t, stPortChainCommand{Command: "recover", JobID: orphan.ID, LeaseGeneration: 1})

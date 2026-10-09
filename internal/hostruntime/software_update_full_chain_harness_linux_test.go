@@ -184,3 +184,81 @@ func (h *softwareUpdateChainHarness) installApplication(t *testing.T) {
 		return true
 	})
 }
+
+type softwareUpdateChainRecoveryServiceObservation struct {
+	state             string
+	pidValid, pidZero bool
+	errorClass        string
+}
+
+func softwareUpdateChainReadRecoveryService(ctx context.Context, unit string) softwareUpdateChainRecoveryServiceObservation {
+	observation := softwareUpdateChainRecoveryServiceObservation{state: "unknown", errorClass: "none"}
+	output, err := exec.CommandContext(ctx, "/usr/bin/systemctl", "is-active", unit).Output()
+	state := strings.TrimSpace(string(output))
+	switch state {
+	case "active", "activating", "deactivating", "inactive", "failed":
+		observation.state = state
+	default:
+		observation.errorClass = "unknown_state"
+		return observation
+	}
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 3) {
+		observation.errorClass = "state_command"
+		return observation
+	}
+	output, err = exec.CommandContext(ctx, "/usr/bin/systemctl", "show", "--property=MainPID", "--value", unit).Output()
+	if err != nil {
+		observation.errorClass = "pid_command"
+		return observation
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	observation.pidValid = err == nil && pid >= 0
+	observation.pidZero = observation.pidValid && pid == 0
+	if !observation.pidValid {
+		observation.errorClass = "invalid_pid"
+	}
+	return observation
+}
+
+func (h *softwareUpdateChainHarness) waitClaimRecoveryServices(t *testing.T) {
+	t.Helper()
+	// Observe the real terminal-only root precondition. Do not stop/reset units,
+	// disable timers, or retry Recover if its own later check refuses a race.
+	ctx, cancel := context.WithTimeout(h.ctx, 30*time.Second)
+	defer cancel()
+	units := [2]string{"autostream-host-self-update-recovery@a.service", "autostream-host-self-update-recovery@b.service"}
+	var first, last [2]softwareUpdateChainRecoveryServiceObservation
+	probes := 0
+	log := func(ready bool) {
+		for index, slot := range [2]string{"a", "b"} {
+			t.Logf("SOFTWARE recovery readiness: slot=%s ready=%t probes=%d first_state=%s first_pid_valid=%t first_pid_zero=%t first_error=%s last_state=%s last_pid_valid=%t last_pid_zero=%t last_error=%s", slot, ready, softwareUpdateChainSafeCount(int64(probes)), first[index].state, first[index].pidValid, first[index].pidZero, first[index].errorClass, last[index].state, last[index].pidValid, last[index].pidZero, last[index].errorClass)
+		}
+	}
+	for {
+		ready, valid := true, true
+		for index, unit := range units {
+			last[index] = softwareUpdateChainReadRecoveryService(ctx, unit)
+			if probes == 0 {
+				first[index] = last[index]
+			}
+			valid = valid && last[index].errorClass == "none"
+			ready = ready && last[index].state == "inactive" && last[index].pidZero
+		}
+		probes++
+		if !valid {
+			log(false)
+			t.Fatal("canonical recovery service readiness could not be safely observed")
+		}
+		if ready {
+			log(true)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			log(false)
+			t.Fatal("canonical recovery services did not become inactive with zero MainPID within the fixture bound")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}

@@ -47,6 +47,7 @@ func softwareUpdateChainPreApplyBoundaries(t *testing.T, h *softwareUpdateChainH
 		if journal.ActiveJob == nil || journal.ActiveJob.ID != job.ID || journal.ActivePlan != nil || len(journal.Pending) != 1 || journal.Pending[0].JobID != job.ID || journal.Pending[0].Report.Status != "claimed" || journal.Pending[0].Report.Progress != 5 || journal.Pending[0].Report.Sequence != 1 {
 			t.Fatal("initial response loss did not preserve the exact pending progress before explicit recovery")
 		}
+		h.waitClaimRecoveryServices(t)
 		recovery := h.start(t, "recovery", h.testBinary, "TestSoftwareUpdateFullChainRecoveryProcess", h.uid, h.gid)
 		defer recovery.stop()
 		settled := recovery.call(t, stPortChainCommand{Command: "recover", JobID: job.ID, LeaseGeneration: before.LeaseGeneration})
@@ -236,7 +237,8 @@ func (h *softwareUpdateChainHarness) requireSettledSoftwareClaimIntent(t *testin
 	t.Helper()
 	intent, exists, intentErr := loadSoftwareClaimRecoveryIntent(HostPullAgentStateDir, func(info os.FileInfo) bool {
 		stat, ok := info.Sys().(*syscall.Stat_t)
-		return ok && stat.Uid == h.uid && stat.Gid == h.gid && stat.Nlink == 1
+		// The reader enforces Nlink1 for records independently of directory ownership.
+		return ok && stat.Uid == h.uid && stat.Gid == h.gid
 	})
 	identity, identityErr := LoadManagedBootstrapConfig(HostAgentIdentityPath, true)
 	digest, digestErr := h.rootPolicy.SHA256()
@@ -251,6 +253,15 @@ func (h *softwareUpdateChainHarness) requireSettledSoftwareClaimIntent(t *testin
 		journal.ActivePortPlan == nil && journal.ActivePortPolicy == nil && len(journal.Pending) == 0
 	t.Logf("SOFTWARE terminal-only reason proof: exact_settled_intent=%t empty_journal=%t source=%d projection=%d executor=%d", verified, empty, softwareUpdateChainSafeCount(intent.SourcePolicyRevision), softwareUpdateChainSafeCount(intent.ProjectionRevision), softwareUpdateChainSafeCount(intent.ExecutorPolicyRevision))
 	if !verified || !empty {
+		history, historyErr := os.Lstat(filepath.Join(HostPullAgentStateDir, softwareClaimRecoveryHistoryName))
+		var directory, modeSafe, uidSafe, gidSafe bool
+		if historyErr == nil {
+			directory, modeSafe = history.IsDir() && history.Mode()&os.ModeSymlink == 0, history.Mode().Perm() == 0o700
+			if stat, ok := history.Sys().(*syscall.Stat_t); ok {
+				uidSafe, gidSafe = stat.Uid == h.uid, stat.Gid == h.gid
+			}
+		}
+		t.Logf("SOFTWARE recovery intent observation: load_success=%t exists=%t history_present=%t history_directory=%t history_mode_safe=%t history_uid_safe=%t history_gid_safe=%t", intentErr == nil, exists, historyErr == nil, directory, modeSafe, uidSafe, gidSafe)
 		t.Fatal("terminal-only public failure lacks its exact settled recovery intent and fully cleared nonexecuting journal")
 	}
 }
