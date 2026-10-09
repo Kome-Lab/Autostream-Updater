@@ -16,12 +16,13 @@ import (
 type softwareClaimRecoveryRootRuntime struct {
 	manual           manualHostUpgradeRuntime
 	readPolicy       func(context.Context, LocalExecutorPolicy) (HostAgentPolicy, error)
-	acquireLifecycle func() (func(), error)
+	acquireLifecycle func() (*heldHostLifecycleLock, error)
+	lifecycle        *heldHostLifecycleLock
 }
 
 func defaultSoftwareClaimRecoveryRootRuntime(client *http.Client) softwareClaimRecoveryRootRuntime {
 	return softwareClaimRecoveryRootRuntime{
-		manual: defaultManualHostUpgradeRuntime(), acquireLifecycle: acquireHostLifecycleLock,
+		manual: defaultManualHostUpgradeRuntime(), acquireLifecycle: acquireHeldHostLifecycleLock,
 		readPolicy: func(ctx context.Context, policy LocalExecutorPolicy) (HostAgentPolicy, error) {
 			identity, err := LoadManagedBootstrapConfig(HostAgentIdentityPath, true)
 			if err != nil || !identity.IsManagedBootstrap() || policy.Mutation == nil || identity.PanelURL != policy.Mutation.PanelURL {
@@ -51,13 +52,18 @@ func handleLocalExecutorSoftwareClaimRecovery(ctx context.Context, policy LocalE
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "invalid_request")
 	}
 	diagnostic := newSoftwareClaimRecoveryRootRefusal(request.SoftwareClaimRecovery.Request)
-	unlock, err := rt.acquireLifecycle()
+	held, err := rt.acquireLifecycle()
+	if err == nil {
+		err = held.Verify()
+	}
 	if err != nil {
+		held.Release()
 		diagnostic.Phase = "lifecycle_lock"
 		logSoftwareClaimRecoveryRootRefusal(diagnostic)
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "state_unavailable")
 	}
-	defer unlock()
+	defer held.Release()
+	rt.lifecycle = held
 	diagnostic.LifecycleHeld = true
 	if rt.manual.runner != nil {
 		rt.manual.runner = softwareClaimRecoveryDiagnosticRunner{CommandRunner: rt.manual.runner, diagnostic: &diagnostic}
@@ -66,6 +72,10 @@ func handleLocalExecutorSoftwareClaimRecovery(ctx context.Context, policy LocalE
 	if err != nil {
 		// The reply intentionally omits filenames, state bytes and credentials.
 		diagnostic.Phase = softwareClaimRecoveryRefusalPhase(err)
+		var authority softwareClaimWatchdogAuthorityError
+		if errors.As(err, &authority) && softwareClaimWatchdogDiagnosticReasonAllowed(authority.reason) {
+			diagnostic.WatchdogGuard = authority.reason
+		}
 		logSoftwareClaimRecoveryRootRefusal(diagnostic)
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "state_unavailable")
 	}
@@ -79,6 +89,9 @@ func inspectSoftwareClaimRecoveryRoot(ctx context.Context, policy LocalExecutorP
 		policy.SourcePolicyRevision != request.SourcePolicyRevision || policy.ProjectionRevision != request.OwnershipPolicyRevision ||
 		policy.PolicyRevision != request.ExecutorPolicyRevision {
 		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery root policy fence is invalid")
+	}
+	if runtime.lifecycle == nil || runtime.lifecycle.allowTestPaths != rt.allowTestPaths || runtime.lifecycle.Verify() != nil {
+		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery lacks its actual held lifecycle lock")
 	}
 	digest, err := policy.SHA256()
 	if err != nil || digest != request.SoftwareClaimRecovery.ExecutorPolicySHA256 {
@@ -198,9 +211,6 @@ func inspectSoftwareClaimRecoveryRoot(ctx context.Context, policy LocalExecutorP
 	if err != nil || currentSlot != state.ActiveSlot {
 		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery runtime slot changed")
 	}
-	if err := validateManualHostUpgradeRecoveryServicePreconditions(ctx, rt, false); err != nil {
-		return SoftwareClaimRecoveryProof{}, err
-	}
 	agentState, pid, err := readManualHostUpgradeRecoveryServiceState(ctx, rt.runner, hostSelfUpdateServiceUnit)
 	if err != nil || (agentState != "active" && (agentState != "inactive" || pid != 0)) {
 		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery Agent service is not safely active or stopped")
@@ -209,10 +219,20 @@ func inspectSoftwareClaimRecoveryRoot(ctx context.Context, policy LocalExecutorP
 	if err != nil || observed.Agent.Version != state.ActiveAgentVersion || observed.Executor.Version != state.ActiveExecutorVersion {
 		return SoftwareClaimRecoveryProof{}, errors.New("software claim recovery installed runtime pair is unconfirmed")
 	}
+	watchdogs, err := inspectSoftwareClaimRecoveryWatchdogs(ctx, rt, observed, runtime.lifecycle)
+	if err != nil {
+		return SoftwareClaimRecoveryProof{}, err
+	}
 	for jobID := range blockedJobs {
 		if err := scanSoftwareClaimRecoveryRootRecords(jobID, policy, rt); err != nil {
 			return SoftwareClaimRecoveryProof{}, err
 		}
+	}
+	if err := watchdogs.Verify(ctx, rt, runtime.lifecycle); err != nil {
+		return SoftwareClaimRecoveryProof{}, err
+	}
+	if err := runtime.lifecycle.Verify(); err != nil {
+		return SoftwareClaimRecoveryProof{}, err
 	}
 	if ctx.Err() != nil {
 		return SoftwareClaimRecoveryProof{}, ctx.Err()

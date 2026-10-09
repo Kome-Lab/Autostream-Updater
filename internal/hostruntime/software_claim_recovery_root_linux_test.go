@@ -39,7 +39,8 @@ func newSoftwareClaimRecoveryRootHarness(t *testing.T) (*manualHostUpgradeLinuxF
 	authenticated := HostAgentPolicy{ServiceID: "host-agent-a", TransportMode: HostTransportPullV2, ExecutionHostID: policy.HostID, OwnershipEpoch: 3,
 		Revision: 8, SourcePolicyRevision: 8, LocalExecutorPolicyRevision: 8, LocalExecutorPolicySHA256: digest,
 		Targets: []HostAgentPolicyTarget{{ServiceID: request.TargetID, ServiceType: policy.Targets[0].ServiceType, DeploymentMode: ModeSystemd, AppliedConfigRevision: 1, AppliedConfigSHA256: policy.Targets[0].ConfigSHA256}}}
-	runtime := softwareClaimRecoveryRootRuntime{manual: fixture.runtime, acquireLifecycle: func() (func(), error) { return func() {}, nil },
+	held, _ := configureSoftwareClaimRecoveryWatchdogFixture(t, fixture)
+	runtime := softwareClaimRecoveryRootRuntime{manual: fixture.runtime, lifecycle: held, acquireLifecycle: func() (*heldHostLifecycleLock, error) { return held, nil },
 		readPolicy: func(context.Context, LocalExecutorPolicy) (HostAgentPolicy, error) { return authenticated, nil }}
 	local := LocalExecutorRequest{Version: 2, Operation: localExecutorSoftwareClaimRecoveryOperation, ServiceID: request.TargetID,
 		SoftwareClaimRecovery: &SoftwareClaimRecoveryInspection{Request: request, ExecutorPolicySHA256: digest}, SourcePolicyRevision: 8, OwnershipEpoch: 3, OwnershipPolicyRevision: 8, ExecutorPolicyRevision: 8}
@@ -83,6 +84,7 @@ func TestSoftwareClaimRecoveryRootProofIsReadOnlyAndKeepsUnrelatedTerminalHistor
 
 func TestSoftwareClaimRecoveryRootRefusesRequestedTerminalAndAmbiguousState(t *testing.T) {
 	softwareClaimRecoveryDiagnosticChecks(t)
+	softwareClaimRecoveryWatchdogExclusionChecks(t)
 	for _, name := range []string{"requested_terminal_checkpoint", "requested_terminal_ledger", "other_active_checkpoint", "unsafe_journal", "unknown_journal_field", "clear_fence", "runtime_claim", "staged_identity", "orphan_stage", "pending_report", "unmarked_active", "policy_fence", "ownership_fence", "mixed_runtime"} {
 		t.Run(name, func(t *testing.T) {
 			fixture, policy, request, runtime := newSoftwareClaimRecoveryRootHarness(t)

@@ -296,14 +296,15 @@
     "destinations": [
       {
         "path": "internal/hostruntime/host_manual_upgrade_activation_linux.go",
-        "sha256": "04f63cb943977dae995f0caa821f7d8f7cd475c634f6444ced3d1b1f94b6d431",
+        "sha256": "746dc1164469061f95b1950c85b1f2cf88670d027186f80ee175d2e9cc4d772e",
         "symbols": [
           "acquireManualHostUpgradeLocks",
           "activateManualHostUpgrade",
           "lockManualHostUpgradeFile",
-          "rollbackManualHostUpgrade"
+          "rollbackManualHostUpgrade",
+          "openAndLockManualHostUpgradeFile"
         ],
-        "physical_lines": 237
+        "physical_lines": 248
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_artifact_linux.go",
@@ -455,6 +456,32 @@
           "validateManualHostUpgradeCurrentState"
         ],
         "physical_lines": 278
+      },
+      {
+        "path": "internal/hostruntime/host_lifecycle_lock_guard_linux.go",
+        "sha256": "906ad29569f82d2cd77c8345784672e222e286184984bdff1134fa18e4d03fbb",
+        "symbols": [
+          "MatchesPath",
+          "Release",
+          "Verify",
+          "acquireHeldHostLifecycleLockAt",
+          "heldHostLifecycleKernelRecordMatches",
+          "heldHostLifecycleLock",
+          "heldHostLifecycleLockFileName",
+          "heldHostLifecycleNodeMatches",
+          "verifyKernelOwnership",
+          "verifyLocked"
+        ],
+        "physical_lines": 196
+      },
+      {
+        "path": "internal/hostruntime/host_lifecycle_lock_linux.go",
+        "sha256": "48cdccf83db993264aa451cff85e9211769683244291692fdd973e6d2f03cb70",
+        "symbols": [
+          "acquireHeldHostLifecycleLock",
+          "acquireHostLifecycleLock"
+        ],
+        "physical_lines": 25
       }
     ]
   },
@@ -1977,7 +2004,7 @@
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_root_linux.go",
-        "sha256": "2eab528ab17751f6f4ab9fbc90de607d4b46626c4b82da01eb97e91a117d9f66",
+        "sha256": "862965cdc3d3a5f6acb889acfe200e5d149ee9a54287993da9c03ef6b27bda91",
         "symbols": [
           "defaultSoftwareClaimRecoveryRootRuntime",
           "handleLocalExecutorSoftwareClaimRecovery",
@@ -1988,11 +2015,11 @@
           "softwareClaimRecoveryIntentBlocksHost",
           "softwareClaimRecoveryRootRuntime"
         ],
-        "physical_lines": 389
+        "physical_lines": 409
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_diagnostics_linux.go",
-        "sha256": "5a5b04646221815c892050685cd76b4d418df0915d3b8717ff6fa209c862d9b5",
+        "sha256": "0011739644f8bd65e9d67a239bb057068d2704d4fa14ea05079f11c45a7659ac",
         "symbols": [
           "softwareClaimRecoveryRefusalPrefix",
           "softwareClaimRecoveryInspectionOrdinal",
@@ -2004,9 +2031,10 @@
           "softwareClaimRecoveryCommandClass",
           "softwareClaimRecoveryRefusalPhase",
           "softwareClaimRecoveryRootRefusal.valid",
-          "logSoftwareClaimRecoveryRootRefusal"
+          "logSoftwareClaimRecoveryRootRefusal",
+          "softwareClaimWatchdogDiagnosticReasonAllowed"
         ],
-        "physical_lines": 152
+        "physical_lines": 173
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_receipt.go",
@@ -2066,6 +2094,81 @@
           "softwareClaimRecoveryRecordOwnerSafe"
         ],
         "physical_lines": 13
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_watchdog_binary_linux.go",
+        "sha256": "b07023fcf946947af113588112b4287fa2e1b37536efc2d5db023c6be6b55d9c",
+        "symbols": [
+          "sameSoftwareClaimWatchdogBinaryInfo",
+          "verifySoftwareClaimWatchdogProcessBinary"
+        ],
+        "physical_lines": 56
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_watchdog_process_linux.go",
+        "sha256": "dbd94f8e280740749dc9bbe44e53ed1837c1548d0e8217065e7736ce8c6e0fc7",
+        "symbols": [
+          "errSoftwareClaimWatchdogTransition",
+          "readSoftwareClaimWatchdogCgroup",
+          "readSoftwareClaimWatchdogProcess",
+          "softwareClaimWatchdogProcessObservation",
+          "softwareClaimWatchdogProcessRuntime",
+          "softwareClaimWatchdogRootCredentials",
+          "verifySoftwareClaimRecoveryWatchdogProcesses",
+          "verifySoftwareClaimWatchdogProcessRuntime",
+          "verifySoftwareClaimWatchdogProcessSet"
+        ],
+        "physical_lines": 298
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_watchdog_snapshot_linux.go",
+        "sha256": "d9d059509dd2acbc9738a62ea764b519714c8e6aed7e086f256aa0a77d2b164a",
+        "symbols": [
+          "hashSoftwareClaimWatchdogReader",
+          "snapshotSoftwareClaimWatchdogFile",
+          "softwareClaimWatchdogSnapshotInfoMatches",
+          "softwareClaimWatchdogSnapshotInfoSafe",
+          "verifySoftwareClaimWatchdogSnapshotFile"
+        ],
+        "physical_lines": 129
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_watchdog_unit_linux.go",
+        "sha256": "74a65d786395b42e8040375c00b6abd7a1ba7cc75315da6bbc7563941b48e6cc",
+        "symbols": [
+          "Verify",
+          "inspectSoftwareClaimRecoveryWatchdogUnit",
+          "parseSoftwareClaimRecoveryWatchdogExecStart",
+          "parseSoftwareClaimRecoveryWatchdogUnit",
+          "readSoftwareClaimRecoveryWatchdogUnitFile",
+          "readSoftwareClaimRecoveryWatchdogUnits",
+          "sameSoftwareClaimRecoveryWatchdogUnitFile",
+          "sameSoftwareClaimRecoveryWatchdogUnitInfo",
+          "softwareClaimRecoveryUnitSnapshot",
+          "softwareClaimRecoveryWatchdogEmptyExecProperty",
+          "softwareClaimRecoveryWatchdogExecStatus",
+          "softwareClaimRecoveryWatchdogPID",
+          "softwareClaimRecoveryWatchdogText",
+          "softwareClaimRecoveryWatchdogUnit",
+          "softwareClaimRecoveryWatchdogUnitFileSafe",
+          "softwareClaimRecoveryWatchdogUnitPath",
+          "softwareClaimRecoveryWatchdogUnitProperties"
+        ],
+        "physical_lines": 335
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_watchdogs_linux.go",
+        "sha256": "83dcfec29255e0d015152bfcb8fb58c04e03c642a73a9be632a1650acc06e06f",
+        "symbols": [
+          "Error",
+          "Verify",
+          "inspectSoftwareClaimRecoveryWatchdogs",
+          "softwareClaimRecoveryBootstrapCommit",
+          "softwareClaimRecoveryWatchdogSnapshot",
+          "softwareClaimWatchdogAuthorityError",
+          "softwareClaimWatchdogRefusal"
+        ],
+        "physical_lines": 214
       }
     ]
   },

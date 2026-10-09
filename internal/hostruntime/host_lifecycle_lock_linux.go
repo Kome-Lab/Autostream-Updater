@@ -13,3 +13,13 @@ func acquireHostLifecycleLock() (func(), error) {
 		filepath.Join(directory, ".autostream-host-lifecycle.lock"),
 	)
 }
+
+func acquireHeldHostLifecycleLock() (*heldHostLifecycleLock, error) {
+	directory, err := ensurePrivilegedHostLockDirectory()
+	if err != nil {
+		return nil, err
+	}
+	return acquireHeldHostLifecycleLockAt(
+		filepath.Join(directory, heldHostLifecycleLockFileName), false,
+	)
+}

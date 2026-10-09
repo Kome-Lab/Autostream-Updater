@@ -32,6 +32,7 @@ type softwareClaimRecoveryRootRefusal struct {
 	RequestSHA256 string                                    `json:"request_sha256"`
 	LifecycleHeld bool                                      `json:"lifecycle_held"`
 	Phase         string                                    `json:"phase"`
+	WatchdogGuard string                                    `json:"watchdog_guard,omitempty"`
 	Slots         [2]softwareClaimRecoveryServiceDiagnostic `json:"slots"`
 }
 
@@ -98,6 +99,10 @@ func softwareClaimRecoveryCommandClass(ctx context.Context, err error) string {
 }
 
 func softwareClaimRecoveryRefusalPhase(err error) string {
+	var authority softwareClaimWatchdogAuthorityError
+	if errors.As(err, &authority) && softwareClaimWatchdogDiagnosticReasonAllowed(authority.reason) {
+		return "watchdog_guard"
+	}
 	for _, unit := range manualHostRecoveryUnitInstances {
 		if err.Error() == unit+" must be inactive and have no MainPID" || err.Error() == "read "+unit+" active state" ||
 			err.Error() == "read "+unit+" MainPID" || err.Error() == unit+" MainPID is invalid" {
@@ -107,10 +112,26 @@ func softwareClaimRecoveryRefusalPhase(err error) string {
 	return "other_guard"
 }
 
+func softwareClaimWatchdogDiagnosticReasonAllowed(reason string) bool {
+	switch reason {
+	case "lifecycle_capability", "slot_paths", "slot_state", "slot_directory", "slot_current", "slot_residue", "slot_missing", "slot_identity", "slot_binding", "slot_bootstrap", "slot_file", "slot_snapshot", "unit_file", "unit_read", "unit_output", "unit_exec_start", "unit_snapshot", "process_deadline", "process_unit", "process_transition", "process_slot_missing", "process_cgroup", "process_members", "process_identity", "process_command", "process_lock_namespace", "process_binary_namespace":
+		return true
+	}
+	for _, key := range softwareClaimRecoveryWatchdogUnitProperties {
+		if reason == "unit_property_"+key {
+			return true
+		}
+	}
+	return false
+}
+
 func (d softwareClaimRecoveryRootRefusal) valid() bool {
 	if d.SchemaVersion != 1 || d.Ordinal < 1 || !digestPattern.MatchString(d.RequestSHA256) ||
-		(d.Phase != "lifecycle_lock" && d.Phase != "recovery_service" && d.Phase != "other_guard") ||
+		(d.Phase != "lifecycle_lock" && d.Phase != "recovery_service" && d.Phase != "other_guard" && d.Phase != "watchdog_guard") ||
 		(d.Phase == "lifecycle_lock" && d.LifecycleHeld) || (d.Phase != "lifecycle_lock" && !d.LifecycleHeld) {
+		return false
+	}
+	if (d.Phase == "watchdog_guard" && !softwareClaimWatchdogDiagnosticReasonAllowed(d.WatchdogGuard)) || (d.Phase != "watchdog_guard" && d.WatchdogGuard != "") {
 		return false
 	}
 	for index, slot := range d.Slots {

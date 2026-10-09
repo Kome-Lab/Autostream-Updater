@@ -52,6 +52,15 @@ root state. Requested-job root records, even terminal ones, and unrelated
 nonterminal state prevent a no-mutation proof. Unrelated verified terminal
 history is retained. Inspection does not claim or report the job.
 
+Software-claim inspection holds the actual permanent host lifecycle lock while
+checking the fixed recovery watchdogs. It verifies the installed unit, both
+slot pairs, live process binaries and their view of that same lock, then
+rechecks the snapshot before returning proof. A watchdog's `failed` or
+`activating` label alone does not establish safety. A short process transition
+may be observed again within the existing deadline; inspection does not stop,
+disable or repair a watchdog. Missing or changed authority refuses proof.
+The normal manual upgrade retains its strict inactive/no-PID precondition.
+
 Review the no-mutation proof before stopping the managed non-root Agent so its
 lifecycle lock becomes available. Keep the matching Local Executor and socket
 active. The recovery command repeats the proof after the Agent stops:

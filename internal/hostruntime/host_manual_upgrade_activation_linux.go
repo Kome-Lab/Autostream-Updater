@@ -194,22 +194,36 @@ func acquireManualHostUpgradeLocks() (func(), error) {
 }
 
 func lockManualHostUpgradeFile(path string) (func(), error) {
+	file, err := openAndLockManualHostUpgradeFile(path, 0, 0)
+	if err != nil {
+		return func() {}, err
+	}
+	fd := int(file.Fd())
+	return func() {
+		_ = syscall.Flock(fd, syscall.LOCK_UN)
+		_ = file.Close()
+	}, nil
+}
+
+// Existing privileged callers always require root ownership. Only the private
+// held-lock test factory may supply its own protected temporary-file owner.
+func openAndLockManualHostUpgradeFile(path string, uid, gid uint32) (*os.File, error) {
 	fd, err := syscall.Open(
 		path,
 		syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
 		0o600,
 	)
 	if err != nil {
-		return func() {}, err
+		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), path)
-	failure := func(err error) (func(), error) {
+	failure := func(err error) (*os.File, error) {
 		_ = file.Close()
-		return func() {}, err
+		return nil, err
 	}
 	var opened syscall.Stat_t
 	if err := syscall.Fstat(fd, &opened); err != nil ||
-		opened.Uid != 0 || opened.Gid != 0 || opened.Nlink != 1 ||
+		opened.Uid != uid || opened.Gid != gid || opened.Nlink != 1 ||
 		opened.Mode&syscall.S_IFMT != syscall.S_IFREG ||
 		opened.Mode&0o777 != 0o600 {
 		return failure(errors.New("privileged Host lifecycle lock file is unsafe"))
@@ -224,14 +238,11 @@ func lockManualHostUpgradeFile(path string) (func(), error) {
 	}
 	if err := syscall.Lstat(path, &named); err != nil ||
 		named.Dev != opened.Dev || named.Ino != opened.Ino ||
-		named.Uid != 0 || named.Gid != 0 || named.Nlink != 1 ||
+		named.Uid != uid || named.Gid != gid || named.Nlink != 1 ||
 		named.Mode&syscall.S_IFMT != syscall.S_IFREG ||
 		named.Mode&0o777 != 0o600 {
 		_ = syscall.Flock(fd, syscall.LOCK_UN)
 		return failure(errors.New("privileged Host lifecycle lock changed after acquisition"))
 	}
-	return func() {
-		_ = syscall.Flock(fd, syscall.LOCK_UN)
-		_ = file.Close()
-	}, nil
+	return file, nil
 }

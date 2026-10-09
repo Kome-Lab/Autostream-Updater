@@ -62,13 +62,16 @@ func softwareClaimRecoveryDiagnosticChecks(t *testing.T) {
 					return base.Run(ctx, dir, env, name, args...)
 				})
 				runtime.manual.runner = softwareClaimRecoveryDiagnosticRunner{inner, &d}
-				response := handleLocalExecutorSoftwareClaimRecovery(context.Background(), policy, request, runtime)
+				// The shared installer predicate remains strict. Software claim now
+				// proves exclusion independently, with stronger unit/slot/FD guards.
+				_ = policy
+				guardErr := validateManualHostUpgradeRecoveryServicePreconditions(context.Background(), runtime.manual, false)
 				if boundary == "inactive" {
-					if response.Error != nil || response.SoftwareClaimRecovery == nil || response.Validate() != nil {
+					if guardErr != nil {
 						t.Fatal("diagnostic changed ordinary inactive service admission")
 					}
-				} else if response.Error == nil || response.Error.Code != "state_unavailable" || response.SoftwareClaimRecovery != nil || response.Validate() != nil {
-					t.Fatal("diagnostic weakened the root guard or changed its refusal schema")
+				} else if guardErr == nil {
+					t.Fatal("diagnostic weakened the strict manual-upgrade guard")
 				}
 				wantReads := 2
 				if boundary == "empty_state" {

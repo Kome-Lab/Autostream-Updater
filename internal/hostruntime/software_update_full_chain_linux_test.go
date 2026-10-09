@@ -503,12 +503,13 @@ func softwareUpdateChainLogAuxiliaryRootInspection(t *testing.T, h *softwareUpda
 		OwnershipPolicyRevision: h.projection, ExecutorPolicyRevision: h.executor,
 	}
 	runtime := defaultSoftwareClaimRecoveryRootRuntime(nil)
-	unlock, err := runtime.acquireLifecycle()
+	held, err := runtime.acquireLifecycle()
 	if err != nil {
 		t.Log("SOFTWARE auxiliary root inspection: outside_actual_unit=true phase=lifecycle_lock proof_returned=false")
 		return
 	}
-	defer unlock()
+	defer held.Release()
+	runtime.lifecycle = held
 	ctx, cancel := context.WithTimeout(h.ctx, localExecutorHostSelfUpdateTimeout)
 	defer cancel()
 	proof, err := inspectSoftwareClaimRecoveryRoot(ctx, policy, request, runtime)
