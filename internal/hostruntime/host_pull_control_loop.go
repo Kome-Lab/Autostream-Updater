@@ -53,6 +53,16 @@ func (c recoveryOnlyHostPullControlPlane) IssueMutationGrant(
 	return c.execution.IssueMutationGrant(ctx, jobID, request)
 }
 
+// Claims and grants must use the same V2 client's authenticated snapshot.
+// Embedding only the control-plane interface would hide this binding method.
+func (c recoveryOnlyHostPullControlPlane) BindSoftwareUpdateClaim(job UpdateJob) error {
+	binder, ok := c.execution.(interface{ BindSoftwareUpdateClaim(UpdateJob) error })
+	if !ok {
+		return errors.New("recovery-only software claim requires a policy-binding control plane")
+	}
+	return binder.BindSoftwareUpdateClaim(job)
+}
+
 func (a *HostPullAgent) Run(ctx context.Context) error {
 	if a == nil || !a.currentIdentity().IsManagedBootstrap() || a.ControlPlane == nil || a.OpenJournal == nil {
 		return errors.New("host pull agent dependencies are incomplete")

@@ -50,14 +50,23 @@ func handleLocalExecutorSoftwareClaimRecovery(ctx context.Context, policy LocalE
 		rt.readPolicy == nil || rt.acquireLifecycle == nil {
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "invalid_request")
 	}
+	diagnostic := newSoftwareClaimRecoveryRootRefusal(request.SoftwareClaimRecovery.Request)
 	unlock, err := rt.acquireLifecycle()
 	if err != nil {
+		diagnostic.Phase = "lifecycle_lock"
+		logSoftwareClaimRecoveryRootRefusal(diagnostic)
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "state_unavailable")
 	}
 	defer unlock()
+	diagnostic.LifecycleHeld = true
+	if rt.manual.runner != nil {
+		rt.manual.runner = softwareClaimRecoveryDiagnosticRunner{CommandRunner: rt.manual.runner, diagnostic: &diagnostic}
+	}
 	proof, err := inspectSoftwareClaimRecoveryRoot(ctx, policy, request, rt)
 	if err != nil {
 		// The reply intentionally omits filenames, state bytes and credentials.
+		diagnostic.Phase = softwareClaimRecoveryRefusalPhase(err)
+		logSoftwareClaimRecoveryRootRefusal(diagnostic)
 		return localExecutorFailureForVersion(LocalExecutorMutationProtocolVersion, "state_unavailable")
 	}
 	return LocalExecutorResponse{Version: LocalExecutorMutationProtocolVersion, SoftwareClaimRecovery: &proof}

@@ -108,11 +108,13 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 		h.waitClaimRecoveryServices(t)
 		recovery := h.start(t, "recovery", h.testBinary, "TestSoftwareUpdateFullChainRecoveryProcess", h.uid, h.gid)
 		defer recovery.stop()
+		rootWindow := softwareUpdateChainRootJournalStart()
 		response := recovery.call(t, stPortChainCommand{Command: "recover", JobID: orphan.ID, LeaseGeneration: 1})
 		settled := h.readSoftware(t, orphan.ID)
 		calls := softwareUpdateChainDecodeCalls(t, response)
 		softwareUpdateChainLogRecoveryInspection(t, response)
 		if !response.OK || response.RootCalls != 0 || response.ActiveJobID != "" || response.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 0 || calls.Inspections < 1 || calls.StageRequiredResponse || settled.ID != orphan.ID || settled.Status != "failed" || settled.Code != "execution_failed" || settled.LeaseGeneration != 2 || settled.PolicyRevision != h.projection || settled.OwnershipEpoch != 3 {
+			softwareUpdateChainLogActualRootRefusal(t, rootWindow, SoftwareClaimRecoveryRequest{JobID: orphan.ID, LeaseGeneration: 1, TargetID: "control-panel", CurrentVersion: "v2.0.0", TargetVersion: "v2.0.1", ConfigRevision: 1, OwnershipEpoch: 3})
 			softwareUpdateChainLogAuxiliaryRootInspection(t, h, SoftwareClaimRecoveryRequest{JobID: orphan.ID, LeaseGeneration: 1, TargetID: "control-panel", CurrentVersion: "v2.0.0", TargetVersion: "v2.0.1", ConfigRevision: 1, OwnershipEpoch: 3})
 			t.Fatal("explicit real-root absence proof did not settle only the exact orphan job without a software mutation")
 		}
@@ -442,7 +444,8 @@ func (h *softwareUpdateChainHarness) writeSoftwareEvidence(t *testing.T, orphan,
 func softwareUpdateChainLogRecoveryInspection(t *testing.T, response stPortChainResponse) {
 	t.Helper()
 	var wire struct {
-		InspectionDiagnostic *softwareUpdateChainInspectionDiagnostic `json:"inspection_diagnostic"`
+		InspectionDiagnostic *softwareUpdateChainInspectionDiagnostic  `json:"inspection_diagnostic"`
+		InspectionHistory    []softwareUpdateChainInspectionDiagnostic `json:"inspection_history"`
 	}
 	if json.Unmarshal(response.SoftwareWire, &wire) != nil || wire.InspectionDiagnostic == nil {
 		t.Log("SOFTWARE recovery inspection: diagnostic_present=false")
@@ -455,7 +458,7 @@ func softwareUpdateChainLogRecoveryInspection(t *testing.T, response stPortChain
 	}
 	class := "other"
 	switch d.OperationClass {
-	case "none", "deadline", "canceled", "agent_proof_binding", "root_response":
+	case "none", "deadline", "canceled", "agent_proof_binding", "root_response", "grant_fixed_policy_authority":
 		class = d.OperationClass
 	}
 	policyCode := "other"
@@ -464,6 +467,16 @@ func softwareUpdateChainLogRecoveryInspection(t *testing.T, response stPortChain
 		policyCode = d.PolicyErrorCode
 	}
 	t.Logf("SOFTWARE recovery inspection: diagnostic_present=true code=%s operation_class=%s proof_returned=%t policy_observed=%t policy_code=%s policy_matches_fence=%t", code, class, d.ProofReturned, d.PolicyObserved, policyCode, d.PolicyMatchesFence)
+	for index, inspection := range wire.InspectionHistory {
+		if index >= 16 {
+			break
+		}
+		code := "transport_other"
+		if inspection.ErrorCode == "none" || validLocalExecutorFailureCode(inspection.ErrorCode) {
+			code = inspection.ErrorCode
+		}
+		t.Logf("SOFTWARE actual UDS inspection: agent_inspection_ordinal=%d code=%s proof_returned=%t", softwareUpdateChainSafeCount(inspection.Ordinal), code, inspection.ProofReturned)
+	}
 	t.Logf("SOFTWARE recovery proof checks: valid=%t request=%t updater=%t host=%t source=%t projection=%t executor=%t digest=%t epoch=%t runtime_matches_agent=%t current_version_matches_build=%t observed_not_future=%t observed_fresh=%t", d.ProofValid, d.RequestMatches, d.UpdaterMatches, d.HostMatches, d.SourceMatches, d.ProjectionMatches, d.ExecutorMatches, d.DigestMatches, d.EpochMatches, d.RuntimeMatchesAgent, d.CurrentVersionMatchesBuild, d.ObservedNotFuture, d.ObservedFresh)
 }
 

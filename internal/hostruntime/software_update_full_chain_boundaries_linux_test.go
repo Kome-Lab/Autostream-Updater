@@ -50,10 +50,13 @@ func softwareUpdateChainPreApplyBoundaries(t *testing.T, h *softwareUpdateChainH
 		h.waitClaimRecoveryServices(t)
 		recovery := h.start(t, "recovery", h.testBinary, "TestSoftwareUpdateFullChainRecoveryProcess", h.uid, h.gid)
 		defer recovery.stop()
+		rootWindow := softwareUpdateChainRootJournalStart()
 		settled := recovery.call(t, stPortChainCommand{Command: "recover", JobID: job.ID, LeaseGeneration: before.LeaseGeneration})
 		job = h.readSoftware(t, job.ID)
 		calls := softwareUpdateChainDecodeCalls(t, settled)
 		if !settled.OK || settled.ActiveJobID != "" || settled.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 0 || calls.Inspections < 1 || calls.StageRequiredResponse || job.Status != "failed" || job.Code != "execution_failed" || job.LeaseGeneration != 2 {
+			softwareUpdateChainLogRecoveryInspection(t, settled)
+			softwareUpdateChainLogActualRootRefusal(t, rootWindow, SoftwareClaimRecoveryRequest{JobID: job.ID, LeaseGeneration: before.LeaseGeneration, TargetID: "control-panel", CurrentVersion: "v2.0.0", TargetVersion: "v2.0.1", ConfigRevision: 1, OwnershipEpoch: 3})
 			t.Fatal("exact initial-progress recovery did not terminalize only the nonexecuting original claim")
 		}
 		h.requireSettledSoftwareClaimIntent(t, job, before.LeaseGeneration)

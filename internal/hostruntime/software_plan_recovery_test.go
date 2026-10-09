@@ -23,6 +23,11 @@ type softwarePlanRecoveryTestPanel struct {
 	policy HostAgentPolicy
 }
 
+type softwarePlanRecoveryWithoutBinder struct {
+	HostPullControlPlane
+	HostPullExecutionControlPlane
+}
+
 func (p *softwarePlanRecoveryTestPanel) FetchHostAgentPolicy(context.Context, string, int64) (*HostAgentPolicy, bool, error) {
 	copy := p.policy
 	return &copy, true, nil
@@ -51,6 +56,7 @@ func (e *softwarePlanRecoveryTestExecutor) ReconcileV2(ctx context.Context, plan
 
 type softwarePlanRecoveryHTTPFixture struct {
 	lease      contracts.UpdaterLeaseEnvelope
+	returned   contracts.UpdaterLeaseEnvelope
 	generation int64
 	lostClaim  bool
 	wrongLease string
@@ -62,13 +68,16 @@ type softwarePlanRecoveryHTTPFixture struct {
 
 // The HTTP fixture exercises the production V2 adapter. The separate pinned
 // CP process oracle remains the authority for server-side lease generation.
-func newSoftwarePlanRecoveryHTTPHarness(t *testing.T, legacy bool) (*HostPullAgent, *softwarePlanRecoveryTestPanel, *softwarePlanRecoveryHTTPFixture, *softwarePlanRecoveryTestExecutor, *softwarePlanRecoveryTestDownloader, SoftwareClaimRecoveryRequest, MutationPlan) {
+func newSoftwarePlanRecoveryHTTPHarness(t *testing.T, legacy, distinct bool) (*HostPullAgent, *softwarePlanRecoveryTestPanel, *softwarePlanRecoveryHTTPFixture, *softwarePlanRecoveryTestExecutor, *softwarePlanRecoveryTestDownloader, SoftwareClaimRecoveryRequest, MutationPlan) {
 	t.Helper()
 	now := time.Now().UTC()
 	bootstrap := managedHostAgentBootstrap("https://panel.example.com")
 	policy := HostAgentPolicy{ServiceID: bootstrap.NodeID, ExecutionHostID: "host-a", TransportMode: HostTransportPullV2, OwnershipEpoch: 3,
 		Revision: 8, SourcePolicyRevision: 8, LocalExecutorPolicyRevision: 8, LocalExecutorPolicySHA256: "sha256:" + strings.Repeat("b", 64),
 		Targets: []HostAgentPolicyTarget{{ServiceID: "worker-01", ServiceType: "worker", DeploymentMode: ModeSystemd, AppliedConfigRevision: 1}}}
+	if distinct {
+		policy.SourcePolicyRevision, policy.Revision, policy.LocalExecutorPolicyRevision = 11, 13, 17
+	}
 	lease := v2PanelSoftwareLease(t, now)
 	lease.LeaseGeneration = 1
 	authorization := &lease.Command.MutationAuthorization
@@ -117,6 +126,7 @@ func newSoftwarePlanRecoveryHTTPHarness(t *testing.T, legacy bool) (*HostPullAge
 				returned.LeaseGeneration++
 			}
 			hostPullRefreshV2CommandDigest(t, &returned.Command)
+			fixture.returned = returned
 			writeV2PanelJSON(t, w, http.StatusOK, returned)
 		case strings.Contains(r.URL.Path, "/mutation-grants"):
 			fixture.grants++
@@ -143,7 +153,7 @@ func newSoftwarePlanRecoveryHTTPHarness(t *testing.T, legacy bool) (*HostPullAge
 	panel := &softwarePlanRecoveryTestPanel{V2PanelClient: NewV2PanelClient(PanelClient{BaseURL: server.URL, HTTP: server.Client(), Token: "synthetic-runtime-token"}), policy: policy}
 	panel.Now = func() time.Time { return now }
 	executor, downloader := &softwarePlanRecoveryTestExecutor{}, &softwarePlanRecoveryTestDownloader{}
-	agent, err := NewHostPullAgent(bootstrap, HostPullAgentOptions{StateDir: t.TempDir(), ControlPlane: panel, Executor: executor, Downloader: downloader})
+	agent, err := NewHostPullAgent(bootstrap, HostPullAgentOptions{StateDir: t.TempDir(), ControlPlane: panel, Executor: executor, Downloader: downloader, RecoveryOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,9 +186,9 @@ func newSoftwarePlanRecoveryHTTPHarness(t *testing.T, legacy bool) (*HostPullAge
 }
 
 func TestSoftwarePlanRecoveryLostClaimPreservesPlanAndExactRereadReconciles(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
-		t.Run(strconv.FormatBool(legacy), func(t *testing.T) {
-			agent, panel, fixture, executor, downloader, request, originalPlan := newSoftwarePlanRecoveryHTTPHarness(t, legacy)
+	for _, variant := range []struct{ legacy, distinct bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		t.Run("legacy="+strconv.FormatBool(variant.legacy)+"/distinct="+strconv.FormatBool(variant.distinct), func(t *testing.T) {
+			agent, panel, fixture, executor, downloader, request, originalPlan := newSoftwarePlanRecoveryHTTPHarness(t, variant.legacy, variant.distinct)
 			if _, err := agent.Journal.Queue(request.JobID, agent.Bootstrap.NodeID, "", 1, "claimed", "", "validated original claim", 5, "", ""); err != nil {
 				t.Fatal(err)
 			}
@@ -198,7 +208,10 @@ func TestSoftwarePlanRecoveryLostClaimPreservesPlanAndExactRereadReconciles(t *t
 			// exact current generation of this same central job.
 			fresh := &softwarePlanRecoveryTestPanel{V2PanelClient: NewV2PanelClient(panel.PanelClient), policy: panel.policy}
 			fresh.Now = panel.Now
-			agent.ControlPlane = fresh
+			agent, err = NewHostPullAgent(agent.Bootstrap, HostPullAgentOptions{StateDir: agent.StateDir, ControlPlane: fresh, Executor: executor, Downloader: downloader, RecoveryOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
 			request.LeaseGeneration = 2
 			if err := agent.RecoverSoftwarePlanAfterGenerationRead(context.Background(), request); err != nil {
 				t.Fatal(err)
@@ -211,14 +224,22 @@ func TestSoftwarePlanRecoveryLostClaimPreservesPlanAndExactRereadReconciles(t *t
 			if len(executor.plans) != 1 || !sameJournalSoftwarePlanIntent(originalPlan, executor.plans[0]) || executor.plans[0].LeaseGeneration != 3 {
 				t.Fatal("recovery substituted the original immutable software plan")
 			}
+			if fresh.lease == nil || !reflect.DeepEqual(fresh.lease.lease, fixture.returned) || fresh.lease.job.SoftwareUpdate == nil ||
+				fresh.lease.job.PolicyRevision != panel.policy.Revision || fresh.lease.job.SoftwareUpdate.SourcePolicyRevision != panel.policy.SourcePolicyRevision ||
+				fresh.lease.job.SoftwareUpdate.ExecutorPolicyRevision != panel.policy.LocalExecutorPolicyRevision ||
+				fresh.lease.job.SoftwareUpdate.ExecutorPolicySHA256 != originalPlan.ConfigSHA256 ||
+				fresh.lease.job.SoftwareUpdate.ConfigRevision != 1 || fresh.lease.lease.Command.MutationAuthorization.DesiredRevision != 1 ||
+				fresh.lease.lease.Command.CanonicalPayloadDigest != fresh.lease.job.SoftwareUpdate.CommandSHA256 {
+				t.Fatal("recovery changed the original wire lease or lost the authenticated policy projection")
+			}
 		})
 	}
 }
 
 func TestSoftwarePlanRecoveryRejectsUntrustedRereadWithoutChangingJournal(t *testing.T) {
-	for _, failure := range []string{"config", "ownership", "target", "version", "policy_digest", "foreign_job", "changed_version", "generation_jump", "stale_generation", "foreign_pending", "terminal_intent"} {
+	for _, failure := range []string{"config", "ownership", "target", "version", "policy_digest", "policy_source", "policy_projection", "policy_executor", "missing_binding_adapter", "foreign_job", "changed_version", "generation_jump", "stale_generation", "foreign_pending", "terminal_intent"} {
 		t.Run(failure, func(t *testing.T) {
-			agent, panel, fixture, executor, downloader, request, _ := newSoftwarePlanRecoveryHTTPHarness(t, false)
+			agent, panel, fixture, executor, downloader, request, _ := newSoftwarePlanRecoveryHTTPHarness(t, false, false)
 			switch failure {
 			case "config":
 				request.ConfigRevision++
@@ -230,6 +251,15 @@ func TestSoftwarePlanRecoveryRejectsUntrustedRereadWithoutChangingJournal(t *tes
 				request.TargetVersion = "v1.2.5"
 			case "policy_digest":
 				panel.policy.LocalExecutorPolicySHA256 = "sha256:" + strings.Repeat("c", 64)
+			case "policy_source":
+				panel.policy.SourcePolicyRevision++
+			case "policy_projection":
+				panel.policy.Revision++
+			case "policy_executor":
+				panel.policy.LocalExecutorPolicyRevision++
+			case "missing_binding_adapter":
+				withoutBinder := softwarePlanRecoveryWithoutBinder{panel, panel}
+				agent.ControlPlane = recoveryOnlyHostPullControlPlane{HostPullControlPlane: withoutBinder, execution: withoutBinder}
 			case "foreign_job", "changed_version", "generation_jump":
 				fixture.wrongLease = failure
 			case "stale_generation":

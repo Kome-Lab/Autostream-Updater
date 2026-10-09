@@ -83,6 +83,7 @@ type softwareUpdateChainRecoveryClient struct {
 	diagnosticMu sync.Mutex
 	policy       softwareUpdateChainInspectionPolicy
 	diagnostic   softwareUpdateChainInspectionDiagnostic
+	history      []softwareUpdateChainInspectionDiagnostic
 }
 
 // These expectations are a separate read-only observation, never authority for
@@ -94,6 +95,7 @@ type softwareUpdateChainInspectionPolicy struct {
 }
 
 type softwareUpdateChainInspectionDiagnostic struct {
+	Ordinal                    int64  `json:"ordinal"`
 	ErrorCode                  string `json:"error_code"`
 	OperationClass             string `json:"operation_class"`
 	ProofReturned              bool   `json:"proof_returned"`
@@ -124,6 +126,7 @@ func (c *softwareUpdateChainRecoveryClient) observeDiagnosticPolicy(ctx context.
 		ErrorCode: "none", OperationClass: "none", PolicyObserved: c.policy.Observed, PolicyErrorCode: c.policy.ErrorCode,
 		CurrentVersionMatchesBuild: c.agent.currentAgentVersion() == controlversion.Current(),
 	}
+	c.history = nil
 	if err == nil {
 		c.policy.UpdaterID, c.policy.HostID, c.policy.Digest = c.agent.Bootstrap.NodeID, binding.ExecutionHostID, policy.LocalExecutorPolicySHA256
 		c.policy.Source, c.policy.Projection, c.policy.Executor, c.policy.Epoch = policy.SourcePolicyRevision, policy.Revision, policy.LocalExecutorPolicyRevision, binding.OwnershipEpoch
@@ -131,11 +134,12 @@ func (c *softwareUpdateChainRecoveryClient) observeDiagnosticPolicy(ctx context.
 }
 
 func (c *softwareUpdateChainRecoveryClient) InspectSoftwareClaimRecovery(ctx context.Context, inspection SoftwareClaimRecoveryInspection, fence LocalExecutorMutationFence) (SoftwareClaimRecoveryProof, error) {
-	c.inspections.Add(1)
+	ordinal := c.inspections.Add(1)
 	proof, err := c.LocalExecutorClient.InspectSoftwareClaimRecovery(ctx, inspection, fence)
 	c.diagnosticMu.Lock()
 	defer c.diagnosticMu.Unlock()
 	c.diagnostic = softwareUpdateChainInspectionDiagnostic{
+		Ordinal:   ordinal,
 		ErrorCode: softwareUpdateChainInspectionErrorCode(err), OperationClass: "none",
 		ProofReturned: err == nil, PolicyObserved: c.policy.Observed, PolicyErrorCode: c.policy.ErrorCode,
 		PolicyMatchesFence: c.policy.Observed && c.policy.Source == fence.SourcePolicyRevision &&
@@ -157,6 +161,9 @@ func (c *softwareUpdateChainRecoveryClient) InspectSoftwareClaimRecovery(ctx con
 		c.diagnostic.RuntimeMatchesAgent = proof.RuntimeVersion == c.agent.currentAgentVersion()
 		c.diagnostic.ObservedNotFuture = !proof.ObservedAt.After(now.Add(time.Second))
 		c.diagnostic.ObservedFresh = now.Sub(proof.ObservedAt) <= localExecutorClientTimeout
+	}
+	if len(c.history) < 16 {
+		c.history = append(c.history, c.diagnostic)
 	}
 	return proof, err
 }
@@ -201,20 +208,26 @@ func (c *softwareUpdateChainRecoveryClient) recordOperationDiagnostic(err error)
 		class = "canceled"
 	case err.Error() == "software claim recovery absence proof does not match the authenticated policy and installed runtime":
 		class = "agent_proof_binding"
+	case err.Error() == "software mutation grant lacks its fixed policy authority":
+		class = "grant_fixed_policy_authority"
 	case softwareUpdateChainInspectionErrorCode(err) != "transport_other":
 		class = "root_response"
 	}
 	c.diagnostic.OperationClass = class
+	if len(c.history) > 0 {
+		c.history[len(c.history)-1].OperationClass = class
+	}
 }
 func (c *softwareUpdateChainRecoveryClient) snapshot() any {
 	c.diagnosticMu.Lock()
 	defer c.diagnosticMu.Unlock()
 	return struct {
-		Stage                 int64                                   `json:"stage"`
-		Apply                 int64                                   `json:"apply"`
-		Reconcile             int64                                   `json:"reconcile"`
-		Inspections           int64                                   `json:"inspections"`
-		StageRequiredResponse bool                                    `json:"stage_required_response"`
-		InspectionDiagnostic  softwareUpdateChainInspectionDiagnostic `json:"inspection_diagnostic"`
-	}{c.stages.Load(), c.applies.Load(), c.reconciles.Load(), c.inspections.Load(), c.stageRequiredResponse.Load(), c.diagnostic}
+		Stage                 int64                                     `json:"stage"`
+		Apply                 int64                                     `json:"apply"`
+		Reconcile             int64                                     `json:"reconcile"`
+		Inspections           int64                                     `json:"inspections"`
+		StageRequiredResponse bool                                      `json:"stage_required_response"`
+		InspectionDiagnostic  softwareUpdateChainInspectionDiagnostic   `json:"inspection_diagnostic"`
+		InspectionHistory     []softwareUpdateChainInspectionDiagnostic `json:"inspection_history"`
+	}{c.stages.Load(), c.applies.Load(), c.reconciles.Load(), c.inspections.Load(), c.stageRequiredResponse.Load(), c.diagnostic, append([]softwareUpdateChainInspectionDiagnostic(nil), c.history...)}
 }

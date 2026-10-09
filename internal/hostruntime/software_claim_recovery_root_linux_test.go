@@ -82,6 +82,7 @@ func TestSoftwareClaimRecoveryRootProofIsReadOnlyAndKeepsUnrelatedTerminalHistor
 }
 
 func TestSoftwareClaimRecoveryRootRefusesRequestedTerminalAndAmbiguousState(t *testing.T) {
+	softwareClaimRecoveryDiagnosticChecks(t)
 	for _, name := range []string{"requested_terminal_checkpoint", "requested_terminal_ledger", "other_active_checkpoint", "unsafe_journal", "unknown_journal_field", "clear_fence", "runtime_claim", "staged_identity", "orphan_stage", "pending_report", "unmarked_active", "policy_fence", "ownership_fence", "mixed_runtime"} {
 		t.Run(name, func(t *testing.T) {
 			fixture, policy, request, runtime := newSoftwareClaimRecoveryRootHarness(t)

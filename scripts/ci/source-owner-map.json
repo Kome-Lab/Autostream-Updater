@@ -1977,7 +1977,7 @@
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_root_linux.go",
-        "sha256": "609d94217c0cfc017ee0ce004bfea307aed451e58079e73499e8b785cbcaccdd",
+        "sha256": "2eab528ab17751f6f4ab9fbc90de607d4b46626c4b82da01eb97e91a117d9f66",
         "symbols": [
           "defaultSoftwareClaimRecoveryRootRuntime",
           "handleLocalExecutorSoftwareClaimRecovery",
@@ -1988,7 +1988,25 @@
           "softwareClaimRecoveryIntentBlocksHost",
           "softwareClaimRecoveryRootRuntime"
         ],
-        "physical_lines": 380
+        "physical_lines": 389
+      },
+      {
+        "path": "internal/hostruntime/software_claim_recovery_diagnostics_linux.go",
+        "sha256": "5a5b04646221815c892050685cd76b4d418df0915d3b8717ff6fa209c862d9b5",
+        "symbols": [
+          "softwareClaimRecoveryRefusalPrefix",
+          "softwareClaimRecoveryInspectionOrdinal",
+          "softwareClaimRecoveryServiceDiagnostic",
+          "softwareClaimRecoveryRootRefusal",
+          "softwareClaimRecoveryDiagnosticRunner",
+          "newSoftwareClaimRecoveryRootRefusal",
+          "softwareClaimRecoveryDiagnosticRunner.Run",
+          "softwareClaimRecoveryCommandClass",
+          "softwareClaimRecoveryRefusalPhase",
+          "softwareClaimRecoveryRootRefusal.valid",
+          "logSoftwareClaimRecoveryRootRefusal"
+        ],
+        "physical_lines": 152
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_receipt.go",
@@ -2262,15 +2280,16 @@
       },
       {
         "path": "internal/hostruntime/host_pull_control_loop.go",
-        "sha256": "59fa124e0fcd3fbb56a22c45869f90255a96a640ee35b8dc8f419b6e1f936850",
+        "sha256": "e6a933ac10fd2c270b1489d6b25da3216e5e2bcea2843031b4fef733cdc1d02b",
         "symbols": [
           "*HostPullAgent.Run",
           "recoveryOnlyHostPullControlPlane",
+          "recoveryOnlyHostPullControlPlane.BindSoftwareUpdateClaim",
           "recoveryOnlyHostPullControlPlane.ClaimHost",
           "recoveryOnlyHostPullControlPlane.IssueMutationGrant",
           "recoveryOnlyHostPullControlPlane.Report"
         ],
-        "physical_lines": 251
+        "physical_lines": 261
       },
       {
         "path": "internal/hostruntime/host_pull_credential_heartbeat.go",
