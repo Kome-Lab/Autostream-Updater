@@ -13,6 +13,7 @@ import (
 )
 
 func softwareClaimRecoveryWatchdogProcessChecks(t *testing.T) {
+	softwareClaimRecoveryR2InitialENOENTChecks(t)
 	for _, name := range []string{"trusted_live", "gone_then_zero", "startup_then_zero", "foreign_exe", "foreign_command", "foreign_uid", "foreign_gid", "foreign_cgroup", "foreign_member", "too_many_members", "different_lock", "same_path_other_inode", "different_binary_namespace", "recycled_inode", "recycled_pid", "unit_changed", "cgroup_read_error", "malformed_identity", "never_settles", "deadline"} {
 		t.Run("watchdog_process/"+name, func(t *testing.T) {
 			root := "/protected-fixture/slots"

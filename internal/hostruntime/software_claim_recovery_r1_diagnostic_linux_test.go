@@ -236,7 +236,8 @@ func softwareClaimRecoveryR1ProcessParityChecks(t *testing.T) {
 					case "OTHER":
 						injected = errors.New("private ENOENT text")
 					}
-					// Positive PID with initial ENOENT remains a hard refusal.
+					// Only positive-PID initial ENOENT now joins the existing
+					// bounded full observation; other errors still refuse.
 					if site == "initial" && injected != nil {
 						units[0].mainPID = 42
 					}
@@ -286,6 +287,12 @@ func softwareClaimRecoveryR1ProcessParityChecks(t *testing.T) {
 					}
 					if code == "never_settles" && joins != 3 {
 						t.Fatal("existing three-join limit changed")
+					}
+					if site == "initial" && code == "ENOENT" && (reason != "process_transition" || calls != 4 || joins != 3) {
+						t.Fatal("positive-PID initial ENOENT did not retain the four-observation bound")
+					}
+					if site == "initial" && (code == "ENODEV" || code == "EACCES" || code == "OTHER") && joins != 0 {
+						t.Fatal("other errno gained an observation retry")
 					}
 				}
 				if !reflect.DeepEqual(signatures[:1], signatures[1:]) {

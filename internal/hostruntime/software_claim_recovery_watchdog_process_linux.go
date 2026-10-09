@@ -148,6 +148,9 @@ func verifySoftwareClaimWatchdogProcessSet(ctx context.Context, slotsRoot string
 		if errors.Is(err, os.ErrNotExist) && unit.mainPID == 0 && unit.controlPID == 0 {
 			continue
 		}
+		if errors.Is(err, os.ErrNotExist) {
+			return errSoftwareClaimWatchdogTransition
+		}
 		if err != nil {
 			rt.diagnostic.observeCgroupRefusal(ctx, unit)
 			return softwareClaimWatchdogRefusal("process_cgroup")

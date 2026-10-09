@@ -2118,7 +2118,7 @@
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_watchdog_process_linux.go",
-        "sha256": "a82960273b6ab25c09ccaaab2f36c7f712b52392520c9d70ab2e5b32689b5d80",
+        "sha256": "c5f72c49cd5c1bdd438403dc36859b68672147499dfc8f55a63089b73b8d850b",
         "symbols": [
           "errSoftwareClaimWatchdogTransition",
           "readSoftwareClaimWatchdogCgroup",
@@ -2132,7 +2132,7 @@
           "readSoftwareClaimWatchdogCgroupObserved",
           "readSoftwareClaimWatchdogMembers"
         ],
-        "physical_lines": 359
+        "physical_lines": 362
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_watchdog_snapshot_linux.go",
