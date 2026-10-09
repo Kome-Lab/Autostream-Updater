@@ -62,7 +62,9 @@ func softwareClaimRecoveryWatchdogBootstrapChecks(t *testing.T) {
 				t.Fatal("arrange private stable rollback state")
 			}
 			originalIdentity := runtime.manual.identityRunner
+			identityReadPaths := make(map[string]int)
 			runtime.manual.identityRunner = softwareClaimRecoveryDiagnosticTestRunner(func(ctx context.Context, dir string, env []string, binary string, args ...string) (string, error) {
+				identityReadPaths[binary]++
 				output, err := originalIdentity.Run(ctx, dir, env, binary, args...)
 				if !pathWithin(rootA, binary) {
 					return output, err
@@ -96,9 +98,16 @@ func softwareClaimRecoveryWatchdogBootstrapChecks(t *testing.T) {
 				if err != nil || proof.Validate() != nil || !proof.NoMutation {
 					t.Fatalf("preserved old rollback exclusion rejected: %v", err)
 				}
-				for _, binary := range []string{"autostream-host-agent", "autostream-local-executor"} {
-					if fixture.runner.identityReads[binary] != 3 {
-						t.Fatal("active pair observation was not reused for bound slot verification")
+				// Current b is observed once and reused for its binding; old a
+				// is observed independently once. Check paths, not a pooled count.
+				if len(identityReadPaths) != 4 {
+					t.Fatalf("identity observation used %d paths; want the four fixed slot binaries", len(identityReadPaths))
+				}
+				for _, slot := range []string{"a", "b"} {
+					for _, binary := range []string{"autostream-host-agent", "autostream-local-executor"} {
+						if count := identityReadPaths[filepath.Join(runtime.manual.selfUpdate.slotsRoot, slot, "bin", binary)]; count != 1 {
+							t.Fatalf("slot %s %s identity read %d times; want exactly one", slot, binary, count)
+						}
 					}
 				}
 			} else if err == nil {
