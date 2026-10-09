@@ -87,6 +87,11 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 	}) {
 		return
 	}
+	// The installed runtime pair is shared by all remaining recovery subtests.
+	// Stop it only when this outer full-chain test and its children complete.
+	t.Cleanup(func() {
+		_ = exec.Command("/usr/bin/systemctl", "stop", "autostream-host-agent.service", "autostream-local-executor.service", "autostream-local-executor.socket").Run()
+	})
 	if !t.Run("NormalInstallerUpgradePreservesClaim", func(t *testing.T) {
 		h.root.stop()
 		softwareUpdateChainRunInstallerHook(t, h)
@@ -365,9 +370,6 @@ func softwareUpdateChainRunInstallerHook(t *testing.T, h *softwareUpdateChainHar
 		softwareUpdateChainLogInstallerFailure(t, runErr, ctx.Err() == context.DeadlineExceeded)
 		t.Fatal("normal matched-pair installer upgrade failed; private evidence retains the original failure")
 	}
-	t.Cleanup(func() {
-		_ = exec.Command("/usr/bin/systemctl", "stop", "autostream-host-agent.service", "autostream-local-executor.service", "autostream-local-executor.socket").Run()
-	})
 }
 func softwareUpdateChainLogInstallerFailure(t *testing.T, runErr error, timedOut bool) {
 	t.Helper()
