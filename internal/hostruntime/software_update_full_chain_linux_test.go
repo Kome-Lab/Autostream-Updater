@@ -105,7 +105,9 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 		response := recovery.call(t, stPortChainCommand{Command: "recover", JobID: orphan.ID, LeaseGeneration: 1})
 		settled := h.readSoftware(t, orphan.ID)
 		calls := softwareUpdateChainDecodeCalls(t, response)
+		softwareUpdateChainLogRecoveryInspection(t, response)
 		if !response.OK || response.RootCalls != 0 || response.ActiveJobID != "" || response.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 0 || calls.Inspections < 1 || calls.StageRequiredResponse || settled.ID != orphan.ID || settled.Status != "failed" || settled.Code != "execution_failed" || settled.LeaseGeneration != 2 || settled.PolicyRevision != h.projection || settled.OwnershipEpoch != 3 {
+			softwareUpdateChainLogAuxiliaryRootInspection(t, h, SoftwareClaimRecoveryRequest{JobID: orphan.ID, LeaseGeneration: 1, TargetID: "control-panel", CurrentVersion: "v2.0.0", TargetVersion: "v2.0.1", ConfigRevision: 1, OwnershipEpoch: 3})
 			t.Fatal("explicit real-root absence proof did not settle only the exact orphan job without a software mutation")
 		}
 		h.requireSettledSoftwareClaimIntent(t, settled, 1)
@@ -432,4 +434,125 @@ func (h *softwareUpdateChainHarness) writeSoftwareEvidence(t *testing.T, orphan,
 	if err != nil || os.WriteFile(filepath.Join(h.evidence, "artifacts", "software-full-chain.json"), append(body, '\n'), 0o600) != nil {
 		t.Fatal("persist bounded software chain evidence")
 	}
+}
+
+func softwareUpdateChainLogRecoveryInspection(t *testing.T, response stPortChainResponse) {
+	t.Helper()
+	var wire struct {
+		InspectionDiagnostic *softwareUpdateChainInspectionDiagnostic `json:"inspection_diagnostic"`
+	}
+	if json.Unmarshal(response.SoftwareWire, &wire) != nil || wire.InspectionDiagnostic == nil {
+		t.Log("SOFTWARE recovery inspection: diagnostic_present=false")
+		return
+	}
+	d := *wire.InspectionDiagnostic
+	code := "transport_other"
+	if d.ErrorCode == "none" || validLocalExecutorFailureCode(d.ErrorCode) {
+		code = d.ErrorCode
+	}
+	class := "other"
+	switch d.OperationClass {
+	case "none", "deadline", "canceled", "agent_proof_binding", "root_response":
+		class = d.OperationClass
+	}
+	policyCode := "other"
+	switch d.PolicyErrorCode {
+	case "none", "policy_authentication", "host_authentication", "policy_binding":
+		policyCode = d.PolicyErrorCode
+	}
+	t.Logf("SOFTWARE recovery inspection: diagnostic_present=true code=%s operation_class=%s proof_returned=%t policy_observed=%t policy_code=%s policy_matches_fence=%t", code, class, d.ProofReturned, d.PolicyObserved, policyCode, d.PolicyMatchesFence)
+	t.Logf("SOFTWARE recovery proof checks: valid=%t request=%t updater=%t host=%t source=%t projection=%t executor=%t digest=%t epoch=%t runtime_matches_agent=%t current_version_matches_build=%t observed_not_future=%t observed_fresh=%t", d.ProofValid, d.RequestMatches, d.UpdaterMatches, d.HostMatches, d.SourceMatches, d.ProjectionMatches, d.ExecutorMatches, d.DigestMatches, d.EpochMatches, d.RuntimeMatchesAgent, d.CurrentVersionMatchesBuild, d.ObservedNotFuture, d.ObservedFresh)
+}
+
+// This failure-only observation runs in the parent fixture's process namespace,
+// outside the installed Executor unit's sandbox. It cannot replace the real UDS
+// proof or any assertion above, and uses only the same fixed read-only runtime.
+func softwareUpdateChainLogAuxiliaryRootInspection(t *testing.T, h *softwareUpdateChainHarness, exact SoftwareClaimRecoveryRequest) {
+	t.Helper()
+	policy, err := LoadLocalExecutorPolicy(DefaultLocalExecutorPolicyPath, true)
+	if err != nil {
+		t.Log("SOFTWARE auxiliary root inspection: outside_actual_unit=true phase=root_policy_load proof_returned=false")
+		return
+	}
+	digest, digestErr := h.rootPolicy.SHA256()
+	canonicalDigest, canonicalErr := policy.SHA256()
+	if digestErr != nil || canonicalErr != nil || canonicalDigest != digest {
+		t.Log("SOFTWARE auxiliary root inspection: outside_actual_unit=true phase=root_policy_digest proof_returned=false")
+		return
+	}
+	request := LocalExecutorRequest{
+		Version: LocalExecutorMutationProtocolVersion, Operation: localExecutorSoftwareClaimRecoveryOperation,
+		ServiceID: exact.TargetID, SoftwareClaimRecovery: &SoftwareClaimRecoveryInspection{Request: exact, ExecutorPolicySHA256: digest},
+		SourcePolicyRevision: h.source, OwnershipEpoch: exact.OwnershipEpoch,
+		OwnershipPolicyRevision: h.projection, ExecutorPolicyRevision: h.executor,
+	}
+	runtime := defaultSoftwareClaimRecoveryRootRuntime(nil)
+	unlock, err := runtime.acquireLifecycle()
+	if err != nil {
+		t.Log("SOFTWARE auxiliary root inspection: outside_actual_unit=true phase=lifecycle_lock proof_returned=false")
+		return
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(h.ctx, localExecutorHostSelfUpdateTimeout)
+	defer cancel()
+	proof, err := inspectSoftwareClaimRecoveryRoot(ctx, policy, request, runtime)
+	t.Logf("SOFTWARE auxiliary root inspection: outside_actual_unit=true phase=%s proof_returned=%t proof_valid=%t", softwareUpdateChainAuxiliaryRootPhase(err), err == nil, err == nil && proof.Validate() == nil)
+}
+
+func softwareUpdateChainAuxiliaryRootPhase(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	// Exact source literals only: unknown errors keep their classification and
+	// never expose raw errors, filenames, state bytes, IDs or credentials.
+	switch err.Error() {
+	case "software claim recovery root policy fence is invalid":
+		return "policy_fence"
+	case "software claim recovery root policy digest changed":
+		return "policy_digest"
+	case "software claim recovery canonical root policy changed":
+		return "canonical_policy"
+	case "software claim recovery root target config binding is invalid":
+		return "target_config"
+	case "software claim recovery authenticated policy disagrees with root policy", "canonical recovery policy identity is unavailable", "authenticated root recovery policy is unavailable":
+		return "authenticated_policy"
+	case "software claim recovery ownership fence is invalid":
+		return "ownership"
+	case "software claim recovery root target differs from authenticated target":
+		return "target_snapshot"
+	case "Local Executor state root is unsafe", "Host Agent state root is unsafe", "Host Agent state root owner is invalid":
+		return "state_roots"
+	case "software claim recovery durable intent disagrees with the request", "software claim recovery cannot replace an unsettled or legacy root intent", "software claim recovery previous intent no longer matches current policy", "software claim recovery immutable archive has another identity or policy":
+		return "durable_intent"
+	case "software claim recovery journal contains execution or pending report state", "software claim recovery journal has another or an executing cursor", "Host Agent journal is unsafe", "Host Agent journal owner is invalid", "Host Agent journal changed during secure open", "decode Host Agent journal", "Host Agent journal contains trailing data":
+		return "journal"
+	case "software claim recovery is blocked by other durable lifecycle state":
+		return "lifecycle_state"
+	case "software claim recovery is blocked by runtime credential state":
+		return "runtime_credential"
+	case "an existing Host self-update grant blocks manual runtime upgrade; wait for the healthy-slot Local Executor to converge it":
+		return "self_update_grant"
+	case "software claim recovery requires a stable matched installed runtime":
+		return "runtime_state"
+	case "software claim recovery runtime slot changed":
+		return "runtime_slot"
+	case "software claim recovery Agent service is not safely active or stopped":
+		return "agent_service"
+	case "software claim recovery installed runtime pair is unconfirmed":
+		return "runtime_pair"
+	case "software claim recovery legacy authority is unsafe", "software claim recovery cannot discard a requested-job checkpoint, including a terminal checkpoint", "software claim recovery requested job has a root port record", "software claim recovery cannot discard a requested-job or non-terminal root mutation record", "software claim recovery has unconfirmed root execution residue", "software claim recovery has an orphan or unsafe root stage":
+		return "root_records"
+	}
+	for _, unit := range manualHostRecoveryUnitInstances {
+		if err.Error() == unit+" must be inactive and have no MainPID" || err.Error() == "read "+unit+" active state" || err.Error() == "read "+unit+" MainPID" || err.Error() == unit+" MainPID is invalid" {
+			return "recovery_service"
+		}
+	}
+	return "unknown"
 }
