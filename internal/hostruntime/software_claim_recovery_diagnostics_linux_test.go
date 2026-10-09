@@ -150,4 +150,5 @@ func softwareClaimRecoveryDiagnosticChecks(t *testing.T) {
 		}
 	})
 	softwareUpdateChainRootJournalParserChecks(t)
+	softwareClaimRecoveryR1ObservationChecks(t)
 }

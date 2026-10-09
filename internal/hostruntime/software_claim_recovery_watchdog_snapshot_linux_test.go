@@ -61,6 +61,30 @@ func softwareClaimRecoveryWatchdogSnapshotChecks(t *testing.T) {
 				ctx = canceled
 			case "production_temp_refused":
 				allowTestPaths = false
+				before, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal("read private owner fixture before construction")
+				}
+				beforeStat, ok := before.Sys().(*syscall.Stat_t)
+				if !ok || beforeStat == nil {
+					t.Fatal("private owner fixture stat unavailable")
+				}
+				if os.Geteuid() == 0 {
+					if err := os.Chown(path, 1, 0); err != nil {
+						t.Fatal("construct private UID-only negative")
+					}
+				}
+				after, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal("read private owner fixture after construction")
+				}
+				afterStat, ok := after.Sys().(*syscall.Stat_t)
+				if !ok || afterStat == nil || !after.Mode().IsRegular() || after.Mode() != 0o600 || afterStat.Nlink != 1 || afterStat.Uid == 0 ||
+					(os.Geteuid() == 0 && (afterStat.Uid != 1 || afterStat.Gid != 0)) ||
+					(os.Geteuid() != 0 && (afterStat.Uid != beforeStat.Uid || afterStat.Gid != beforeStat.Gid)) {
+					t.Fatal("private UID-only negative has unexpected actual stat")
+				}
+				t.Logf("R1 owner fixture: root=%t before_uid=%d before_gid=%d after_uid=%d after_gid=%d regular=true mode_0600=true nlink_one=true", os.Geteuid() == 0, beforeStat.Uid, beforeStat.Gid, afterStat.Uid, afterStat.Gid)
 			}
 			result, err := snapshotSoftwareClaimWatchdogFile(ctx, path, 0o600, allowTestPaths)
 			if name == "regular" {
@@ -151,6 +175,21 @@ func softwareClaimRecoveryWatchdogSnapshotChecks(t *testing.T) {
 		unchanged := softwareClaimWatchdogSnapshotTestInfo{FileInfo: info, stat: *original, size: info.Size()}
 		if !softwareClaimWatchdogSnapshotInfoMatches(info, unchanged) {
 			t.Fatal("unchanged exact dev/inode metadata was refused")
+		}
+		for _, owner := range []string{"production_root_positive", "production_uid_only", "production_gid_only"} {
+			t.Run(owner, func(t *testing.T) {
+				changed := softwareClaimWatchdogSnapshotTestInfo{FileInfo: info, stat: *original, size: info.Size()}
+				changed.stat.Uid, changed.stat.Gid = 0, 0
+				if owner == "production_uid_only" {
+					changed.stat.Uid = 1
+				}
+				if owner == "production_gid_only" {
+					changed.stat.Gid = 1
+				}
+				if softwareClaimWatchdogSnapshotInfoSafe(changed, 0o600, false) != (owner == "production_root_positive") {
+					t.Fatal("production UID-only/GID-only ownership predicate changed")
+				}
+			})
 		}
 		for _, name := range []string{"uid", "gid", "link_count", "size_limit", "ctime"} {
 			t.Run(name, func(t *testing.T) {

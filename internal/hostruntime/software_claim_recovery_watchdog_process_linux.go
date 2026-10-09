@@ -28,11 +28,13 @@ type softwareClaimWatchdogProcessObservation struct {
 }
 
 type softwareClaimWatchdogProcessRuntime struct {
-	read     func(int) (softwareClaimWatchdogProcessObservation, error)
-	sameLock func(int) error
-	binary   func(context.Context, int, string, os.FileInfo) error
-	members  func(string) ([]int, error)
-	units    func(context.Context) ([]softwareClaimRecoveryWatchdogUnit, error)
+	read               func(int) (softwareClaimWatchdogProcessObservation, error)
+	sameLock           func(int) error
+	binary             func(context.Context, int, string, os.FileInfo) error
+	members            func(string) ([]int, error)
+	units              func(context.Context) ([]softwareClaimRecoveryWatchdogUnit, error)
+	diagnostic         *softwareClaimRecoveryRootRefusal
+	observationAttempt int
 }
 
 func verifySoftwareClaimRecoveryWatchdogProcesses(ctx context.Context, rt manualHostUpgradeRuntime, units []softwareClaimRecoveryWatchdogUnit, held *heldHostLifecycleLock, absent []string, files []secureManualHostUpgradeFile) error {
@@ -49,10 +51,18 @@ func verifySoftwareClaimRecoveryWatchdogProcesses(ctx context.Context, rt manual
 			}
 			return softwareClaimWatchdogRefusal("process_binary_namespace")
 		},
-		members: readSoftwareClaimWatchdogCgroup,
+		members: func(group string) ([]int, error) {
+			d := softwareClaimRecoveryDiagnosticForRunner(rt.runner)
+			var observed *softwareClaimRecoveryProcessDiagnostic
+			if d != nil {
+				observed = d.Process
+			}
+			return readSoftwareClaimWatchdogCgroupObserved(group, observed)
+		},
 		units: func(ctx context.Context) ([]softwareClaimRecoveryWatchdogUnit, error) {
 			return readSoftwareClaimRecoveryWatchdogUnits(ctx, rt)
 		},
+		diagnostic: softwareClaimRecoveryDiagnosticForRunner(rt.runner),
 	}
 	return verifySoftwareClaimWatchdogProcessRuntime(ctx, rt.selfUpdate.slotsRoot, units, absent, process)
 }
@@ -65,6 +75,7 @@ func verifySoftwareClaimWatchdogProcessRuntime(ctx context.Context, slotsRoot st
 		if ctx.Err() != nil {
 			return softwareClaimWatchdogRefusal("process_deadline")
 		}
+		rt.observationAttempt = attempt + 1
 		err := verifySoftwareClaimWatchdogProcessSet(ctx, slotsRoot, units, absent, rt)
 		if err == nil {
 			return nil
@@ -119,14 +130,26 @@ func verifySoftwareClaimWatchdogProcessSet(ctx context.Context, slotsRoot string
 			}
 			continue
 		}
+		rt.diagnostic.observeProcess(rt.observationAttempt, unit, "group_shape")
+		if rt.diagnostic != nil {
+			rt.diagnostic.Process.ReaderStage, rt.diagnostic.Process.Errno = "path_check", "NONE"
+			rt.diagnostic.Process.GroupShape = validLocalExecutorCgroup(unit.controlGroup)
+			rt.diagnostic.Process.GroupBasename = filepath.Base(unit.controlGroup) == "autostream-host-self-update-recovery@"+unit.slot+".service"
+		}
 		if !validLocalExecutorCgroup(unit.controlGroup) || filepath.Base(unit.controlGroup) != "autostream-host-self-update-recovery@"+unit.slot+".service" {
+			rt.diagnostic.observeCgroupRefusal(ctx, unit)
 			return softwareClaimWatchdogRefusal("process_cgroup")
 		}
+		if rt.diagnostic != nil {
+			rt.diagnostic.Process.Site, rt.diagnostic.Process.ReaderStage, rt.diagnostic.Process.Errno = "initial_members", "not_captured", "NOT_CAPTURED"
+		}
 		members, err := rt.members(unit.controlGroup)
+		rt.diagnostic.observeMemberResult(members, err)
 		if errors.Is(err, os.ErrNotExist) && unit.mainPID == 0 && unit.controlPID == 0 {
 			continue
 		}
 		if err != nil {
+			rt.diagnostic.observeCgroupRefusal(ctx, unit)
 			return softwareClaimWatchdogRefusal("process_cgroup")
 		}
 		if len(members) > 2 {
@@ -186,11 +209,17 @@ func verifySoftwareClaimWatchdogProcessSet(ctx context.Context, slotsRoot string
 				return softwareClaimWatchdogRefusal("process_identity")
 			}
 		}
+		if rt.diagnostic != nil {
+			rt.diagnostic.Process.Site, rt.diagnostic.Process.ReaderStage, rt.diagnostic.Process.Errno = "final_members", "not_captured", "NOT_CAPTURED"
+			rt.diagnostic.Process.BoundsExceeded, rt.diagnostic.Process.PartialRead, rt.diagnostic.Process.MemberCount = false, false, -1
+		}
 		again, err := rt.members(unit.controlGroup)
+		rt.diagnostic.observeMemberResult(again, err)
 		if errors.Is(err, os.ErrNotExist) {
 			return errSoftwareClaimWatchdogTransition
 		}
 		if err != nil {
+			rt.diagnostic.observeCgroupRefusal(ctx, unit)
 			return softwareClaimWatchdogRefusal("process_cgroup")
 		}
 		if !reflect.DeepEqual(members, again) {
@@ -259,6 +288,13 @@ func softwareClaimWatchdogRootCredentials(contents []byte) bool {
 }
 
 func readSoftwareClaimWatchdogCgroup(group string) ([]int, error) {
+	return readSoftwareClaimWatchdogCgroupObserved(group, nil)
+}
+
+func readSoftwareClaimWatchdogCgroupObserved(group string, observed *softwareClaimRecoveryProcessDiagnostic) ([]int, error) {
+	if observed != nil {
+		observed.ReaderStage, observed.Errno = "path_check", "NONE"
+	}
 	if !validLocalExecutorCgroup(group) {
 		return nil, softwareClaimWatchdogRefusal("process_cgroup")
 	}
@@ -267,23 +303,48 @@ func readSoftwareClaimWatchdogCgroup(group string) ([]int, error) {
 		return nil, softwareClaimWatchdogRefusal("process_cgroup")
 	}
 	file, err := os.Open(path)
+	if observed != nil {
+		observed.ReaderStage, observed.Errno = "open", softwareClaimRecoveryErrno(err)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+	return readSoftwareClaimWatchdogMembers(file, observed)
+}
+
+func readSoftwareClaimWatchdogMembers(reader io.Reader, observed *softwareClaimRecoveryProcessDiagnostic) ([]int, error) {
 	// A genuine empty fixed-unit cgroup is meaningful with zero MainPID and
 	// ControlPID plus the independently verified unit/slot/held-lock contract.
-	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	data, err := io.ReadAll(io.LimitReader(reader, 4097))
+	if observed != nil {
+		observed.ReaderStage, observed.Errno = "read", softwareClaimRecoveryErrno(err)
+		observed.BoundsExceeded, observed.PartialRead = len(data) > 4096, len(data) > 0 && err != nil
+		if observed.BoundsExceeded {
+			observed.ReaderStage = "bounds"
+		}
+	}
 	if err != nil || len(data) > 4096 {
 		return nil, softwareClaimWatchdogRefusal("process_cgroup")
 	}
 	fields := strings.Fields(string(data))
+	if observed != nil {
+		observed.ReaderStage, observed.MemberCount = "parse", len(fields)
+		if len(fields) > 2 {
+			observed.MemberCount = 3
+			observed.BoundsExceeded = true
+			observed.ReaderStage = "bounds"
+		}
+	}
 	if len(fields) > 2 {
 		return nil, softwareClaimWatchdogRefusal("process_members")
 	}
 	result := make([]int, 0, len(fields))
 	for _, value := range fields {
 		pid, err := strconv.Atoi(value)
+		if observed != nil && err != nil {
+			observed.Errno = softwareClaimRecoveryErrno(err)
+		}
 		if err != nil || pid < 1 {
 			return nil, softwareClaimWatchdogRefusal("process_members")
 		}

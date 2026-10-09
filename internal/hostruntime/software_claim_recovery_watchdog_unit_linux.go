@@ -141,6 +141,7 @@ func readSoftwareClaimRecoveryWatchdogUnits(ctx context.Context, rt manualHostUp
 			return nil, softwareClaimWatchdogRefusal("unit_read")
 		}
 		unit, err := parseSoftwareClaimRecoveryWatchdogUnit(output, slot, rt.paths.installedRecoveryService)
+		softwareClaimRecoveryObserveUnit(rt.runner, slot, unit, err)
 		if err != nil {
 			return nil, err
 		}

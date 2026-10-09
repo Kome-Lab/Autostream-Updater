@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -99,10 +100,73 @@ func softwareUpdateChainLogActualRootRefusal(t *testing.T, window softwareUpdate
 	encoded, err := json.Marshal(matches[0])
 	if err == nil {
 		t.Logf("SOFTWARE actual root refusal: actual_unit=true captured_original_guard=true record=%s", encoded)
+		t.Logf("SOFTWARE recovery stage inference: inferred_from_ordinal_only=true stage=%s", softwareUpdateChainRecoveryStageInference(matches[0].Ordinal))
 	}
 }
 
+func softwareUpdateChainRecoveryStageInference(ordinal int64) string {
+	switch ordinal {
+	case 1:
+		return "before_intent"
+	case 2:
+		return "intent_saved"
+	case 3:
+		return "before_same_job_claim"
+	case 4:
+		return "claim_validated_before_cursor_save"
+	case 5:
+		return "cursor_saved_before_failed_report"
+	case 6:
+		return "terminal_clear_received_before_local_settle"
+	default:
+		return "unknown"
+	}
+}
+
+// Already obtained by this same recover call; no additional CP/root request.
+func softwareUpdateChainLogRecoveryReach(t *testing.T, response stPortChainResponse, calls softwareUpdateChainCalls, settled softwareUpdateChainJob, job string) {
+	t.Helper()
+	t.Logf("SOFTWARE recovery reach observed: central_status=%s central_code=%s central_same_job=%t central_generation=%d local_active_present=%t local_active_same_job=%t local_plan_present=%t stage=%d apply=%d reconcile=%d inspections=%d response_ok=%t",
+		softwareUpdateChainSafeStatus(settled.Status), softwareUpdateChainSafeCode(settled.Code), settled.ID == job, softwareUpdateChainSafeGeneration(settled.LeaseGeneration), response.ActiveJobID != "", response.ActiveJobID == job, response.ActivePlanPresent,
+		softwareUpdateChainSafeCount(int64(calls.Stage)), softwareUpdateChainSafeCount(int64(calls.Apply)), softwareUpdateChainSafeCount(int64(calls.Reconcile)), softwareUpdateChainSafeCount(int64(calls.Inspections)), response.OK)
+}
+
 func softwareUpdateChainRootJournalParserChecks(t *testing.T) {
+	t.Run("actual_root_journal_process_observation", func(t *testing.T) {
+		window := softwareUpdateChainRootJournalWindow{strings.Repeat("a", 32), 100}
+		d := newSoftwareClaimRecoveryRootRefusal(SoftwareClaimRecoveryRequest{})
+		d.LifecycleHeld, d.Phase, d.WatchdogGuard = true, "watchdog_guard", "process_cgroup"
+		d.observeProcess(1, softwareClaimRecoveryWatchdogUnit{slot: "a", mainPID: 42}, "initial_members")
+		d.Process.ReaderStage, d.Process.Errno, d.Process.Refused = "open", "ENOENT", true
+		encoded, _ := json.Marshal(d)
+		journal := map[string]string{"_SYSTEMD_UNIT": hostSelfUpdateExecutorServiceUnit, "_UID": "0", "_SYSTEMD_INVOCATION_ID": window.invocation, "__REALTIME_TIMESTAMP": "101", "MESSAGE": softwareClaimRecoveryRefusalPrefix + string(encoded)}
+		body, _ := json.Marshal(journal)
+		if got, ok := softwareUpdateChainParseRootRefusal(body, window, 102, d.RequestSHA256); !ok || !reflect.DeepEqual(got, d) {
+			t.Fatal("closed actual-unit process observation lost typed site/errno")
+		}
+		for _, bad := range []string{"errno", "stage", "namespace", "raw_field"} {
+			copy := d
+			p := *d.Process
+			copy.Process = &p
+			switch bad {
+			case "errno":
+				p.Errno = "private-error"
+			case "stage":
+				p.ReaderStage = "private-site"
+			case "namespace":
+				p.Namespaces[0].Mount = "private-path"
+			}
+			poison, _ := json.Marshal(copy)
+			if bad == "raw_field" {
+				poison = []byte(strings.TrimSuffix(string(poison), "}") + `,"raw_path":"private"}`)
+			}
+			journal["MESSAGE"] = softwareClaimRecoveryRefusalPrefix + string(poison)
+			body, _ = json.Marshal(journal)
+			if _, ok := softwareUpdateChainParseRootRefusal(body, window, 102, d.RequestSHA256); ok {
+				t.Fatal("raw/unbounded process journal metadata was accepted")
+			}
+		}
+	})
 	t.Run("actual_root_journal_parser", func(t *testing.T) {
 		window := softwareUpdateChainRootJournalWindow{strings.Repeat("a", 32), 100}
 		d := newSoftwareClaimRecoveryRootRefusal(SoftwareClaimRecoveryRequest{})

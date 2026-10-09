@@ -114,6 +114,7 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 		calls := softwareUpdateChainDecodeCalls(t, response)
 		softwareUpdateChainLogRecoveryInspection(t, response)
 		if !response.OK || response.RootCalls != 0 || response.ActiveJobID != "" || response.ActivePlanPresent || calls.Stage != 0 || calls.Apply != 0 || calls.Reconcile != 0 || calls.Inspections < 1 || calls.StageRequiredResponse || settled.ID != orphan.ID || settled.Status != "failed" || settled.Code != "execution_failed" || settled.LeaseGeneration != 2 || settled.PolicyRevision != h.projection || settled.OwnershipEpoch != 3 {
+			softwareUpdateChainLogRecoveryReach(t, response, calls, settled, orphan.ID)
 			softwareUpdateChainLogActualRootRefusal(t, rootWindow, SoftwareClaimRecoveryRequest{JobID: orphan.ID, LeaseGeneration: 1, TargetID: "control-panel", CurrentVersion: "v2.0.0", TargetVersion: "v2.0.1", ConfigRevision: 1, OwnershipEpoch: 3})
 			softwareUpdateChainLogAuxiliaryRootInspection(t, h, SoftwareClaimRecoveryRequest{JobID: orphan.ID, LeaseGeneration: 1, TargetID: "control-panel", CurrentVersion: "v2.0.0", TargetVersion: "v2.0.1", ConfigRevision: 1, OwnershipEpoch: 3})
 			t.Fatal("explicit real-root absence proof did not settle only the exact orphan job without a software mutation")
