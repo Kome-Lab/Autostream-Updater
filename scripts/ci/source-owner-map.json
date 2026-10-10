@@ -95,7 +95,7 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_linux_test.go",
-        "sha256": "1459f8174d61475ae26933c377aa7f1bf62e7982c7a5440bc5ca2dbb61774583",
+        "sha256": "0f83d670228f73355716405f69337e10f7936fb9fae83586c7e55e237d8e7d56",
         "symbols": [
           "TestManualHostUpgradeBootstrapsMissingSlotAndCommitsRuntimePair",
           "TestManualHostUpgradeCleansCreatedStateRootWhenBootstrapFsyncFails",
@@ -104,9 +104,13 @@
           "TestManualHostUpgradeRejectsTamperedArtifactBeforeMutation",
           "TestManualHostUpgradeRejectsUnsafeBootstrapStateLayout",
           "TestManualHostUpgradeRollsBackWhenTargetAgentActivationFails",
-          "TestManualHostUpgradeSameVersionPersistsMissingBootstrapState"
+          "TestManualHostUpgradeSameVersionPersistsMissingBootstrapState",
+          "manualHostUpgradeBeforeConcurrency",
+          "manualHostUpgradeConcurrencyRunner",
+          "newManualHostUpgradeConcurrencyFixture",
+          "testManualHostUpgradeWatchdogConcurrency"
         ],
-        "physical_lines": 412
+        "physical_lines": 728
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_migration_linux_test.go",
@@ -163,7 +167,7 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_runner_linux_test.go",
-        "sha256": "9e95c73344655e05b173f8f4404205b66c91768ae7035d04bb2c63b087c780b1",
+        "sha256": "2acf82ba1f4cc25e7535a617cf33a902b609924d6c0b7a2bae2de8738a13e99e",
         "symbols": [
           "*manualHostUpgradeLinuxRunner.Run",
           "*manualHostUpgradeLinuxRunner.binaryIdentity",
@@ -174,7 +178,7 @@
           "manualHostUpgradeTestOldCommit,manualHostUpgradeTestTargetCommit,manualHostUpgradeTestOldBuildDate,manualHostUpgradeTestBuildDate,manualHostUpgradeTestActivationNow",
           "manualHostUpgradeTestOldVersion,manualHostUpgradeTestTargetVersion"
         ],
-        "physical_lines": 355
+        "physical_lines": 370
       }
     ]
   },
@@ -383,13 +387,13 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_linux.go",
-        "sha256": "6d69ea7e4ec7356737286a026bf9470f7a83d91cf1e11e07646da5568cdeb1f4",
+        "sha256": "9d03abf46be680ec9496fd5bb90220ed62d3c44bdc45a838ab85f44796a99af3",
         "symbols": [
           "prepareManualHostUpgradeRuntime",
           "upgradeHostRuntimeFromVerifiedBundle",
-          "upgradeHostRuntimeWithRuntime"
+          "upgradeHostRuntimeAttempt"
         ],
-        "physical_lines": 517
+        "physical_lines": 569
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_observation_linux.go",
@@ -417,16 +421,20 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_services_linux.go",
-        "sha256": "5e5dbf359d53bcc3fcf0b47bd86e5480aef926347f5018ccf346bdcd6bed3c93",
+        "sha256": "fe3a91e5478eb9d59c49a3234d8978ffd2d8d08fd47c21c2e51cefe7f4e29436",
         "symbols": [
+          "manualHostRecoveryServiceProperties",
+          "manualHostUpgradeRecoveryBusy",
+          "manualHostUpgradeRecoveryCanSettle",
           "normalizeManualHostUpgradeRecoveryServices",
+          "readManualHostUpgradeRecoveryServiceProperties",
           "readManualHostUpgradeRecoveryServiceState",
           "requireManualHostSystemdState",
           "restartManualHostUpgradeLocalExecutor",
           "validateManualHostUpgradeCoreServicePreconditions",
           "validateManualHostUpgradeRecoveryServicePreconditions"
         ],
-        "physical_lines": 184
+        "physical_lines": 292
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_snapshot_linux.go",
@@ -482,6 +490,20 @@
           "acquireHostLifecycleLock"
         ],
         "physical_lines": 25
+      },
+      {
+        "path": "internal/hostruntime/host_manual_upgrade_preflight_linux.go",
+        "sha256": "f25067c88c7ceedbbc3cd9bf338120dc9f9a9eacd1d40d42700a1d16e6fb0198",
+        "physical_lines": 213,
+        "symbols": [
+          "captureManualHostUpgradePreflight",
+          "manualHostUpgradePreflight",
+          "manualHostUpgradePreflightLock",
+          "manualHostUpgradeRecoveryHandoff",
+          "upgradeHostRuntimeWithRuntime",
+          "verifyManualHostUpgradePreflightLocks",
+          "waitManualHostUpgradeRecoveryQuiescent"
+        ]
       }
     ]
   },

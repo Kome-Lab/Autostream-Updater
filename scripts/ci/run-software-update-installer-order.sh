@@ -65,6 +65,8 @@ readonly CANDIDATE_COMMIT=$5
 readonly EVIDENCE_DIRECTORY=$6
 readonly BEFORE_VERSION=v2.0.0
 readonly CANDIDATE_VERSION=v2.0.1
+readonly BASELINE_COMMIT=f72d1bddb712eeb64bab2b852b648c2c6b0f4641
+readonly BASELINE_BINARIES=/opt/software-input/baseline-production
 readonly IDENTITY=/etc/autostream/updater/agent.yaml
 readonly POLICY=/etc/autostream/updater/executor-policy.json
 readonly HOST_ROOT=/opt/autostream/host-agent
@@ -163,6 +165,7 @@ assert_live_unit() {
 software_installer_enter_phase binary_pair
 assert_binary_pair "${BEFORE_BINARIES}" "${BEFORE_VERSION}" "${BEFORE_COMMIT}"
 assert_binary_pair "${CANDIDATE_BINARIES}" "${CANDIDATE_VERSION}" "${CANDIDATE_COMMIT}"
+assert_binary_pair "${BASELINE_BINARIES}" "${CANDIDATE_VERSION}" "${BASELINE_COMMIT}"
 software_installer_enter_phase compatibility_floor
 MINIMUM_PANEL_VERSION="$(python3 "${REPOSITORY_ROOT}/scripts/ci/host_runtime_compatibility.py" \
   --root "${REPOSITORY_ROOT}" --source-version "${CANDIDATE_VERSION}")"
@@ -220,13 +223,35 @@ tar --owner=0 --group=0 --numeric-owner -C "${FIXTURE_STAGE}" -czf "${ARCHIVE}" 
   sha256sum "${ARTIFACT_ID}.tar.gz" > "${ARTIFACT_ID}.tar.gz.sha256"
 )
 
+# A fresh synthetic baseline bundle, never a modified published archive.
+readonly BASELINE_STAGE=/root/autostream-software-installer-baseline
+readonly BASELINE_ROOT="${BASELINE_STAGE}/${ARTIFACT_ID}"
+[[ ! -e ${BASELINE_STAGE} ]]
+install -d -o root -g root -m 0700 "${BASELINE_STAGE}"
+cp -a -- "${PACKAGE_ROOT}" "${BASELINE_ROOT}"
+for binary in autostream-host-agent autostream-local-executor; do
+  install -o root -g root -m 0755 "${BASELINE_BINARIES}/${binary}" "${BASELINE_ROOT}/bin/${binary}"
+done
+jq --arg commit "${BASELINE_COMMIT}" '.commit = $commit' "${PACKAGE_ROOT}/artifact-manifest.json" \
+  > "${BASELINE_ROOT}/artifact-manifest.json"
+(
+  cd "${BASELINE_ROOT}"
+  find . -type f ! -name checksums.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > checksums.txt
+)
+tar --owner=0 --group=0 --numeric-owner -C "${BASELINE_STAGE}" -czf "${BASELINE_STAGE}/${ARTIFACT_ID}.tar.gz" "${ARTIFACT_ID}"
+(
+  cd "${BASELINE_STAGE}"
+  sha256sum "${ARTIFACT_ID}.tar.gz" > "${ARTIFACT_ID}.tar.gz.sha256"
+)
+
 # Establish a legitimate already-configured managed pair from the reported
 # old source, while retaining the real CP-generated identity, policy and state.
 software_installer_enter_phase legacy_pair_install
 install -d -o root -g root -m 0755 "${HOST_ROOT}" "${HOST_ROOT}/slots" "${HOST_ROOT}/slots/a" \
-  "${HOST_ROOT}/slots/a/bin" /usr/local/libexec
+  "${HOST_ROOT}/slots/a/bin" "${HOST_ROOT}/slots/b" "${HOST_ROOT}/slots/b/bin" /usr/local/libexec
 for binary in autostream-host-agent autostream-local-executor; do
   install -o root -g root -m 0755 "${BEFORE_BINARIES}/${binary}" "${HOST_ROOT}/slots/a/bin/${binary}"
+  install -o root -g root -m 0755 "${BEFORE_BINARIES}/${binary}" "${HOST_ROOT}/slots/b/bin/${binary}"
 done
 ln -s slots/a "${HOST_ROOT}/current"
 [[ ! -e /usr/local/bin/autostream-host-agent && ! -e /usr/local/libexec/autostream-local-executor ]]
@@ -234,6 +259,11 @@ ln -s "${HOST_ROOT}/current/bin/autostream-host-agent" /usr/local/bin/autostream
 ln -s "${HOST_ROOT}/current/bin/autostream-local-executor" /usr/local/libexec/autostream-local-executor
 install -d -o root -g root -m 0700 "${STATE_ROOT}" /etc/autostream-local-executor \
   /etc/autostream-local-executor/docker /opt/autostream/local-executor /opt/autostream/local-executor/ports
+install -d -o root -g root -m 0700 "${STATE_ROOT}/host-self-update"
+jq -n '{schema_version: 2, recovery_protocol_version: 2, phase: "stable", active_slot: "a",
+  healthy_slot: "a", active_agent_version: "v2.0.0", active_executor_version: "v2.0.0"}' \
+  > "${STATE_ROOT}/host-self-update/state.json"
+chmod 0600 "${STATE_ROOT}/host-self-update/state.json"
 for unit in autostream-host-agent.service autostream-local-executor.service \
   autostream-local-executor.socket autostream-host-self-update-recovery@.service \
   autostream-host-self-update-recovery@.timer; do
@@ -252,11 +282,141 @@ assert_live_unit autostream-host-agent.service "${HOST_ROOT}/slots/a/bin/autostr
 assert_live_unit autostream-local-executor.service "${HOST_ROOT}/slots/a/bin/autostream-local-executor"
 [[ $(/usr/local/libexec/autostream-local-executor inspect-host-update-recovery) == inactive ]]
 
+# A small, fixture-only systemctl interposer injects starts at the first recovery
+# query made by the real installer lock owner. It delegates every command to the
+# real systemctl and leaves both actual periodic timers enabled and running.
+# The query is read first, then both old fixed services start before it returns:
+# this controls the old state/PID gap and the candidate property observation.
+[[ ! -e /usr/bin/systemctl-ui183-real ]]
+cp -- /usr/bin/systemctl /usr/bin/systemctl-ui183-real
+cat > /usr/bin/systemctl <<'RACE_SYSTEMCTL'
+#!/bin/bash
+set -u
+real=/usr/bin/systemctl-ui183-real
+phase=$(cat /evidence/installer/ui183-phase 2>/dev/null || true)
+unit=${!#}
+if [[ ( ${phase} == before || ${phase} == after ) &&
+  ( $1 == is-active || ( $1 == show && ${2:-} == --property=ActiveState ) ) &&
+  ( ${unit} == autostream-host-self-update-recovery@a.service ||
+    ${unit} == autostream-host-self-update-recovery@b.service ) &&
+  ! -d /evidence/installer/ui183-${phase}.injected ]]; then
+  output=$(${real} "$@")
+  status=$?
+  if python3 - "${PPID}" "${phase}" <<'OWNER'
+import json, os, sys
+from pathlib import Path
+pid, phase = int(sys.argv[1]), sys.argv[2]
+paths = ['/run/autostream-updater/.autostream-runtime-host-setup.lock',
+         '/run/autostream-updater/.autostream-host-lifecycle.lock']
+locks = []
+for path in paths:
+    stat = os.stat(path)
+    records = [line.split() for line in Path('/proc/locks').read_text().splitlines()]
+    wanted = f'{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}:{stat.st_ino}'
+    matches = [r for r in records if len(r) == 8 and r[1:4] == ['FLOCK','ADVISORY','WRITE']
+               and r[4] == str(pid) and tuple(int(v, 16 if i < 2 else 10)
+                   for i, v in enumerate(r[5].split(':'))) == (os.major(stat.st_dev), os.minor(stat.st_dev), stat.st_ino)]
+    if len(matches) != 1: sys.exit(1)
+    locks.append({'path': path, 'inode': stat.st_ino, 'owner_pid': pid})
+with open(f'/evidence/installer/ui183-{phase}-locks.json', 'x') as out:
+    json.dump({'locks': locks, 'actual_installer_owner': True}, out)
+OWNER
+  then
+    mkdir "/evidence/installer/ui183-${phase}.injected" || exit 1
+    for slot in a b; do
+      ${real} start "autostream-host-self-update-recovery@${slot}.service" >/dev/null 2>&1
+      started=$?
+      [[ ${started} == 1 ]] || exit 1
+      ${real} show "autostream-host-self-update-recovery@${slot}.service" \
+        --property=ActiveState --property=SubState --property=MainPID --property=ControlPID \
+        --property=Result --property=ExecMainStatus \
+        > "/evidence/installer/ui183-${phase}-${slot}.properties" || exit 1
+      invocation=$(${real} show "autostream-host-self-update-recovery@${slot}.service" --property=InvocationID --value)
+      [[ ${invocation} =~ ^[0-9a-f]{32}$ ]] || exit 1
+      lock_failure=0
+      for _ in {1..10}; do
+        lock_failure=$(journalctl --no-pager --output=cat "_SYSTEMD_INVOCATION_ID=${invocation}" \
+          | grep -cF 'acquire host lifecycle recovery lock' || true)
+        [[ ${lock_failure} == 1 ]] && break
+        sleep 0.1
+      done
+      [[ ${lock_failure} == 1 ]] || exit 1
+      printf '%s\n' "${lock_failure}" > "/evidence/installer/ui183-${phase}-${slot}.lock-failure"
+    done
+  fi
+  printf '%s\n' "${output}"
+  exit "${status}"
+fi
+exec "${real}" "$@"
+RACE_SYSTEMCTL
+chmod 0755 /usr/bin/systemctl
+
+wait_legacy_recovery_quiescent() {
+  local deadline=$((SECONDS + 30)) a b
+  while (( SECONDS < deadline )); do
+    a=$(systemctl show autostream-host-self-update-recovery@a.service --property=ActiveState --value)
+    b=$(systemctl show autostream-host-self-update-recovery@b.service --property=ActiveState --value)
+    if [[ ${a} == inactive && ${b} == inactive ]]; then return 0; fi
+    sleep 0.1
+  done
+  return 1
+}
+software_installer_enter_phase baseline_overlap_refusal
+wait_legacy_recovery_quiescent
+readonly LEGACY_STATE_SHA256="$(sha256sum "${STATE_ROOT}/host-self-update/state.json" | awk '{print $1}')"
+printf '%s\n' before > "${EVIDENCE_DIRECTORY}/ui183-phase"
+baseline_status=0
+"${BASELINE_ROOT}/install/install-autostream-host-agent" --upgrade \
+  > "${EVIDENCE_DIRECTORY}/baseline-upgrade.log" 2>&1 || baseline_status=$?
+[[ ${baseline_status} == 1 && -d ${EVIDENCE_DIRECTORY}/ui183-before.injected ]]
+grep -F 'autostream-host-self-update-recovery@a.service must be inactive and have no MainPID' \
+  "${EVIDENCE_DIRECTORY}/baseline-upgrade.log" >/dev/null
+[[ $(readlink "${HOST_ROOT}/current") == slots/a &&
+  $(sha256sum "${STATE_ROOT}/host-self-update/state.json" | awk '{print $1}') == "${LEGACY_STATE_SHA256}" ]]
+assert_live_unit autostream-host-agent.service "${HOST_ROOT}/slots/a/bin/autostream-host-agent"
+assert_live_unit autostream-local-executor.service "${HOST_ROOT}/slots/a/bin/autostream-local-executor"
+for slot in a b; do
+  for binary in autostream-host-agent autostream-local-executor; do
+    cmp "${BEFORE_BINARIES}/${binary}" "${HOST_ROOT}/slots/${slot}/bin/${binary}"
+  done
+done
+wait_legacy_recovery_quiescent
+printf '%s\n' after > "${EVIDENCE_DIRECTORY}/ui183-phase"
+
 # No active-job bridge flag is permitted: the actual candidate root helper
 # must accept all ordinary local journal/ledger/checkpoint/lifecycle guards.
 software_installer_enter_phase normal_upgrade
 "${PACKAGE_ROOT}/install/install-autostream-host-agent" --upgrade \
   > "${EVIDENCE_DIRECTORY}/normal-upgrade.log" 2>&1
+[[ -d ${EVIDENCE_DIRECTORY}/ui183-after.injected ]]
+printf '%s\n' complete > "${EVIDENCE_DIRECTORY}/ui183-phase"
+python3 - "${EVIDENCE_DIRECTORY}" <<'RACE_RESULT'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+observations = {}
+for phase in ('before', 'after'):
+    owner = json.loads((root / f'ui183-{phase}-locks.json').read_text())
+    units = {}
+    for slot in ('a', 'b'):
+        props = dict(line.split('=', 1) for line in (root / f'ui183-{phase}-{slot}.properties').read_text().splitlines())
+        assert props == {'ActiveState':'failed', 'SubState':'failed', 'MainPID':'0',
+                         'ControlPID':'0', 'Result':'exit-code', 'ExecMainStatus':'1'}, props
+        assert (root / f'ui183-{phase}-{slot}.lock-failure').read_text().strip() == '1'
+        units[slot] = {'properties': props, 'actual_lifecycle_lock_failure_events': 1}
+    observations[phase] = {'lock_owner': owner, 'old_watchdogs': units,
+                           'installer_exit': 1 if phase == 'before' else 0}
+assert observations['before']['lock_owner']['locks'][1]['inode'] == observations['after']['lock_owner']['locks'][1]['inode']
+with open('/evidence/artifacts/ui183-installer-watchdog.json', 'x') as out:
+    json.dump({'schema_version':1, 'frozen_before_sha':'f72d1bddb712eeb64bab2b852b648c2c6b0f4641',
+               'installed_pair_sha':'b1c94afe2ee2fe8854abb12e2c85565a1bd448dc', 'actual_systemd':True,
+               'timer_stop_disable_mask':False, 'test_only_fixed_unit_start':True,
+               'overlap':'installer_lock_owner_recovery_query', 'observations':observations}, out)
+RACE_RESULT
+for slot in a b; do
+  [[ $(systemctl is-active "autostream-host-self-update-recovery@${slot}.timer") == active &&
+    $(systemctl is-enabled "autostream-host-self-update-recovery@${slot}.timer") == enabled ]]
+done
 software_installer_enter_phase candidate_pair_verify
 [[ $(readlink "${HOST_ROOT}/current") == slots/b ]]
 assert_binary_pair "${HOST_ROOT}/slots/b/bin" "${CANDIDATE_VERSION}" "${CANDIDATE_COMMIT}"

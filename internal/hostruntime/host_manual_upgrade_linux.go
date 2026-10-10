@@ -26,11 +26,15 @@ func upgradeHostRuntimeFromVerifiedBundle(
 	)
 }
 
-func upgradeHostRuntimeWithRuntime(
+func upgradeHostRuntimeAttempt(
 	ctx context.Context,
+	preflightCtx context.Context,
 	input ManualHostUpgradeRequest,
 	rt manualHostUpgradeRuntime,
+	previous *manualHostUpgradePreflight,
 ) (ManualHostUpgradeResult, error) {
+	transactionCtx := ctx
+	ctx = preflightCtx
 	if err := prepareManualHostUpgradeRuntime(&rt); err != nil {
 		return ManualHostUpgradeResult{}, err
 	}
@@ -41,6 +45,19 @@ func upgradeHostRuntimeWithRuntime(
 	request, err := newManualHostSelfUpdateRequest(artifact, input)
 	if err != nil {
 		return ManualHostUpgradeResult{}, err
+	}
+	if previous != nil {
+		if err := verifyManualHostUpgradePreflightLocks(previous.locks); err != nil {
+			return ManualHostUpgradeResult{}, err
+		}
+	}
+	beforeRecovery := make(map[string]manualHostRecoveryServiceProperties)
+	for _, unit := range manualHostRecoveryUnitInstances {
+		observed, err := readManualHostUpgradeRecoveryServiceProperties(ctx, rt.runner, unit)
+		if err != nil {
+			return ManualHostUpgradeResult{}, err
+		}
+		beforeRecovery[unit] = observed
 	}
 
 	unlock, err := rt.acquireLocks()
@@ -74,7 +91,7 @@ func upgradeHostRuntimeWithRuntime(
 	}
 	if err := validateManualHostUpgradeRecoveryServicePreconditions(
 		ctx, rt, true,
-	); err != nil {
+	); err != nil && !manualHostUpgradeRecoveryCanSettle(err) {
 		return ManualHostUpgradeResult{}, err
 	}
 	currentSlot, err := rt.selfUpdate.readCurrentSlot()
@@ -105,7 +122,7 @@ func upgradeHostRuntimeWithRuntime(
 		ctx,
 		rt,
 		!persisted && snapshot.recoveryUnitConfig != nil,
-	); err != nil {
+	); err != nil && !manualHostUpgradeRecoveryCanSettle(err) {
 		return ManualHostUpgradeResult{}, err
 	}
 	if err := inspectManualHostUpgradeDurableBlockers(
@@ -158,6 +175,41 @@ func upgradeHostRuntimeWithRuntime(
 			"manual Host runtime downgrade is rejected",
 		)
 	}
+	// Everything above is inspection or acquisition of this attempt's locks.
+	// Slot recovery below is the first installation mutation: only this exact
+	// boundary may return a handoff, never migration, normalization or Stage/Apply.
+	if previous != nil {
+		if err := previous.verify(ctx, artifact, snapshot, current, state, persisted, rt); err != nil {
+			return ManualHostUpgradeResult{}, err
+		}
+	}
+	if err := validateManualHostUpgradeRecoveryServicePreconditions(
+		ctx, rt, !persisted && snapshot.recoveryUnitConfig != nil,
+	); err != nil {
+		if !manualHostUpgradeRecoveryCanSettle(err) {
+			return ManualHostUpgradeResult{}, err
+		}
+		var busy *manualHostUpgradeRecoveryBusy
+		errors.As(err, &busy)
+		if busy.observed.state == "failed" && beforeRecovery[busy.unit].state == "failed" {
+			// A pre-existing failed service is not evidence of this attempt's
+			// lock overlap. Preserve the existing persisted-state refusal.
+			return ManualHostUpgradeResult{}, err
+		}
+		preflight, captureErr := captureManualHostUpgradePreflight(
+			artifact, snapshot, current, state, persisted, rt,
+		)
+		if captureErr != nil {
+			return ManualHostUpgradeResult{}, captureErr
+		}
+		return ManualHostUpgradeResult{}, &manualHostUpgradeRecoveryHandoff{
+			cause: err, preflight: preflight,
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return ManualHostUpgradeResult{}, err
+	}
+	ctx = transactionCtx
 	if err := rt.selfUpdate.recoverHostSelfUpdateSlotArtifacts(); err != nil {
 		return ManualHostUpgradeResult{}, fmt.Errorf(
 			"recover interrupted Host runtime slot transition: %w", err,

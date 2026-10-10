@@ -19,6 +19,7 @@ done
 readonly repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly updater_sha="${GITHUB_SHA:?}"
 readonly before_sha=b1c94afe2ee2fe8854abb12e2c85565a1bd448dc
+readonly installer_before_sha=f72d1bddb712eeb64bab2b852b648c2c6b0f4641
 [[ ${updater_sha} =~ ^[0-9a-f]{40}$ && $(git -C "${repository_root}" rev-parse HEAD) == "${updater_sha}" ]] || die 'current checkout is not the final declared Actions SHA'
 [[ -z $(git -C "${repository_root}" status --porcelain --untracked-files=no) ]] || die 'candidate product source is modified before compilation'
 [[ ! -e $2 ]] || die 'evidence directory already exists; preserve the earlier attempt'
@@ -57,7 +58,7 @@ cleanup() {
   exit "${status}"
 }
 trap cleanup EXIT
-mkdir -p -- "${evidence}/build" "${evidence}/artifacts" "${work}/before-production" "${work}/candidate-production" "${work}/repository"
+mkdir -p -- "${evidence}/build" "${evidence}/artifacts" "${work}/before-production" "${work}/candidate-production" "${work}/baseline-production" "${work}/repository"
 
 checkout_fixed() {
   local remote=$1 sha=$2 destination=$3
@@ -68,6 +69,7 @@ checkout_fixed() {
   [[ $(git -C "${destination}" rev-parse HEAD) == "${sha}" ]]
 }
 checkout_fixed https://github.com/Kome-Lab/Autostream-Updater.git "${before_sha}" "${work}/before" > "${evidence}/build/before-checkout.log" 2>&1
+checkout_fixed https://github.com/Kome-Lab/Autostream-Updater.git "${installer_before_sha}" "${work}/baseline" > "${evidence}/build/baseline-checkout.log" 2>&1
 checkout_fixed https://github.com/Kome-Lab/Autostream-ControlPanel.git "${cp_sha}" "${work}/control-panel" > "${evidence}/build/cp-checkout.log" 2>&1
 readonly before_tree="$(git -C "${work}/before" rev-parse 'HEAD^{tree}')"
 readonly cp_tree="$(git -C "${work}/control-panel" rev-parse 'HEAD^{tree}')"
@@ -98,6 +100,16 @@ readonly before_flags="-X ${version_package}.Version=v2.0.0 -X ${version_package
 # v2.0.1 is a declared isolated candidate-fixture version, not a published
 # fixed Updater release. Each binary still records the exact feature SHA.
 readonly candidate_flags="-X ${version_package}.Version=v2.0.1 -X ${version_package}.Commit=${updater_sha} -X ${version_package}.BuildDate=${build_date}"
+(
+  cd -- "${work}/baseline"
+  for binary in autostream-updater-agent autostream-local-executor; do
+    output=${binary/updater-agent/host-agent}
+    run_bounded go build -p 1 -trimpath \
+      -ldflags "-X ${version_package}.Version=v2.0.1 -X ${version_package}.Commit=${installer_before_sha} -X ${version_package}.BuildDate=${build_date}" \
+      -o "${work}/baseline-production/${output}" "./cmd/${binary}"
+  done
+  test -z "$(git status --porcelain --untracked-files=no)"
+) > "${evidence}/build/baseline-compile.log" 2>&1
 (
   cd -- "${work}/before"
   run_bounded go test -c -p 1 -ldflags "${before_flags}" -o "${work}/before-hostruntime.test" ./internal/hostruntime
@@ -133,11 +145,13 @@ manifest = {
     'candidate_fixture_version': 'v2.0.1', 'before_version': 'v2.0.0', 'published_release': False,
     'target_application': 'synthetic_checked_fixture', 'executed_arch': 'amd64',
     'cp_product_source_modified': False, 'before_product_source_modified': False,
+    'installer_refusal_before_sha': 'f72d1bddb712eeb64bab2b852b648c2c6b0f4641',
     'oracle_overlays': {str(p.relative_to(root)): sha(p) for p in paths},
     'binaries': {str(p.relative_to(work)): sha(p) for p in (
         work / 'hostruntime.test', work / 'before-hostruntime.test', work / 'control-panel.test',
         work / 'before-production/autostream-host-agent', work / 'before-production/autostream-local-executor',
-        work / 'candidate-production/autostream-host-agent', work / 'candidate-production/autostream-local-executor')},
+        work / 'candidate-production/autostream-host-agent', work / 'candidate-production/autostream-local-executor',
+        work / 'baseline-production/autostream-host-agent', work / 'baseline-production/autostream-local-executor')},
 }
 with out.open('x', encoding='utf-8') as target:
     json.dump(manifest, target, indent=2, sort_keys=True)
@@ -188,7 +202,7 @@ run_tuple() {
   run_bounded docker exec "${container_id}" systemctl show-environment >/dev/null 2>&1 || { capture_boot_failure "${tuple}"; return 1; }
   record_phase "${tuple}" input_copy
   run_bounded docker exec "${container_id}" /usr/bin/install -d -m 0755 /opt/software-input /opt/software-input/repository /run/autostream-st-port-full-chain || return 1
-  for input in hostruntime.test before-hostruntime.test control-panel.test before-production candidate-production repository; do
+  for input in hostruntime.test before-hostruntime.test control-panel.test before-production candidate-production baseline-production repository; do
     run_bounded docker cp "${work}/${input}" "${container_id}:/opt/software-input/" || return 1
   done
   run_bounded docker exec "${container_id}" chmod -R go-w /opt/software-input || return 1
@@ -196,6 +210,8 @@ run_tuple() {
   run_bounded docker exec "${container_id}" chmod 0755 /opt/software-input/hostruntime.test /opt/software-input/before-hostruntime.test /opt/software-input/control-panel.test \
     /opt/software-input/before-production/autostream-host-agent /opt/software-input/before-production/autostream-local-executor \
     /opt/software-input/candidate-production/autostream-host-agent /opt/software-input/candidate-production/autostream-local-executor || return 1
+  run_bounded docker exec "${container_id}" chmod 0755 \
+    /opt/software-input/baseline-production/autostream-host-agent /opt/software-input/baseline-production/autostream-local-executor || return 1
   record_phase "${tuple}" mariadb_start
   run_bounded docker exec "${container_id}" systemctl start mariadb || return 1
   run_bounded docker exec "${container_id}" mariadb --protocol=socket --user=root \

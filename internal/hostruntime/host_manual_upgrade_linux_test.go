@@ -9,13 +9,16 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestManualHostUpgradeBootstrapsMissingSlotAndCommitsRuntimePair(
 	t *testing.T,
 ) {
+	t.Run("UI183_watchdog_concurrency", testManualHostUpgradeWatchdogConcurrency)
 	fixture := newManualHostUpgradeLinuxFixture(t)
 	removeManualHostUpgradeLinuxStateRoot(t, fixture)
 	identityBefore := snapshotManualHostUpgradeLinuxProtectedFile(
@@ -102,6 +105,319 @@ func TestManualHostUpgradeBootstrapsMissingSlotAndCommitsRuntimePair(
 			fixture.runner.identityReads,
 		)
 	}
+}
+
+// These bounded injections extend the existing installer fixture. The actual
+// old paired binaries, timers and systemd are also exercised by installer-order
+// CI; this model controls the three otherwise nondeterministic read boundaries.
+type manualHostUpgradeConcurrencyRunner struct {
+	base        *manualHostUpgradeLinuxRunner
+	unit        string
+	phase       string
+	locked      bool
+	failed      bool
+	injected    bool
+	reads       int
+	attempts    int
+	handoffs    int
+	foreign     bool
+	controlPID  bool
+	unknown     bool
+	residual    bool
+	unobserved  bool
+	beforeState string
+	beforePID   int
+}
+
+func (r *manualHostUpgradeConcurrencyRunner) Run(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
+	if name != "/usr/bin/systemctl" || len(args) < 2 {
+		return r.base.Run(ctx, dir, env, name, args...)
+	}
+	unit := args[len(args)-1]
+	if unit != r.unit {
+		return r.base.Run(ctx, dir, env, name, args...)
+	}
+	if args[0] == "reset-failed" {
+		r.failed = false
+		return r.base.Run(ctx, dir, env, name, args...)
+	}
+	combined := len(args) == 7 && args[0] == "show" && args[1] == "--property=ActiveState"
+	if args[0] != "is-active" && !combined && !(len(args) == 4 && args[1] == "--property=MainPID") {
+		return r.base.Run(ctx, dir, env, name, args...)
+	}
+	state, subState, result, pid := "inactive", "dead", "success", 0
+	if r.failed {
+		state, subState, result = "failed", "failed", "exit-code"
+	}
+	if r.locked && (combined || args[0] == "is-active") {
+		r.reads++
+		trigger := 1
+		if r.phase == "later_check" {
+			trigger = 2
+		}
+		if !r.injected && r.reads == trigger {
+			r.injected, r.failed = true, true
+			r.base.recoveryFailedUnits[r.unit] = true
+			state, subState, pid = "activating", "start", 5101
+			if r.phase == "between_state_pid" && !combined {
+				state, subState, pid = "inactive", "dead", 0
+			}
+		}
+	}
+	if len(args) == 4 && args[1] == "--property=MainPID" {
+		if r.injected && r.reads <= 2 {
+			r.beforePID = 5101
+			return "5101\n", nil
+		}
+		return "0\n", nil
+	}
+	if args[0] == "is-active" {
+		r.beforeState = state
+		return state + "\n", nil
+	}
+	if r.unobserved {
+		return "", errors.New("unobserved recovery service")
+	}
+	if r.unknown {
+		state = "unknown"
+	}
+	if r.residual {
+		state, subState, pid = "inactive", "dead", 5101
+	}
+	control := 0
+	if r.controlPID {
+		control = 5201
+	}
+	return fmt.Sprintf("ActiveState=%s\nSubState=%s\nMainPID=%d\nControlPID=%d\nResult=%s\n",
+		state, subState, pid, control, result), nil
+}
+
+// Frozen f72d1bd recovery precondition, including its two separate commands.
+// It remains an expected refusal, not a hidden successful installer retry.
+func manualHostUpgradeBeforeConcurrency(ctx context.Context, runner CommandRunner, allowFailedBootstrap bool) error {
+	for _, unit := range manualHostRecoveryUnitInstances {
+		output, _ := runner.Run(ctx, "/", nil, "/usr/bin/systemctl", "is-active", unit)
+		state := strings.TrimSpace(output)
+		if state == "" {
+			return fmt.Errorf("read %s active state", unit)
+		}
+		output, err := runner.Run(ctx, "/", nil, "/usr/bin/systemctl", "show", "--property=MainPID", "--value", unit)
+		if err != nil {
+			return err
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(output))
+		if err != nil || pid < 0 {
+			return errors.New("invalid MainPID")
+		}
+		if pid != 0 || (state != "inactive" && !(allowFailedBootstrap && state == "failed")) {
+			return fmt.Errorf("%s must be inactive and have no MainPID", unit)
+		}
+	}
+	return nil
+}
+
+func testManualHostUpgradeWatchdogConcurrency(t *testing.T) {
+	for _, unit := range manualHostRecoveryUnitInstances {
+		for _, phase := range []string{"after_lock", "between_state_pid", "later_check"} {
+			for _, persisted := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/persisted_%t", unit, phase, persisted)
+				t.Run(name, func(t *testing.T) {
+					_, r := newManualHostUpgradeConcurrencyFixture(t, unit, phase, persisted)
+					r.locked = true
+					err := manualHostUpgradeBeforeConcurrency(context.Background(), r, true)
+					if phase == "later_check" && err == nil {
+						err = manualHostUpgradeBeforeConcurrency(context.Background(), r, !persisted)
+					}
+					if err == nil {
+						t.Fatal("frozen precondition did not reject the injected running PID")
+					}
+					beforeState, beforePID := r.beforeState, r.beforePID
+					// Holding the lifecycle lock cannot turn failed into inactive.
+					r.reads = 10
+					for observation := 0; observation < 3; observation++ {
+						output, err := r.Run(context.Background(), "/", nil, "/usr/bin/systemctl", "is-active", unit)
+						if err != nil || output != "failed\n" {
+							t.Fatal("failed unexpectedly healed while installer held lifecycle lock")
+						}
+					}
+					t.Logf("UI183 before unit=%s checkpoint=%s persisted=%t refusal=true state=%s MainPID=%d ControlPID=0 retained_failed=3 installer_lock=held watchdog_lock=blocked", unit, phase, persisted, beforeState, beforePID)
+					fixture, runner := newManualHostUpgradeConcurrencyFixture(t, unit, phase, persisted)
+					identity := snapshotManualHostUpgradeLinuxProtectedFile(t, fixture.identityPath)
+					policy := snapshotManualHostUpgradeLinuxProtectedFile(t, fixture.policyPath)
+					result, err := upgradeHostRuntimeWithRuntime(context.Background(), fixture.request, fixture.runtime)
+					if err != nil || result.ActiveSlot != HostSelfUpdateSlotB {
+						t.Fatalf("same overlap after result=%+v err=%v", result, err)
+					}
+					assertManualHostUpgradeLinuxProtectedFileUnchanged(t, fixture.identityPath, identity)
+					assertManualHostUpgradeLinuxProtectedFileUnchanged(t, fixture.policyPath, policy)
+					assertManualHostUpgradeLinuxSlotBinding(t, fixture, HostSelfUpdateSlotB)
+					assertManualHostUpgradeLinuxNoTransitionResidue(t, fixture)
+					if persisted && (runner.attempts != 2 || runner.handoffs != 1 || fixture.runner.recoveryResetFailedCalls != 0) {
+						t.Fatalf("persisted handoff attempts=%d handoffs=%d resets=%d", runner.attempts, runner.handoffs, fixture.runner.recoveryResetFailedCalls)
+					}
+					t.Logf("UI183 after unit=%s checkpoint=%s persisted=%t attempts=%d handoffs=%d active_slot=b pair=matching", unit, phase, persisted, runner.attempts, runner.handoffs)
+				})
+			}
+		}
+	}
+	for _, negative := range []string{"preexisting_failed", "foreign_pid", "control_pid", "inactive_pid", "unknown", "unobserved", "identity", "policy", "state", "slot", "archive", "unit", "canceled", "timeout", "attempt_limit"} {
+		t.Run("reject_"+negative, func(t *testing.T) {
+			fixture, runner := newManualHostUpgradeConcurrencyFixture(t, manualHostRecoveryUnitInstances[0], "after_lock", true)
+			state := snapshotManualHostUpgradeLinuxProtectedFile(t, fixture.runtime.selfUpdate.statePath)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch negative {
+			case "preexisting_failed":
+				runner.failed, runner.injected = true, true
+			case "foreign_pid":
+				runner.foreign = true
+			case "control_pid":
+				runner.controlPID = true
+			case "inactive_pid":
+				runner.residual = true
+			case "unknown":
+				runner.unknown = true
+			case "unobserved":
+				runner.unobserved = true
+			case "timeout":
+				ctx, cancel = context.WithTimeout(context.Background(), 150*time.Millisecond)
+				defer cancel()
+			}
+			acquire := fixture.runtime.acquireLocks
+			fixture.runtime.acquireLocks = func() (func(), error) {
+				unlock, err := acquire()
+				return func() {
+					unlock()
+					if negative == "attempt_limit" && fixture.runner.stopCalls == 0 {
+						runner.injected, runner.reads = false, 0
+					}
+					if runner.handoffs != 1 || fixture.runner.stopCalls != 0 {
+						return
+					}
+					switch negative {
+					case "identity":
+						body, _ := os.ReadFile(fixture.identityPath)
+						manualHostUpgradeLinuxWriteFile(t, fixture.identityPath, []byte(strings.Replace(string(body), "Host A", "Host changed", 1)), 0o600)
+					case "policy":
+						body, _ := os.ReadFile(fixture.policyPath)
+						manualHostUpgradeLinuxWriteFile(t, fixture.policyPath, append(body, '\n'), 0o600)
+					case "state":
+						body, _ := os.ReadFile(fixture.runtime.selfUpdate.statePath)
+						manualHostUpgradeLinuxWriteFile(t, fixture.runtime.selfUpdate.statePath, append(body, '\n'), 0o600)
+					case "slot":
+						body, _ := os.ReadFile(filepath.Join(fixture.runtime.selfUpdate.slotsRoot, "a", "bin", "autostream-host-agent"))
+						manualHostUpgradeLinuxWriteFile(t, filepath.Join(fixture.runtime.selfUpdate.slotsRoot, "a", "bin", "autostream-host-agent"), append(body, '\n'), 0o755)
+					case "archive":
+						manualHostUpgradeLinuxWriteFile(t, filepath.Join(fixture.artifactRoot, "checksums.txt"), []byte("changed\n"), 0o600)
+					case "unit":
+						manualHostUpgradeLinuxWriteFile(t, fixture.runtime.paths.installedRecoveryService, []byte("unknown unit\n"), 0o644)
+					case "canceled":
+						cancel()
+					case "timeout":
+						runner.failed = true
+					case "attempt_limit":
+						runner.injected, runner.reads = false, 0
+					}
+				}, err
+			}
+			result, err := upgradeHostRuntimeWithRuntime(ctx, fixture.request, fixture.runtime)
+			if err == nil || result != (ManualHostUpgradeResult{}) || fixture.runner.stopCalls != 0 || len(fixture.runner.restartOrder) != 0 || fixture.runner.recoveryReloads != 0 || fixture.runner.recoveryResetFailedAttempts != 0 {
+				t.Fatalf("negative crossed mutation boundary: result=%+v err=%v stops=%d", result, err, fixture.runner.stopCalls)
+			}
+			if negative != "state" {
+				assertManualHostUpgradeLinuxProtectedFileUnchanged(t, fixture.runtime.selfUpdate.statePath, state)
+			}
+			if negative == "attempt_limit" && runner.attempts != 3 {
+				t.Fatalf("attempt limit=%d want=3", runner.attempts)
+			}
+			if negative == "preexisting_failed" && runner.attempts != 1 {
+				t.Fatal("pre-existing failed service was retried")
+			}
+			t.Logf("UI183 negative=%s attempts=%d writes=0 refused=true", negative, runner.attempts)
+		})
+	}
+	for _, mutation := range []string{"missing", "replaced", "unsafe"} {
+		t.Run("lock_"+mutation, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "lifecycle.lock")
+			if err := os.WriteFile(path, []byte("lock"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			info, _ := os.Lstat(path)
+			locks := []manualHostUpgradePreflightLock{{path: path, info: info}}
+			if mutation == "unsafe" {
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.Rename(path, path+".retained"); err != nil {
+					t.Fatal(err)
+				}
+				if mutation == "replaced" {
+					if err := os.WriteFile(path, []byte("other"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := verifyManualHostUpgradePreflightLocks(locks); err == nil {
+				t.Fatal("changed permanent lock accepted")
+			}
+		})
+	}
+}
+
+func newManualHostUpgradeConcurrencyFixture(t *testing.T, unit, phase string, persisted bool) (*manualHostUpgradeLinuxFixture, *manualHostUpgradeConcurrencyRunner) {
+	t.Helper()
+	fixture := newManualHostUpgradeLinuxFixture(t)
+	configureManualHostUpgradeLegacyRecoveryUnit(t, fixture)
+	for _, binary := range []string{"autostream-host-agent", "autostream-local-executor"} {
+		body, err := os.ReadFile(filepath.Join(fixture.runtime.selfUpdate.slotsRoot, "a", "bin", binary))
+		if err != nil {
+			t.Fatal(err)
+		}
+		manualHostUpgradeLinuxWriteFile(t, filepath.Join(fixture.runtime.selfUpdate.slotsRoot, "b", "bin", binary), body, 0o755)
+	}
+	if persisted {
+		state, err := NewHostSelfUpdateState(manualHostUpgradeTestOldVersion, manualHostUpgradeTestOldVersion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.runtime.selfUpdate.saveState(state); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		removeManualHostUpgradeLinuxStateRoot(t, fixture)
+	}
+	runner := &manualHostUpgradeConcurrencyRunner{base: fixture.runner, unit: unit, phase: phase}
+	fixture.runtime.runner = runner
+	fixture.runtime.acquireLocks = func() (func(), error) {
+		runner.locked = true
+		runner.attempts++
+		return func() {
+			runner.locked = false
+			if fixture.runner.stopCalls == 0 {
+				runner.handoffs++
+				if persisted {
+					runner.failed = false
+					delete(fixture.runner.recoveryFailedUnits, unit)
+				}
+			}
+		}, nil
+	}
+	resolve := fixture.runtime.resolveProcessExe
+	fixture.runtime.resolveProcessExe = func(pid int) (string, error) {
+		if pid == 5101 {
+			if runner.foreign {
+				return "/tmp/foreign-executor", nil
+			}
+			slot := "a"
+			if unit == manualHostRecoveryUnitInstances[1] {
+				slot = "b"
+			}
+			return filepath.Join(fixture.runtime.selfUpdate.slotsRoot, slot, "bin", "autostream-local-executor"), nil
+		}
+		return resolve(pid)
+	}
+	return fixture, runner
 }
 
 func TestManualHostUpgradeRollsBackWhenTargetAgentActivationFails(

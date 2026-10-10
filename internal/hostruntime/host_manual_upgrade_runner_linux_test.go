@@ -202,6 +202,21 @@ func (r *manualHostUpgradeLinuxRunner) Run(
 		r.recoveryResetFailedCalls++
 		return "", nil
 	case "show":
+		if len(args) == 7 && args[1] == "--property=ActiveState" &&
+			args[2] == "--property=SubState" && args[3] == "--property=MainPID" &&
+			args[4] == "--property=ControlPID" && args[5] == "--property=Result" &&
+			(args[6] == manualHostRecoveryUnitInstances[0] || args[6] == manualHostRecoveryUnitInstances[1]) {
+			unit := args[6]
+			state, subState, result := "inactive", "dead", "success"
+			if r.recoveryFailedUnits[unit] {
+				state, subState, result = "failed", "failed", "exit-code"
+			} else if r.unitActive(unit) {
+				state, subState = "active", "running"
+			}
+			pid, err := r.Run(ctx, "/", nil, name, "show", "--property=MainPID", "--value", unit)
+			return fmt.Sprintf("ActiveState=%s\nSubState=%s\nMainPID=%s\nControlPID=0\nResult=%s\n",
+				state, subState, strings.TrimSpace(pid), result), err
+		}
 		if len(args) == 5 && args[1] == "--property=FragmentPath" &&
 			args[2] == "--property=DropInPaths" &&
 			args[3] == "--property=NeedDaemonReload" &&
