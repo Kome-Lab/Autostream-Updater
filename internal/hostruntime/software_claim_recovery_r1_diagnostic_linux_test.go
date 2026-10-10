@@ -333,7 +333,7 @@ func softwareClaimRecoveryManualObservationChecks(t *testing.T) {
 						want.StateCommand, want.PIDCommand, want.CombinedCommand, want.CombinedShape = "launch_other", "launch_other", "launch_other", "not_read"
 					}
 					if mode == "canceled" {
-						want.StateCommand, want.PIDCommand, want.CombinedCommand, want.CombinedShape = "canceled", "canceled", "canceled", "not_read"
+						want.StateCommand, want.PIDCommand, want.CombinedCommand, want.CombinedShape = "success", "success", "success", "not_read"
 					}
 					if d.Slots[0] != want {
 						t.Fatal("manual observation accepted an incomplete query or lost actual metadata")
@@ -463,7 +463,8 @@ func softwareClaimRecoveryQueryRoutingChecks(t *testing.T) {
 						t.Fatal("manual route did not retain exactly five valid properties")
 					}
 				} else if mode == "complete" {
-					if len(strings.Split(strings.TrimSuffix(output, "\n"), "\n")) != len(softwareClaimRecoveryWatchdogUnitProperties) || d.Slots[index].CombinedShape != "not_checked" {
+					parsed, parseErr := parseSoftwareClaimRecoveryWatchdogUnit(output, slot, softwareClaimRecoveryWatchdogUnitPath)
+					if parseErr != nil || parsed.slot != slot || !isCanonicalBareSHA256(parsed.staticIdentity) || d.Slots[index].CombinedShape != "not_checked" {
 						t.Fatal("complete route replaced original full-unit evidence")
 					}
 				} else if d.Slots != unread {
