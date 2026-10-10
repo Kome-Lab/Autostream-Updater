@@ -421,12 +421,13 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_services_linux.go",
-        "sha256": "fe3a91e5478eb9d59c49a3234d8978ffd2d8d08fd47c21c2e51cefe7f4e29436",
+        "sha256": "2a4cf4017c555cc27d9ad56ad7a6e3f4d6a79a049d1b7151a84770b8a0487d0d",
         "symbols": [
           "manualHostRecoveryServiceProperties",
           "manualHostUpgradeRecoveryBusy",
           "manualHostUpgradeRecoveryCanSettle",
           "normalizeManualHostUpgradeRecoveryServices",
+          "parseManualHostUpgradeRecoveryServiceProperties",
           "readManualHostUpgradeRecoveryServiceProperties",
           "readManualHostUpgradeRecoveryServiceState",
           "requireManualHostSystemdState",
@@ -434,7 +435,7 @@
           "validateManualHostUpgradeCoreServicePreconditions",
           "validateManualHostUpgradeRecoveryServicePreconditions"
         ],
-        "physical_lines": 292
+        "physical_lines": 305
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_snapshot_linux.go",
@@ -2041,7 +2042,7 @@
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_diagnostics_linux.go",
-        "sha256": "c9e9e2327ffe98fe92150d3c8e5d15cabef3937e26515e12739da527a3a4505d",
+        "sha256": "9e2e2b1dfc233b6fb9a1192ee8ef2d059ee50a06fc684dad5a48048be8c8b058",
         "symbols": [
           "softwareClaimRecoveryRefusalPrefix",
           "softwareClaimRecoveryInspectionOrdinal",
@@ -2057,6 +2058,7 @@
           "softwareClaimWatchdogDiagnosticReasonAllowed",
           "softwareClaimRecoveryProcessDiagnostic",
           "softwareClaimRecoveryNamespaceDiagnostic",
+          "softwareClaimRecoveryManualQuery",
           "softwareClaimRecoveryCombinedQuery",
           "softwareClaimRecoveryDiagnosticForRunner",
           "softwareClaimRecoveryObserveUnit",
@@ -2068,7 +2070,7 @@
           "softwareClaimRecoveryEnum",
           "softwareClaimRecoveryProcessDiagnostic.valid"
         ],
-        "physical_lines": 383
+        "physical_lines": 413
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_receipt.go",

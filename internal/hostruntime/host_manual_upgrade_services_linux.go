@@ -206,6 +206,18 @@ func readManualHostUpgradeRecoveryServiceProperties(
 	if err != nil || len(output) == 0 || len(output) > 4096 {
 		return observed, fmt.Errorf("read %s recovery properties", unit)
 	}
+	observed, err = parseManualHostUpgradeRecoveryServiceProperties(output, unit)
+	if err != nil {
+		return observed, err
+	}
+	return observed, ctx.Err()
+}
+
+func parseManualHostUpgradeRecoveryServiceProperties(output, unit string) (manualHostRecoveryServiceProperties, error) {
+	var observed manualHostRecoveryServiceProperties
+	if len(output) == 0 || len(output) > 4096 {
+		return observed, fmt.Errorf("read %s recovery properties", unit)
+	}
 	values := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
@@ -218,6 +230,7 @@ func readManualHostUpgradeRecoveryServiceProperties(
 		values[key] = value
 	}
 	observed.state, observed.subState, observed.result = values["ActiveState"], values["SubState"], values["Result"]
+	var err error
 	observed.mainPID, err = strconv.Atoi(values["MainPID"])
 	controlPID, controlErr := strconv.Atoi(values["ControlPID"])
 	observed.controlPID = controlPID
@@ -241,7 +254,7 @@ func readManualHostUpgradeRecoveryServiceProperties(
 	default:
 		return observed, fmt.Errorf("%s recovery result is unknown", unit)
 	}
-	return observed, ctx.Err()
+	return observed, nil
 }
 
 func normalizeManualHostUpgradeRecoveryServices(

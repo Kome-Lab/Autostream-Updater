@@ -97,6 +97,23 @@ func (r softwareClaimRecoveryDiagnosticRunner) Run(ctx context.Context, dir stri
 			break
 		}
 		d := &r.diagnostic.Slots[index]
+		if softwareClaimRecoveryManualQuery(args, unit) {
+			d.CombinedCommand = softwareClaimRecoveryCommandClass(ctx, err)
+			d.CombinedShape = "not_read"
+			d.State, d.StateCommand, d.PIDCommand = "unknown", d.CombinedCommand, d.CombinedCommand
+			d.PIDValid, d.PIDZero = false, false
+			d.MainPIDKind, d.ControlPIDKind = "unknown", "unknown"
+			if err == nil && ctx.Err() == nil {
+				d.CombinedShape = "invalid"
+				observed, parseErr := parseManualHostUpgradeRecoveryServiceProperties(output, unit)
+				if parseErr == nil {
+					d.CombinedShape, d.State = "valid", observed.state
+					d.PIDValid, d.PIDZero = true, observed.mainPID == 0
+					d.MainPIDKind = softwareClaimRecoveryPIDKind(observed.mainPID)
+					d.ControlPIDKind = softwareClaimRecoveryPIDKind(observed.controlPID)
+				}
+			}
+		}
 		if softwareClaimRecoveryCombinedQuery(args, unit) {
 			d.CombinedCommand = softwareClaimRecoveryCommandClass(ctx, err)
 			d.CombinedShape = "not_read"
@@ -122,6 +139,19 @@ func (r softwareClaimRecoveryDiagnosticRunner) Run(ctx context.Context, dir stri
 		}
 	}
 	return output, err
+}
+
+func softwareClaimRecoveryManualQuery(args []string, unit string) bool {
+	properties := []string{"ActiveState", "SubState", "MainPID", "ControlPID", "Result"}
+	if len(args) != len(properties)+2 || args[0] != "show" || args[len(args)-1] != unit {
+		return false
+	}
+	for index, property := range properties {
+		if args[index+1] != "--property="+property {
+			return false
+		}
+	}
+	return true
 }
 
 func softwareClaimRecoveryCombinedQuery(args []string, unit string) bool {

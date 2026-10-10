@@ -18,10 +18,15 @@ type softwareClaimRecoveryWatchdogFixtureRunner struct {
 }
 
 func (r softwareClaimRecoveryWatchdogFixtureRunner) Run(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
-	if name == "/usr/bin/systemctl" && len(args) > 5 && args[0] == "show" {
-		unit := args[len(args)-1]
+	if dir == "/" && len(env) == 0 && name == "/usr/bin/systemctl" {
 		for _, slot := range []string{"a", "b"} {
-			if unit == "autostream-host-self-update-recovery@"+slot+".service" {
+			unit := "autostream-host-self-update-recovery@" + slot + ".service"
+			if softwareClaimRecoveryManualQuery(args, unit) {
+				// The underlying manual fixture owns its five properties. Do
+				// not turn that query into a complete software-claim authority.
+				return r.base.Run(ctx, dir, env, name, args...)
+			}
+			if softwareClaimRecoveryCombinedQuery(args, unit) {
 				return r.unitOutput(slot), nil
 			}
 		}

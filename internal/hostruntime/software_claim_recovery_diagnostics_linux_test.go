@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -24,75 +26,151 @@ func softwareClaimRecoveryDiagnosticChecks(t *testing.T) {
 	for _, slot := range []int{0, 1} {
 		for _, boundary := range []string{"inactive", "failed", "active", "activating", "deactivating", "nonzero_pid", "unknown_state", "empty_state", "invalid_pid", "negative_pid", "overflow_pid", "pid_error"} {
 			t.Run("service_diagnostic/"+[]string{"a", "b"}[slot]+"/"+boundary, func(t *testing.T) {
-				fixture, policy, request, runtime := newSoftwareClaimRecoveryRootHarness(t)
-				state, pid := "inactive\n", "0\n"
+				state, subState, result, pid := "inactive", "dead", "success", "0"
 				var pidErr error
 				switch boundary {
-				case "failed", "active", "activating", "deactivating":
-					state = boundary + "\n"
+				case "failed":
+					state, subState, result = "failed", "failed", "exit-code"
+				case "active":
+					state, subState = "active", "running"
+				case "activating":
+					state, subState = "activating", "start"
+				case "deactivating":
+					state, subState = "deactivating", "stop"
 				case "nonzero_pid":
-					pid = "42\n"
+					pid = "42"
 				case "unknown_state":
-					state = "private-state-sentinel\n"
+					state = "private-state-sentinel"
 				case "empty_state":
 					state = ""
 				case "invalid_pid":
-					pid = "private-pid-sentinel\n"
+					pid = "private-pid-sentinel"
 				case "negative_pid":
-					pid = "-1\n"
+					pid = "-1"
 				case "overflow_pid":
 					pid = strings.Repeat("9", 40)
 				case "pid_error":
 					pidErr = errors.New("private-error-sentinel")
 				}
-				d := newSoftwareClaimRecoveryRootRefusal(request.SoftwareClaimRecovery.Request)
-				d.LifecycleHeld = true
-				reads := 0
-				base := runtime.manual.runner
-				inner := softwareClaimRecoveryDiagnosticTestRunner(func(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
-					unit := manualHostRecoveryUnitInstances[slot]
-					if name == "/usr/bin/systemctl" && reflect.DeepEqual(args, []string{"is-active", unit}) {
-						reads++
-						return state, errors.New("ordinary nonactive command status")
+				targetOutput := fmt.Sprintf("ActiveState=%s\nSubState=%s\nMainPID=%s\nControlPID=0\nResult=%s\n", state, subState, pid, result)
+				type outcome struct {
+					guard          string
+					trace, outputs []string
+					errors         []error
+					resolves       int
+				}
+				var outcomes []outcome
+				for _, enabled := range []bool{false, true} {
+					fixture, _, request, runtime := newSoftwareClaimRecoveryRootHarness(t)
+					d := newSoftwareClaimRecoveryRootRefusal(request.SoftwareClaimRecovery.Request)
+					d.LifecycleHeld, d.Phase = true, "recovery_service"
+					unread := d.Slots
+					var got outcome
+					var originalOutput string
+					var originalErr error
+					base := runtime.manual.runner
+					inner := softwareClaimRecoveryDiagnosticTestRunner(func(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
+						if dir != "/" || env != nil || name != "/usr/bin/systemctl" {
+							t.Fatal("guard changed command path, directory or environment")
+						}
+						queried := -1
+						for index, unit := range manualHostRecoveryUnitInstances {
+							want := []string{"show", "--property=ActiveState", "--property=SubState", "--property=MainPID", "--property=ControlPID", "--property=Result", unit}
+							if reflect.DeepEqual(args, want) {
+								queried = index
+							}
+						}
+						if queried < 0 {
+							t.Fatal("guard issued an unexpected query")
+						}
+						got.trace = append(got.trace, []string{"a", "b"}[queried])
+						if queried == slot {
+							originalOutput, originalErr = targetOutput, pidErr
+						} else {
+							originalOutput, originalErr = base.Run(ctx, dir, env, name, args...)
+							if originalOutput != "ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\nResult=success\n" || originalErr != nil {
+								t.Fatal("untargeted slot did not retain its legal five-property response")
+							}
+						}
+						return originalOutput, originalErr
+					})
+					var selected CommandRunner = inner
+					if enabled {
+						selected = softwareClaimRecoveryDiagnosticRunner{inner, &d}
 					}
-					if name == "/usr/bin/systemctl" && reflect.DeepEqual(args, []string{"show", "--property=MainPID", "--value", unit}) {
-						reads++
-						return pid, pidErr
+					// Check the exact outward values as well as the external trace.
+					runtime.manual.runner = softwareClaimRecoveryDiagnosticTestRunner(func(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
+						output, err := selected.Run(ctx, dir, env, name, args...)
+						if output != originalOutput || err != originalErr {
+							t.Fatal("diagnostic replaced original output/error")
+						}
+						got.outputs, got.errors = append(got.outputs, output), append(got.errors, err)
+						return output, err
+					})
+					runtime.manual.resolveProcessExe = func(pid int) (string, error) {
+						got.resolves++
+						if pid != 42 {
+							t.Fatal("guard resolved an unobserved process")
+						}
+						return filepath.Join(runtime.manual.selfUpdate.slotsRoot, []string{"a", "b"}[slot], "bin", "autostream-local-executor"), nil
 					}
-					return base.Run(ctx, dir, env, name, args...)
-				})
-				runtime.manual.runner = softwareClaimRecoveryDiagnosticRunner{inner, &d}
-				// The shared installer predicate remains strict. Software claim now
-				// proves exclusion independently, with stronger unit/slot/FD guards.
-				_ = policy
-				guardErr := validateManualHostUpgradeRecoveryServicePreconditions(context.Background(), runtime.manual, false)
-				if boundary == "inactive" {
-					if guardErr != nil {
-						t.Fatal("diagnostic changed ordinary inactive service admission")
+					guardErr := validateManualHostUpgradeRecoveryServicePreconditions(context.Background(), runtime.manual, false)
+					if (guardErr == nil) != (boundary == "inactive") {
+						t.Fatal("strict manual-upgrade admission changed")
 					}
-				} else if guardErr == nil {
-					t.Fatal("diagnostic weakened the strict manual-upgrade guard")
+					got.guard = fmt.Sprintf("%T:%v", guardErr, guardErr)
+					wantTrace := []string{"a"}
+					if slot == 1 || boundary == "inactive" {
+						wantTrace = append(wantTrace, "b")
+					}
+					wantResolves := 0
+					if boundary == "nonzero_pid" {
+						wantResolves = 1
+					}
+					if !reflect.DeepEqual(got.trace, wantTrace) || got.resolves != wantResolves || fixture.runner.stopCalls != 0 || len(fixture.runner.restartOrder) != 0 || fixture.runner.recoveryReloads != 0 || fixture.runner.recoveryResetFailedAttempts != 0 || fixture.runner.recoveryResetFailedCalls != 0 {
+						t.Fatal("diagnostic changed exact query trace, process reads or a service")
+					}
+					if enabled {
+						want := unread[slot]
+						want.CombinedCommand, want.StateCommand, want.PIDCommand = "success", "success", "success"
+						want.CombinedShape, want.State = "invalid", "unknown"
+						valid := boundary == "inactive" || boundary == "failed" || boundary == "active" || boundary == "activating" || boundary == "deactivating" || boundary == "nonzero_pid"
+						if valid {
+							want.CombinedShape, want.State, want.PIDValid, want.PIDZero = "valid", state, true, boundary != "nonzero_pid"
+							want.MainPIDKind, want.ControlPIDKind = "zero", "zero"
+							if boundary == "nonzero_pid" {
+								want.MainPIDKind = "positive"
+							}
+						}
+						if boundary == "pid_error" {
+							want.CombinedCommand, want.StateCommand, want.PIDCommand, want.CombinedShape = "launch_other", "launch_other", "launch_other", "not_read"
+						}
+						if d.Slots[slot] != want {
+							t.Fatal("combined observation lost full-query validity or command/PID classification")
+						}
+						other := 1 - slot
+						want = unread[other]
+						if slot == 1 || boundary == "inactive" {
+							want.State, want.StateCommand, want.PIDCommand = "inactive", "success", "success"
+							want.CombinedCommand, want.CombinedShape = "success", "valid"
+							want.PIDValid, want.PIDZero, want.MainPIDKind, want.ControlPIDKind = true, true, "zero", "zero"
+						}
+						if d.Slots[other] != want {
+							t.Fatal("diagnostic fabricated or lost the untargeted slot")
+						}
+					} else if d.Slots != unread {
+						t.Fatal("disabled diagnostic published an observation")
+					}
+					body, err := json.Marshal(d)
+					if err != nil || !d.valid() || strings.Contains(string(body), "private-") || strings.Contains(string(body), "MainPID") {
+						t.Fatal("refusal observation leaked unbounded guard input")
+					}
+					outcomes = append(outcomes, got)
 				}
-				wantReads := 2
-				if boundary == "empty_state" {
-					wantReads = 1
+				if !reflect.DeepEqual(outcomes[0], outcomes[1]) {
+					t.Fatal("diagnostic OFF/ON changed guard error, output/error or external trace")
 				}
-				if reads != wantReads || fixture.runner.stopCalls != 0 || len(fixture.runner.restartOrder) != 0 {
-					t.Fatal("diagnostic added a guard query or changed a service")
-				}
-				d.Phase = "recovery_service"
-				body, err := json.Marshal(d)
-				if err != nil || !d.valid() || strings.Contains(string(body), "private-") || strings.Contains(string(body), "MainPID") {
-					t.Fatal("refusal observation leaked unbounded guard input")
-				}
-				observed := d.Slots[slot]
-				wantValid := boundary != "empty_state" && boundary != "invalid_pid" && boundary != "negative_pid" && boundary != "overflow_pid" && boundary != "pid_error"
-				if observed.PIDValid != wantValid || observed.PIDZero != (wantValid && boundary != "nonzero_pid") || observed.StateCommand != "launch_other" {
-					t.Fatal("diagnostic lost the original service input classification")
-				}
-				if slot == 0 && boundary != "inactive" && d.Slots[1].State != "not_read" {
-					t.Fatal("diagnostic fabricated an unqueried slot observation")
-				}
+				t.Logf("UI183-R1 diagnostic_off_on=true query_trace=%s refused=%t service_changes=0 output_error_preserved=true", strings.Join(outcomes[0].trace, ","), boundary != "inactive")
 			})
 		}
 	}
