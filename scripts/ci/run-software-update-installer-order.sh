@@ -14,6 +14,14 @@ software_installer_setfacl_present=false
 software_installer_other_dependencies_present=false
 software_installer_source_inventory_matched=false
 software_installer_source_inventory_count=0
+software_installer_checkpoint=entry
+software_installer_failure_line=null
+software_installer_failure_status=null
+software_installer_baseline_exit=null
+software_installer_candidate_exit=null
+software_installer_after_injection=false
+software_installer_race_result=false
+software_installer_timers=false
 
 software_installer_record_status() {
   [[ ${software_installer_status_enabled} == true ]] || return 0
@@ -27,10 +35,25 @@ software_installer_record_status() {
 }
 software_installer_enter_phase() {
   software_installer_phase=$1
+  software_installer_checkpoint=$1
   software_installer_record_status
+}
+software_installer_record_boundary() {
+  [[ ${software_installer_status_enabled} == true ]] || return 0
+  # Private input for the post-fixture projection; never dump command/error text.
+  printf '{"checkpoint":"%s","failure_source_line":%s,"shell_command_exit":%s,"baseline_installer_exit":%s,"candidate_installer_exit":%s,"hook_exit":%d,"after_injection_confirmed":%s,"race_result_completed":%s,"timers_verified":%s}\n' \
+    "${software_installer_checkpoint}" "${software_installer_failure_line}" "${software_installer_failure_status}" \
+    "${software_installer_baseline_exit}" "${software_installer_candidate_exit}" "$1" \
+    "${software_installer_after_injection}" "${software_installer_race_result}" "${software_installer_timers}" \
+    > /evidence/installer/ui183-command-boundary.json
 }
 software_installer_on_error() {
   local status=$?
+  software_installer_failure_line=$1
+  software_installer_failure_status=${status}
+  if [[ ${software_installer_checkpoint} == candidate_installer_command ]]; then
+    software_installer_candidate_exit=${status}
+  fi
   software_installer_record_status "${status}"
   printf 'software installer ordering failed at phase %s (status %s)\n' "${software_installer_phase}" "${status}" >&2
   exit "${status}"
@@ -39,9 +62,10 @@ software_installer_on_exit() {
   local status=$?
   trap - EXIT ERR
   software_installer_record_status "${status}"
+  software_installer_record_boundary "${status}" 2>/dev/null || true
   exit "${status}"
 }
-trap software_installer_on_error ERR
+trap 'software_installer_on_error "$LINENO"' ERR
 trap software_installer_on_exit EXIT
 [[ ${GITHUB_ACTIONS:-} == true && $(id -u) == 0 && -f /.dockerenv &&
   $(cat /proc/1/comm) == systemd && $# == 6 ]] || {
@@ -366,8 +390,11 @@ wait_legacy_recovery_quiescent
 readonly LEGACY_STATE_SHA256="$(sha256sum "${STATE_ROOT}/host-self-update/state.json" | awk '{print $1}')"
 printf '%s\n' before > "${EVIDENCE_DIRECTORY}/ui183-phase"
 baseline_status=0
+software_installer_checkpoint=baseline_installer_command
 "${BASELINE_ROOT}/install/install-autostream-host-agent" --upgrade \
   > "${EVIDENCE_DIRECTORY}/baseline-upgrade.log" 2>&1 || baseline_status=$?
+software_installer_baseline_exit=${baseline_status}
+software_installer_checkpoint=baseline_refusal_assertions
 [[ ${baseline_status} == 1 && -d ${EVIDENCE_DIRECTORY}/ui183-before.injected ]]
 grep -F 'autostream-host-self-update-recovery@a.service must be inactive and have no MainPID' \
   "${EVIDENCE_DIRECTORY}/baseline-upgrade.log" >/dev/null
@@ -386,10 +413,17 @@ printf '%s\n' after > "${EVIDENCE_DIRECTORY}/ui183-phase"
 # No active-job bridge flag is permitted: the actual candidate root helper
 # must accept all ordinary local journal/ledger/checkpoint/lifecycle guards.
 software_installer_enter_phase normal_upgrade
+software_installer_checkpoint=candidate_installer_command
 "${PACKAGE_ROOT}/install/install-autostream-host-agent" --upgrade \
   > "${EVIDENCE_DIRECTORY}/normal-upgrade.log" 2>&1
+software_installer_candidate_exit=$?
+software_installer_checkpoint=candidate_command_returned
+software_installer_checkpoint=after_injection_confirmation
 [[ -d ${EVIDENCE_DIRECTORY}/ui183-after.injected ]]
+software_installer_after_injection=true
+software_installer_checkpoint=after_injection_phase_record
 printf '%s\n' complete > "${EVIDENCE_DIRECTORY}/ui183-phase"
+software_installer_checkpoint=race_result_assertions_output
 python3 - "${EVIDENCE_DIRECTORY}" <<'RACE_RESULT'
 import json, sys
 from pathlib import Path
@@ -413,10 +447,13 @@ with open('/evidence/artifacts/ui183-installer-watchdog.json', 'x') as out:
                'timer_stop_disable_mask':False, 'test_only_fixed_unit_start':True,
                'overlap':'installer_lock_owner_recovery_query', 'observations':observations}, out)
 RACE_RESULT
+software_installer_race_result=true
+software_installer_checkpoint=recovery_timers_verification
 for slot in a b; do
   [[ $(systemctl is-active "autostream-host-self-update-recovery@${slot}.timer") == active &&
     $(systemctl is-enabled "autostream-host-self-update-recovery@${slot}.timer") == enabled ]]
 done
+software_installer_timers=true
 software_installer_enter_phase candidate_pair_verify
 [[ $(readlink "${HOST_ROOT}/current") == slots/b ]]
 assert_binary_pair "${HOST_ROOT}/slots/b/bin" "${CANDIDATE_VERSION}" "${CANDIDATE_COMMIT}"

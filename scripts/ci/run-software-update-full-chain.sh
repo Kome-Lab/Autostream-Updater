@@ -245,6 +245,178 @@ BOOTSTRAP
   set -e
   printf '{"schema_version":1,"tuple":"%s","runtime_exit":%d,"event_conversion_exit":%d,"test_execution":"actual_cp_and_real_processes"}\n' \
     "${tuple}" "${statuses[0]}" "${statuses[1]}" > "${evidence}/artifacts/status-${tuple}.json"
+  # The hook/process stream is closed now. Project only bounded fixed files,
+  # before container removal, without changing either original pipeline exit.
+  if run_bounded docker exec --interactive "${container_id}" python3 - "${updater_sha}" "${cp_sha}" "${tuple}" <<'BOUNDARY'
+import hashlib, json, os, re, stat, sys
+from pathlib import Path
+root = Path('/evidence')
+limit = 1024 * 1024
+def read_fixed(relative):
+    meta = {'exists': None, 'size': None, 'sha256': None, 'capture': 'NOT_CAPTURED'}
+    try:
+        path = root / relative
+        info = path.lstat()
+        meta.update(exists=True, size=info.st_size)
+        if not stat.S_ISREG(info.st_mode):
+            meta['capture'] = 'NOT_REGULAR'
+            return meta, None
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as src:
+            opened = os.fstat(src.fileno())
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                meta['capture'] = 'CHANGED'
+                return meta, None
+            data = src.read(limit + 1)
+        if len(data) > limit:
+            meta['capture'] = 'LIMIT_EXCEEDED'
+            return meta, None
+        if len(data) != info.st_size:
+            meta['capture'] = 'CHANGED'
+            return meta, None
+        meta.update(capture='CAPTURED', sha256=hashlib.sha256(data).hexdigest())
+        return meta, data
+    except FileNotFoundError:
+        meta.update(exists=False, capture='NOT_GENERATED')
+    except OSError:
+        meta['capture'] = 'READ_FAILED'
+    return meta, None
+def integer(value, maximum=2**63-1):
+    return value if type(value) is int and 0 <= value <= maximum else None
+def decode(data):
+    try:
+        return json.loads(data) if data is not None else None
+    except (ValueError, UnicodeError):
+        return None
+checkpoints = ('entry input_validation protected_inputs ordinary_dependencies binary_pair compatibility_floor '
+               'fixture_archive legacy_pair_install legacy_pair_start legacy_pair_probe baseline_overlap_refusal '
+               'baseline_installer_command baseline_refusal_assertions normal_upgrade candidate_installer_command '
+               'candidate_command_returned after_injection_confirmation after_injection_phase_record '
+               'race_result_assertions_output recovery_timers_verification candidate_pair_verify '
+               'identity_policy_preservation terminal_state_verify agent_stop result_record complete').split()
+boundary_meta, boundary_data = read_fixed('installer/ui183-command-boundary.json')
+raw = decode(boundary_data)
+boundary = {'capture': 'NOT_CAPTURED', 'checkpoint': None, 'failure_source_line': None,
+            'shell_command_exit': None, 'baseline_installer_exit': None,
+            'candidate_installer_exit': None, 'hook_exit': None,
+            'after_injection_confirmed': None, 'race_result_completed': None, 'timers_verified': None}
+if isinstance(raw, dict):
+    boundary['capture'] = 'CAPTURED'
+    boundary['checkpoint'] = raw.get('checkpoint') if raw.get('checkpoint') in checkpoints else None
+    for key in ('failure_source_line', 'shell_command_exit', 'baseline_installer_exit', 'candidate_installer_exit', 'hook_exit'):
+        boundary[key] = integer(raw.get(key), 10000 if key == 'failure_source_line' else 255)
+    for key in ('after_injection_confirmed', 'race_result_completed', 'timers_verified'):
+        boundary[key] = raw.get(key) if type(raw.get(key)) is bool else None
+# Exact source literals only; matching never establishes a product checkpoint.
+static = {
+    'Host recovery preflight attempt limit': ('PREFLIGHT_ATTEMPT_LIMIT', 'preflight_attempt'),
+    'context deadline exceeded': ('CONTEXT_DEADLINE', 'deadline'),
+    'context canceled': ('CONTEXT_CANCELED', 'cancellation'),
+    'Host archive, pair, slot or durable state changed during preflight handoff': ('ARCHIVE_PAIR_STATE_DRIFT', 'pair_state_archive_drift'),
+    'Host current link changed during preflight handoff': ('CURRENT_LINK_DRIFT', 'pair_state_drift'),
+    'Host slot appeared during preflight handoff': ('SLOT_APPEARED', 'pair_state_drift'),
+    'Host slot binary changed during preflight handoff': ('SLOT_BINARY_DRIFT', 'pair_state_drift'),
+    'Host preflight lock identity changed during handoff': ('PREFLIGHT_LOCK_DRIFT', 'lock_drift'),
+    'privileged Host lifecycle lock identity changed': ('LIFECYCLE_LOCK_DRIFT', 'lock_drift'),
+    'privileged Host lifecycle lock changed after acquisition': ('ACQUIRED_LOCK_DRIFT', 'lock_drift'),
+    'another privileged Host lifecycle operation is active': ('LIFECYCLE_BUSY', 'lock_busy'),
+    'Local Executor policy changed before checkpoint inspection': ('POLICY_DRIFT', 'policy_drift'),
+    'Host self-update state changed or is not upgrade-owned': ('STATE_DRIFT', 'state_drift'),
+    'installed Host runtime unit changed during upgrade': ('UNIT_DRIFT', 'pair_state_drift'),
+    'manual Host runtime checksum verification failed': ('ARCHIVE_CHECKSUM', 'archive_refusal'),
+    'manual Host runtime artifact identity is invalid': ('ARTIFACT_IDENTITY', 'archive_refusal'),
+    'an active Host Agent job blocks manual runtime upgrade': ('ACTIVE_AGENT_JOB', 'other_static_refusal'),
+    'software claim recovery must settle before a manual runtime upgrade': ('CLAIM_RECOVERY_BLOCKER', 'other_static_refusal'),
+    'a non-terminal Local Executor mutation blocks upgrade': ('MUTATION_BLOCKER', 'other_static_refusal'),
+    'a non-terminal Local Executor update checkpoint blocks upgrade': ('CHECKPOINT_BLOCKER', 'other_static_refusal'),
+    'canonical Host Agent identity is unsafe': ('IDENTITY_UNSAFE', 'other_static_refusal'),
+    'candidate Local Executor could not inspect Host update recovery': ('RECOVERY_INSPECTION', 'other_static_refusal'),
+}
+unit = r'autostream-host-self-update-recovery@[ab]\.service'
+states = r'(?:inactive|failed|active|activating|deactivating|reloading)'
+substates = r'(?:dead|failed|running|start|start-pre|start-post|stop|stop-sigterm|stop-sigkill|auto-restart|exited)'
+results = r'(?:success|exit-code|signal|core-dump|timeout|resources|watchdog|start-limit-hit|condition)'
+busy = unit + r' must be inactive and have no MainPID(?: \(state=' + states + r' substate=' + substates + r' MainPID=[0-9]{1,10} ControlPID=[0-9]{1,10} result=' + results + r'\))?'
+def classify(line, hook):
+    origin = 'fixture_hook' if hook else 'UNKNOWN'
+    helper = re.fullmatch(r'(?:[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?autostream-local-executor: (.+)', line)
+    if helper:
+        origin, line = 'product_helper', helper[1]
+        line = line.removeprefix('manual Host runtime upgrade rejected: ')
+    elif line.startswith('install-autostream-host-agent: '):
+        origin, line = 'installer_shell', line.removeprefix('install-autostream-host-agent: ')
+    if origin in ('product_helper', 'installer_shell'):
+        for prefix, label in [('Host recovery preflight attempt limit: ', 'PREFLIGHT_ATTEMPT_LIMIT'),
+                              ('Host recovery preflight did not settle: ', 'PREFLIGHT_WAIT')]:
+            if line.startswith(prefix):
+                cause = line.removeprefix(prefix)
+                if cause in static or re.fullmatch(busy, cause):
+                    return origin, label, 'preflight_wait_deadline' if cause == 'context deadline exceeded' else 'preflight_wait_attempt'
+        if line in static:
+            return origin, *static[line]
+        if re.fullmatch(busy, line):
+            return origin, 'RECOVERY_SERVICE_BUSY', 'service_busy'
+        if re.fullmatch(unit + r' (?:must have no ControlPID|recovery process is unconfirmed|inactive recovery service retains a MainPID)', line):
+            return origin, 'RECOVERY_SERVICE_REFUSAL', 'service_refusal'
+    if hook and (line == 'Traceback (most recent call last):' or line == 'AssertionError'):
+        return 'fixture_python', 'PYTHON_ASSERT_TRACE', 'fixture_assertion'
+    if hook and re.fullmatch(r'software installer ordering failed at phase (?:' + '|'.join(checkpoints) + r') \(status [0-9]{1,3}\)', line):
+        return 'fixture_hook', 'HOOK_PHASE_FAILURE', 'fixture_failure'
+    return origin, 'UNKNOWN', 'UNKNOWN'
+logs = {}
+for name, relative in [('baseline', 'installer/baseline-upgrade.log'), ('candidate', 'installer/normal-upgrade.log'),
+                       ('hook', 'processes/normal-installer-upgrade.log')]:
+    meta, data = read_fixed(relative)
+    events = []
+    lines = data.splitlines() if data is not None else []
+    for number, raw_line in enumerate(lines[:128], 1):
+        origin, template, category = classify(raw_line.decode('utf-8', errors='replace'), name == 'hook')
+        events.append({'line': number, 'line_sha256': hashlib.sha256(raw_line).hexdigest(),
+                       'origin': origin, 'template_id': template, 'classification': category})
+    logs[name] = {'file': meta, 'lines_examined': len(events), 'lines_truncated': len(lines) > 128, 'events': events}
+observations = {}
+for phase in ('before', 'after'):
+    meta, data = read_fixed(f'installer/ui183-{phase}-locks.json')
+    lock_raw = decode(data)
+    locks = {}
+    for label, path in [('setup', '/run/autostream-updater/.autostream-runtime-host-setup.lock'),
+                        ('lifecycle', '/run/autostream-updater/.autostream-host-lifecycle.lock')]:
+        matches = [v for v in lock_raw.get('locks', []) if isinstance(v, dict) and v.get('path') == path] if isinstance(lock_raw, dict) and isinstance(lock_raw.get('locks'), list) else []
+        locks[label] = {k: integer(matches[0].get(k)) if len(matches) == 1 else None for k in ('inode', 'owner_pid')}
+    slots = {}
+    allowed = {'ActiveState': states, 'SubState': substates, 'Result': results,
+               'MainPID': r'[0-9]{1,10}', 'ControlPID': r'[0-9]{1,10}', 'ExecMainStatus': r'[0-9]{1,3}'}
+    for slot in ('a', 'b'):
+        prop_meta, prop_data = read_fixed(f'installer/ui183-{phase}-{slot}.properties')
+        props = {}
+        for key, pattern in allowed.items():
+            values = [line[len(key)+1:] for line in prop_data.decode('utf-8', errors='replace').splitlines() if line.startswith(key + '=')] if prop_data is not None else []
+            props[key] = values[0] if len(values) == 1 and re.fullmatch(pattern, values[0]) else None
+        count_meta, count_data = read_fixed(f'installer/ui183-{phase}-{slot}.lock-failure')
+        count = int(count_data.strip()) if count_data is not None and re.fullmatch(rb'[0-9]{1,3}\n?', count_data) else None
+        slots[slot] = {'property_file': prop_meta, 'properties': props, 'lock_failure_file': count_meta, 'actual_lifecycle_lock_failure_events': count}
+    observations[phase] = {'lock_file': meta, 'locks': locks, 'slots': slots,
+                           'lock_acquired_at': 'installer_lock_owner_query_before_injected_starts',
+                           'properties_acquired_at': 'after_injected_fixed_start_before_query_return',
+                           'not_atomic': True, 'not_failure_instant': True}
+assert re.fullmatch(r'[0-9a-f]{40}', sys.argv[1]) and re.fullmatch(r'[0-9a-f]{40}', sys.argv[2])
+assert sys.argv[3] in ('equal', 'distinct')
+result = {'schema_version': 1, 'evidence_status': 'COLLECTED', 'collection_timing': 'post_fixture_exit',
+          'updater_sha': sys.argv[1], 'control_panel_sha': sys.argv[2], 'tuple': sys.argv[3],
+          'installed_pair_sha': 'b1c94afe2ee2fe8854abb12e2c85565a1bd448dc',
+          'baseline_installer_sha': 'f72d1bddb712eeb64bab2b852b648c2c6b0f4641',
+          'invocation_exit_is_not_guard_proof': True, 'static_reason_is_not_internal_checkpoint': True,
+          'boundary_file': boundary_meta, 'boundary': boundary, 'logs': logs, 'observations': observations}
+with (root / 'artifacts/ui183-installer-boundary.json').open('x', encoding='utf-8') as out:
+    json.dump(result, out, sort_keys=True, indent=2)
+    out.write('\n')
+BOUNDARY
+  then
+    :
+  else
+    local collection_status=$?
+    printf '{"schema_version":1,"evidence_status":"COLLECTOR_FAILED","collector_exit":%d,"hook_exit":null}\n' \
+      "${collection_status}" > "${evidence}/${tuple}/artifacts/ui183-installer-boundary-unavailable.json"
+  fi
   # Only fixed, secret-screened observations are uploadable. Process/build,
   # installer logs and runtime credentials remain private and are never uploaded.
   run_bounded docker exec "${container_id}" chmod -R a+rX /evidence/artifacts || return 1
