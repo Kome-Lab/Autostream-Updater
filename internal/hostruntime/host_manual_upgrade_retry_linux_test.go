@@ -5,6 +5,8 @@ package hostruntime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -710,6 +712,136 @@ func TestManualHostUpgradeUnlockedWaitDiagnosticParity(t *testing.T) {
 				}
 				if outcomes[0] != outcomes[1] {
 					t.Fatal("OFF/ON changed output/error, calls or cause classification")
+				}
+			})
+		}
+	}
+	for _, slot := range []string{"a", "b"} {
+		for _, tc := range []struct {
+			name, actual, class string
+			canonical           bool
+			cause               error
+		}{
+			{"executor_usr", "/usr/lib/systemd/systemd-executor", "systemd_executor", true, nil},
+			{"executor_lib", "/lib/systemd/systemd-executor", "systemd_executor", true, nil},
+			{"executor_noncanonical", "/usr/lib/systemd/./systemd-executor", "systemd_executor", false, nil},
+			{"other_slot", "other_slot", "other_fixed_slot_binary", true, nil},
+			{"manager", "/usr/lib/systemd/systemd", "systemd_manager", true, nil},
+			{"shell", "/bin/bash", "fixed_shell", true, nil},
+			{"foreign", "/private-observation-秘密/foreign", "other", true, nil},
+			{"empty", "", "empty", false, nil},
+			{"limit", strings.Repeat("x", 4096), "other", true, nil},
+			{"over_limit", strings.Repeat("x", 4097), "not_captured", false, nil},
+			{"expected_with_error", "expected", "expected_slot_binary", true,
+				&os.PathError{Op: "readlink", Path: "/private-observation-秘密/error", Err: syscall.EACCES}},
+		} {
+			t.Run("executable_comparison/"+slot+"/"+tc.name, func(t *testing.T) {
+				var outcomes []string
+				for _, enabled := range []bool{false, true} {
+					var captured bytes.Buffer
+					oldWriter := log.Writer()
+					log.SetOutput(&captured)
+					defer log.SetOutput(oldWriter)
+					unit := "autostream-host-self-update-recovery@" + slot + ".service"
+					root := "/private-observation-秘密/slots"
+					expected := filepath.Join(root, slot, "bin", "autostream-local-executor")
+					actual := tc.actual
+					if actual == "expected" {
+						actual = expected
+					} else if actual == "other_slot" {
+						other := "b"
+						if slot == "b" {
+							other = "a"
+						}
+						actual = filepath.Join(root, other, "bin", "autostream-local-executor")
+					}
+					var trace []string
+					body := "ActiveState=active\nSubState=start\nMainPID=42\nControlPID=0\nResult=success\n"
+					inner := softwareClaimRecoveryDiagnosticTestRunner(func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+						if name != "/usr/bin/systemctl" || len(args) != 7 || args[0] != "show" {
+							t.Fatal("observation changed services or query shape")
+						}
+						trace = append(trace, fmt.Sprint(args))
+						if args[6] == unit {
+							return body, nil
+						}
+						return "ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\nResult=success\n", nil
+					})
+					d := newSoftwareClaimRecoveryRootRefusal(SoftwareClaimRecoveryRequest{})
+					d.Phase = "recovery_service"
+					var runner CommandRunner = inner
+					if enabled {
+						runner = softwareClaimRecoveryDiagnosticRunner{inner, &d}
+					}
+					resolves := 0
+					rt := manualHostUpgradeRuntime{runner: runner, resolveProcessExe: func(pid int) (string, error) {
+						resolves++
+						if pid != 42 {
+							t.Fatal("resolver did not use preceding MainPID")
+						}
+						body = "ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\nResult=success\n"
+						return actual, tc.cause
+					}}
+					rt.selfUpdate.slotsRoot = root
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					err := waitManualHostUpgradeRecoveryQuiescent(ctx, rt, false)
+					var process *manualHostUpgradeRecoveryUnconfirmed
+					if err == nil || err.Error() != unit+" recovery process is unconfirmed" || !errors.As(err, &process) ||
+						errors.Unwrap(process) != tc.cause || manualHostUpgradeRecoveryCanSettle(err) ||
+						manualHostUpgradeRecoveryMissingCanBeReobserved(ctx, err) || resolves != 1 {
+						t.Fatal("comparison metadata changed the original refusal/cause or retried")
+					}
+					wantQueries := 1
+					if slot == "b" {
+						wantQueries = 2
+					}
+					if len(trace) != wantQueries {
+						t.Fatal("comparison metadata added a query")
+					}
+					classification := "path_mismatch"
+					if tc.cause != nil {
+						classification = "resolution_error/EACCES"
+					}
+					if process.classification() != classification {
+						t.Fatal("comparison metadata changed cause classification")
+					}
+					const marker = "manual Host recovery executable comparison="
+					text := captured.String()
+					if strings.Count(text, marker) != 1 || strings.Contains(text, "private-observation-") {
+						t.Fatal("comparison record missing, duplicated or exposed a private operand/error")
+					}
+					_, encoded, _ := strings.Cut(text, marker)
+					encoded = strings.SplitN(encoded, "\n", 2)[0]
+					var record manualHostUpgradeExecutableComparison
+					if len(encoded) > 2048 || json.Unmarshal([]byte(encoded), &record) != nil ||
+						record.SchemaVersion != 1 || record.RecordKind != "recovery_executable_comparison" ||
+						record.Slot != slot || record.CallSite != "unlocked_wait" || !record.NonAtomic ||
+						record.PrecedingUnitState != "active" || record.PrecedingUnitSubstate != "start" ||
+						record.PrecedingUnitResult != "success" || record.MainPIDKind != "positive" || record.ControlPIDKind != "zero" ||
+						record.ResolverErrorNil != (tc.cause == nil) || record.ActualEqualsExpected != (actual == expected) ||
+						record.Actual.Class != tc.class || record.Expected.Class != "expected_slot_binary" {
+						t.Fatal("record is not the preceding snapshot and same resolver comparison")
+					}
+					for index, operand := range []manualHostUpgradeExecutableOperand{record.Actual, record.Expected} {
+						value, canonical := actual, tc.canonical
+						if index == 1 {
+							value, canonical = expected, true
+						}
+						if len(value) > 4096 {
+							if operand.Bytes != nil || operand.SHA256 != nil || operand.Canonical != nil {
+								t.Fatal("oversize operand was captured")
+							}
+						} else if operand.Bytes == nil || *operand.Bytes != len(value) || operand.SHA256 == nil ||
+							*operand.SHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte(value))) ||
+							operand.Canonical == nil || *operand.Canonical != canonical {
+							t.Fatal("operand hash/length used reconstructed or normalized bytes")
+						}
+					}
+					outcomes = append(outcomes, fmt.Sprintf("%s/%s/%v/%d/%s", err.Error(), process.classification(), trace, resolves, encoded))
+				}
+				if outcomes[0] != outcomes[1] {
+					t.Fatal("OFF/ON changed refusal, comparison bytes or external calls")
 				}
 			})
 		}

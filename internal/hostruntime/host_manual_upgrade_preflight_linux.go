@@ -4,6 +4,7 @@ package hostruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -59,7 +60,7 @@ func upgradeHostRuntimeWithRuntime(
 		result, err := upgradeHostRuntimeAttempt(ctx, preflightCtx, input, rt, previous)
 		var handoff *manualHostUpgradeRecoveryHandoff
 		if !errors.As(err, &handoff) {
-			return result, manualHostUpgradeRecoveryWaitRefusal(err, err)
+			return result, manualHostUpgradeRecoveryWaitRefusal(err, err, "attempt_return")
 		}
 		if attempt == manualHostUpgradePreflightAttempts {
 			return ManualHostUpgradeResult{}, fmt.Errorf("Host recovery preflight attempt limit: %w", err)
@@ -85,22 +86,22 @@ func waitManualHostUpgradeRecoveryQuiescent(
 	var lastMissing error
 	for {
 		if err := ctx.Err(); err != nil {
-			return manualHostUpgradeRecoveryWaitRefusal(err, lastMissing)
+			return manualHostUpgradeRecoveryWaitRefusal(err, lastMissing, "unlocked_wait")
 		}
 		err := validateManualHostUpgradeRecoveryServicePreconditions(ctx, rt, allowFailedBootstrap)
 		if canceled := ctx.Err(); canceled != nil {
 			var process *manualHostUpgradeRecoveryUnconfirmed
 			if errors.As(err, &process) {
-				return manualHostUpgradeRecoveryWaitRefusal(canceled, err)
+				return manualHostUpgradeRecoveryWaitRefusal(canceled, err, "unlocked_wait")
 			}
-			return manualHostUpgradeRecoveryWaitRefusal(canceled, lastMissing)
+			return manualHostUpgradeRecoveryWaitRefusal(canceled, lastMissing, "unlocked_wait")
 		}
 		if err == nil {
 			return nil
 		}
 		if !manualHostUpgradeRecoveryCanSettle(err) {
 			if !manualHostUpgradeRecoveryMissingCanBeReobserved(ctx, err) {
-				return manualHostUpgradeRecoveryWaitRefusal(err, err)
+				return manualHostUpgradeRecoveryWaitRefusal(err, err, "unlocked_wait")
 			}
 			lastMissing = err
 		}
@@ -108,7 +109,7 @@ func waitManualHostUpgradeRecoveryQuiescent(
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return manualHostUpgradeRecoveryWaitRefusal(ctx.Err(), lastMissing)
+			return manualHostUpgradeRecoveryWaitRefusal(ctx.Err(), lastMissing, "unlocked_wait")
 		case <-timer.C:
 		}
 	}
@@ -134,13 +135,20 @@ func manualHostUpgradeRecoveryMissingCanBeReobserved(ctx context.Context, err er
 	}
 }
 
-func manualHostUpgradeRecoveryWaitRefusal(err, observation error) error {
+func manualHostUpgradeRecoveryWaitRefusal(err, observation error, callSite string) error {
 	var process *manualHostUpgradeRecoveryUnconfirmed
 	if !errors.As(observation, &process) {
 		return err
 	}
 	// Classification is evidence only; retry uses the typed cause above.
 	log.Printf("autostream-local-executor: manual Host recovery process refusal cause=%s", process.classification())
+	if process.comparison != nil {
+		record := *process.comparison
+		record.CallSite = closedManualHostUpgradeExecutableValue(callSite, "unlocked_wait attempt_return")
+		if encoded, encodeErr := json.Marshal(record); encodeErr == nil && len(encoded) <= 2048 {
+			log.Printf("autostream-local-executor: manual Host recovery executable comparison=%s", encoded)
+		}
+	}
 	if err == observation {
 		return err
 	}

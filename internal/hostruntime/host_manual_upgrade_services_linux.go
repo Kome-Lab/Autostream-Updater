@@ -4,6 +4,7 @@ package hostruntime
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -119,6 +120,9 @@ func validateManualHostUpgradeRecoveryServicePreconditions(
 			if err != nil || actual != expected {
 				return &manualHostUpgradeRecoveryUnconfirmed{
 					unit: unit, observed: observed, cause: err, pathMismatch: err == nil,
+					comparison: captureManualHostUpgradeExecutableComparison(
+						rt.selfUpdate.slotsRoot, slot, actual, expected, err, observed,
+					),
 				}
 			}
 		}
@@ -188,6 +192,105 @@ type manualHostUpgradeRecoveryUnconfirmed struct {
 	observed     manualHostRecoveryServiceProperties
 	cause        error
 	pathMismatch bool
+	comparison   *manualHostUpgradeExecutableComparison
+}
+
+// Evidence only: operands come from the comparison that already chose refusal.
+// No process read, normalization for permission, or retry uses these fields.
+type manualHostUpgradeExecutableComparison struct {
+	SchemaVersion         int                                `json:"schema_version"`
+	RecordKind            string                             `json:"record_kind"`
+	Slot                  string                             `json:"slot"`
+	CallSite              string                             `json:"call_site"`
+	PrecedingUnitState    string                             `json:"preceding_unit_state"`
+	PrecedingUnitSubstate string                             `json:"preceding_unit_substate"`
+	PrecedingUnitResult   string                             `json:"preceding_unit_result"`
+	MainPIDKind           string                             `json:"main_pid_kind"`
+	ControlPIDKind        string                             `json:"control_pid_kind"`
+	ResolverErrorNil      bool                               `json:"resolver_error_nil"`
+	ActualEqualsExpected  bool                               `json:"actual_equals_expected"`
+	NonAtomic             bool                               `json:"non_atomic"`
+	Actual                manualHostUpgradeExecutableOperand `json:"actual"`
+	Expected              manualHostUpgradeExecutableOperand `json:"expected"`
+}
+
+type manualHostUpgradeExecutableOperand struct {
+	Class     string  `json:"class"`
+	Bytes     *int    `json:"bytes"`
+	SHA256    *string `json:"sha256"`
+	Canonical *bool   `json:"canonical"`
+}
+
+func captureManualHostUpgradeExecutableComparison(
+	slotsRoot, slot, actual, expected string,
+	resolverErr error,
+	observed manualHostRecoveryServiceProperties,
+) *manualHostUpgradeExecutableComparison {
+	if slot != "a" && slot != "b" {
+		slot = "unknown"
+	}
+	return &manualHostUpgradeExecutableComparison{
+		SchemaVersion: 1, RecordKind: "recovery_executable_comparison", Slot: slot, CallSite: "unknown",
+		PrecedingUnitState: closedManualHostUpgradeExecutableValue(observed.state,
+			"inactive failed active activating deactivating"),
+		PrecedingUnitSubstate: closedManualHostUpgradeExecutableValue(observed.subState,
+			"dead failed start-pre start start-post running exited stop stop-sigterm stop-sigkill stop-post final-sigterm final-sigkill"),
+		PrecedingUnitResult: closedManualHostUpgradeExecutableValue(observed.result,
+			"success exit-code signal core-dump timeout watchdog resources start-limit-hit protocol canceled condition assert"),
+		MainPIDKind:      manualHostUpgradeExecutablePIDKind(observed.mainPID),
+		ControlPIDKind:   manualHostUpgradeExecutablePIDKind(observed.controlPID),
+		ResolverErrorNil: resolverErr == nil, ActualEqualsExpected: actual == expected, NonAtomic: true,
+		Actual:   captureManualHostUpgradeExecutableOperand(slotsRoot, slot, actual, expected),
+		Expected: captureManualHostUpgradeExecutableOperand(slotsRoot, slot, expected, expected),
+	}
+}
+
+func closedManualHostUpgradeExecutableValue(value, allowed string) string {
+	for _, candidate := range strings.Fields(allowed) {
+		if value == candidate {
+			return value
+		}
+	}
+	return "unknown"
+}
+
+func manualHostUpgradeExecutablePIDKind(pid int) string {
+	if pid > 0 {
+		return "positive"
+	}
+	if pid == 0 {
+		return "zero"
+	}
+	return "unknown"
+}
+
+func captureManualHostUpgradeExecutableOperand(slotsRoot, slot, value, expected string) manualHostUpgradeExecutableOperand {
+	if len(value) > 4096 {
+		return manualHostUpgradeExecutableOperand{Class: "not_captured"}
+	}
+	length, canonical := len(value), value == filepath.Clean(value)
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(value))) // Hash original bytes, before any classification normalization.
+	operand := manualHostUpgradeExecutableOperand{Class: "other", Bytes: &length, SHA256: &digest, Canonical: &canonical}
+	otherSlot := "b"
+	if slot == "b" {
+		otherSlot = "a"
+	}
+	switch {
+	case value == "":
+		operand.Class = "empty"
+	case (slot == "a" || slot == "b") && value == expected:
+		operand.Class = "expected_slot_binary"
+	case (slot == "a" || slot == "b") && filepath.Clean(value) == filepath.Join(slotsRoot, otherSlot, "bin", "autostream-local-executor"):
+		operand.Class = "other_fixed_slot_binary"
+	case isHostRuntimeSystemdExecutor(value):
+		operand.Class = "systemd_executor"
+	case filepath.Clean(value) == "/lib/systemd/systemd" || filepath.Clean(value) == "/usr/lib/systemd/systemd":
+		operand.Class = "systemd_manager"
+	case filepath.Clean(value) == "/bin/bash" || filepath.Clean(value) == "/usr/bin/bash" ||
+		filepath.Clean(value) == "/bin/dash" || filepath.Clean(value) == "/usr/bin/dash":
+		operand.Class = "fixed_shell"
+	}
+	return operand
 }
 
 func (e *manualHostUpgradeRecoveryUnconfirmed) Error() string {

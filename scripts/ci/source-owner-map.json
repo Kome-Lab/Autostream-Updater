@@ -155,7 +155,7 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_retry_linux_test.go",
-        "sha256": "2c56f9ad871d09e8ad1d1a09eec3124dfa69ed850edc01184a5e4671b9e0c27b",
+        "sha256": "e3b27fb35aea35ec9d5fbc039869bbe63f2525b86d99f1f664949a7feb7615f4",
         "symbols": [
           "TestManualHostUpgradeBlocksOnTerminalGrantWithoutMutation",
           "TestManualHostUpgradeLoadsLegacyHelperTargetsBeforeLocking",
@@ -167,7 +167,7 @@
           "TestManualHostUpgradeUnlockedWaitProcessExit",
           "TestManualHostUpgradeUnlockedWaitRejectsUnconfirmed"
         ],
-        "physical_lines": 717
+        "physical_lines": 849
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_runner_linux_test.go",
@@ -425,9 +425,15 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_services_linux.go",
-        "sha256": "30cb262d995c6135730bbaac68f110c5593d58c8dbdab85528d6b799d7e98748",
+        "sha256": "c5e33f7e378bb3216773edea3c71315cd8c0181e7af6a63d437605be66b2e95d",
         "symbols": [
+          "captureManualHostUpgradeExecutableComparison",
+          "captureManualHostUpgradeExecutableOperand",
+          "closedManualHostUpgradeExecutableValue",
           "manualHostRecoveryServiceProperties",
+          "manualHostUpgradeExecutableComparison",
+          "manualHostUpgradeExecutableOperand",
+          "manualHostUpgradeExecutablePIDKind",
           "manualHostUpgradeRecoveryBusy",
           "manualHostUpgradeRecoveryCanSettle",
           "manualHostUpgradeRecoveryUnconfirmed",
@@ -440,7 +446,7 @@
           "validateManualHostUpgradeCoreServicePreconditions",
           "validateManualHostUpgradeRecoveryServicePreconditions"
         ],
-        "physical_lines": 343
+        "physical_lines": 446
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_snapshot_linux.go",
@@ -499,8 +505,8 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_preflight_linux.go",
-        "sha256": "855b779a2f272284eeead7ec8a25efd4c418803f20e9b344c68eb905fb496df7",
-        "physical_lines": 268,
+        "sha256": "caebb9d1c67c24ee820db1ea55423be1fb96e547a3aee6b9f35d149b4567a124",
+        "physical_lines": 276,
         "symbols": [
           "captureManualHostUpgradePreflight",
           "manualHostUpgradePreflight",

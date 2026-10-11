@@ -375,6 +375,52 @@ def classify(line, hook):
     if hook and re.fullmatch(r'software installer ordering failed at phase (?:' + '|'.join(checkpoints) + r') \(status [0-9]{1,3}\)', line):
         return 'fixture_hook', 'HOOK_PHASE_FAILURE', 'fixture_failure'
     return origin, 'UNKNOWN', 'UNKNOWN'
+comparison_marker = b'autostream-local-executor: manual Host recovery executable comparison='
+def unique_comparison_keys(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError('INVALID_RECORD')
+        value[key] = item
+    return value
+def project_comparison(raw_line):
+    if comparison_marker not in raw_line:
+        return None
+    match = re.fullmatch(rb'(?:[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?' + re.escape(comparison_marker) + rb'(.+)', raw_line)
+    if match is None or len(match[1]) > 2048:
+        raise ValueError('INVALID_RECORD')
+    value = json.loads(match[1].decode('utf-8'), object_pairs_hook=unique_comparison_keys)
+    keys = ('schema_version record_kind slot call_site preceding_unit_state preceding_unit_substate '
+            'preceding_unit_result main_pid_kind control_pid_kind resolver_error_nil actual_equals_expected '
+            'non_atomic actual expected').split()
+    if type(value) is not dict or set(value) != set(keys) or type(value['schema_version']) is not int or value['schema_version'] != 1:
+        raise ValueError('INVALID_RECORD')
+    enums = {'record_kind': 'recovery_executable_comparison', 'slot': 'a b unknown',
+             'call_site': 'unlocked_wait attempt_return unknown',
+             'preceding_unit_state': 'inactive failed active activating deactivating unknown',
+             'preceding_unit_substate': 'dead failed start-pre start start-post running exited stop stop-sigterm stop-sigkill stop-post final-sigterm final-sigkill unknown',
+             'preceding_unit_result': 'success exit-code signal core-dump timeout watchdog resources start-limit-hit protocol canceled condition assert unknown',
+             'main_pid_kind': 'zero positive unknown', 'control_pid_kind': 'zero positive unknown'}
+    if any(type(value[key]) is not str or value[key] not in allowed.split() for key, allowed in enums.items()):
+        raise ValueError('INVALID_RECORD')
+    if any(type(value[key]) is not bool for key in ('resolver_error_nil', 'actual_equals_expected', 'non_atomic')) or not value['non_atomic']:
+        raise ValueError('INVALID_RECORD')
+    classes = 'expected_slot_binary other_fixed_slot_binary systemd_executor systemd_manager fixed_shell other empty not_captured'.split()
+    for key in ('actual', 'expected'):
+        operand = value[key]
+        if type(operand) is not dict or set(operand) != {'class', 'bytes', 'sha256', 'canonical'} or type(operand['class']) is not str or operand['class'] not in classes:
+            raise ValueError('INVALID_RECORD')
+        if operand['class'] == 'not_captured':
+            if any(operand[field] is not None for field in ('bytes', 'sha256', 'canonical')):
+                raise ValueError('INVALID_RECORD')
+        elif type(operand['bytes']) is not int or not 0 <= operand['bytes'] <= 4096 or type(operand['sha256']) is not str or not re.fullmatch(r'[0-9a-f]{64}', operand['sha256']) or type(operand['canonical']) is not bool:
+            raise ValueError('INVALID_RECORD')
+        elif (operand['class'] == 'empty') != (operand['bytes'] == 0) or operand['bytes'] == 0 and (operand['sha256'] != hashlib.sha256(b'').hexdigest() or operand['canonical']):
+            raise ValueError('INVALID_RECORD')
+    if value['resolver_error_nil'] and value['actual_equals_expected']:
+        raise ValueError('INVALID_RECORD')
+    return value
+comparison_records, comparison_rejected = [], []
 logs = {}
 for name, relative in [('baseline', 'installer/baseline-upgrade.log'), ('candidate', 'installer/normal-upgrade.log'),
                        ('hook', 'processes/normal-installer-upgrade.log')]:
@@ -385,6 +431,13 @@ for name, relative in [('baseline', 'installer/baseline-upgrade.log'), ('candida
         origin, template, category = classify(raw_line.decode('utf-8', errors='replace'), name == 'hook')
         events.append({'line': number, 'line_sha256': hashlib.sha256(raw_line).hexdigest(),
                        'origin': origin, 'template_id': template, 'classification': category})
+        if name == 'candidate':
+            try:
+                comparison = project_comparison(raw_line)
+                if comparison is not None:
+                    comparison_records.append({'line': number, 'line_sha256': hashlib.sha256(raw_line).hexdigest(), 'observation': comparison})
+            except (ValueError, UnicodeError):
+                comparison_rejected.append({'line': number, 'line_sha256': hashlib.sha256(raw_line).hexdigest(), 'reason': 'INVALID_RECORD'})
     logs[name] = {'file': meta, 'lines_examined': len(events), 'lines_truncated': len(lines) > 128, 'events': events}
 observations = {}
 for phase in ('before', 'after'):
@@ -421,6 +474,22 @@ result = {'schema_version': 1, 'evidence_status': 'COLLECTED', 'collection_timin
           'boundary_file': boundary_meta, 'boundary': boundary, 'logs': logs, 'observations': observations}
 with (root / 'artifacts/ui183-installer-boundary.json').open('x', encoding='utf-8') as out:
     json.dump(result, out, sort_keys=True, indent=2)
+    out.write('\n')
+capture = 'CAPTURED' if len(comparison_records) == 1 else 'NOT_RECORDED'
+if logs['candidate']['file']['capture'] != 'CAPTURED' or logs['candidate']['lines_truncated']:
+    capture = 'NOT_CAPTURED'
+if comparison_rejected or len(comparison_records) > 1:
+    capture = 'CAPTURE_FAILED'
+comparison_result = {'schema_version': 1, 'evidence_status': capture, 'collection_timing': 'post_fixture_exit',
+                     'base_updater_sha': 'd3776cf697552edcb10ad9fb61cba42e0cf69692',
+                     'updater_sha': sys.argv[1], 'control_panel_sha': sys.argv[2], 'tuple': sys.argv[3],
+                     'observation_timing': 'preceding_unit_query_then_single_resolver', 'non_atomic': True,
+                     'source_log_file': logs['candidate']['file'], 'lines_truncated': logs['candidate']['lines_truncated'],
+                     'candidate_installer_exit': boundary['candidate_installer_exit'], 'hook_exit': boundary['hook_exit'],
+                     'records': comparison_records if capture == 'CAPTURED' else [], 'rejected_records': comparison_rejected,
+                     'multiple_records': len(comparison_records) > 1}
+with (root / 'artifacts/ui183-executable-comparison.json').open('x', encoding='utf-8') as out:
+    json.dump(comparison_result, out, sort_keys=True, indent=2)
     out.write('\n')
 BOUNDARY
   then
