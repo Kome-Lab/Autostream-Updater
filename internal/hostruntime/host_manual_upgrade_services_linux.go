@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 func restartManualHostUpgradeLocalExecutor(
@@ -115,7 +117,9 @@ func validateManualHostUpgradeRecoveryServicePreconditions(
 			expected := filepath.Join(rt.selfUpdate.slotsRoot, slot, "bin", "autostream-local-executor")
 			actual, err := rt.resolveProcessExe(observed.mainPID)
 			if err != nil || actual != expected {
-				return fmt.Errorf("%s recovery process is unconfirmed", unit)
+				return &manualHostUpgradeRecoveryUnconfirmed{
+					unit: unit, observed: observed, cause: err, pathMismatch: err == nil,
+				}
 			}
 		}
 		if observed.state == "inactive" {
@@ -175,6 +179,40 @@ type manualHostRecoveryServiceProperties struct {
 type manualHostUpgradeRecoveryBusy struct {
 	unit     string
 	observed manualHostRecoveryServiceProperties
+}
+
+// Retain the resolver cause without exposing its path or arbitrary error text.
+// This is a refusal, not a busy service or an under-lock handoff permission.
+type manualHostUpgradeRecoveryUnconfirmed struct {
+	unit         string
+	observed     manualHostRecoveryServiceProperties
+	cause        error
+	pathMismatch bool
+}
+
+func (e *manualHostUpgradeRecoveryUnconfirmed) Error() string {
+	return fmt.Sprintf("%s recovery process is unconfirmed", e.unit)
+}
+
+func (e *manualHostUpgradeRecoveryUnconfirmed) Unwrap() error { return e.cause }
+
+func (e *manualHostUpgradeRecoveryUnconfirmed) classification() string {
+	if e.pathMismatch {
+		return "path_mismatch"
+	}
+	if e.cause == nil {
+		return "UNKNOWN"
+	}
+	for _, code := range []struct {
+		err  error
+		name string
+	}{{os.ErrNotExist, "ENOENT"}, {syscall.EACCES, "EACCES"}, {syscall.EPERM, "EPERM"},
+		{syscall.ENODEV, "ENODEV"}, {syscall.EIO, "EIO"}} {
+		if errors.Is(e.cause, code.err) {
+			return "resolution_error/" + code.name
+		}
+	}
+	return "resolution_error/OTHER"
 }
 
 func (e *manualHostUpgradeRecoveryBusy) Error() string {

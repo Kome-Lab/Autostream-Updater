@@ -155,15 +155,19 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_retry_linux_test.go",
-        "sha256": "23837f8a3ee11b101cf843b746af2f0fbd0ae6bbd012390f1ff5750296777549",
+        "sha256": "2c56f9ad871d09e8ad1d1a09eec3124dfa69ed850edc01184a5e4671b9e0c27b",
         "symbols": [
           "TestManualHostUpgradeBlocksOnTerminalGrantWithoutMutation",
           "TestManualHostUpgradeLoadsLegacyHelperTargetsBeforeLocking",
           "TestManualHostUpgradeSameArchiveRetryUsesFreshGeneration",
           "TestManualHostUpgradeSameVersionStillRejectsDurableBlocker",
-          "TestManualHostUpgradeStopFailureUsesDetachedAgentRecovery"
+          "TestManualHostUpgradeStopFailureUsesDetachedAgentRecovery",
+          "TestManualHostUpgradeUnlockedWaitDiagnosticParity",
+          "TestManualHostUpgradeUnlockedWaitMissingFreshPreflight",
+          "TestManualHostUpgradeUnlockedWaitProcessExit",
+          "TestManualHostUpgradeUnlockedWaitRejectsUnconfirmed"
         ],
-        "physical_lines": 321
+        "physical_lines": 717
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_runner_linux_test.go",
@@ -421,11 +425,12 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_services_linux.go",
-        "sha256": "2a4cf4017c555cc27d9ad56ad7a6e3f4d6a79a049d1b7151a84770b8a0487d0d",
+        "sha256": "30cb262d995c6135730bbaac68f110c5593d58c8dbdab85528d6b799d7e98748",
         "symbols": [
           "manualHostRecoveryServiceProperties",
           "manualHostUpgradeRecoveryBusy",
           "manualHostUpgradeRecoveryCanSettle",
+          "manualHostUpgradeRecoveryUnconfirmed",
           "normalizeManualHostUpgradeRecoveryServices",
           "parseManualHostUpgradeRecoveryServiceProperties",
           "readManualHostUpgradeRecoveryServiceProperties",
@@ -435,7 +440,7 @@
           "validateManualHostUpgradeCoreServicePreconditions",
           "validateManualHostUpgradeRecoveryServicePreconditions"
         ],
-        "physical_lines": 305
+        "physical_lines": 343
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_snapshot_linux.go",
@@ -494,13 +499,16 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_preflight_linux.go",
-        "sha256": "f25067c88c7ceedbbc3cd9bf338120dc9f9a9eacd1d40d42700a1d16e6fb0198",
-        "physical_lines": 213,
+        "sha256": "855b779a2f272284eeead7ec8a25efd4c418803f20e9b344c68eb905fb496df7",
+        "physical_lines": 268,
         "symbols": [
           "captureManualHostUpgradePreflight",
           "manualHostUpgradePreflight",
           "manualHostUpgradePreflightLock",
           "manualHostUpgradeRecoveryHandoff",
+          "manualHostUpgradeRecoveryMissingCanBeReobserved",
+          "manualHostUpgradeRecoveryWaitError",
+          "manualHostUpgradeRecoveryWaitRefusal",
           "upgradeHostRuntimeWithRuntime",
           "verifyManualHostUpgradePreflightLocks",
           "waitManualHostUpgradeRecoveryQuiescent"

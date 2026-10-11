@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -58,7 +59,7 @@ func upgradeHostRuntimeWithRuntime(
 		result, err := upgradeHostRuntimeAttempt(ctx, preflightCtx, input, rt, previous)
 		var handoff *manualHostUpgradeRecoveryHandoff
 		if !errors.As(err, &handoff) {
-			return result, err
+			return result, manualHostUpgradeRecoveryWaitRefusal(err, err)
 		}
 		if attempt == manualHostUpgradePreflightAttempts {
 			return ManualHostUpgradeResult{}, fmt.Errorf("Host recovery preflight attempt limit: %w", err)
@@ -81,25 +82,79 @@ func waitManualHostUpgradeRecoveryQuiescent(
 	rt manualHostUpgradeRuntime,
 	allowFailedBootstrap bool,
 ) error {
+	var lastMissing error
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return manualHostUpgradeRecoveryWaitRefusal(err, lastMissing)
 		}
 		err := validateManualHostUpgradeRecoveryServicePreconditions(ctx, rt, allowFailedBootstrap)
+		if canceled := ctx.Err(); canceled != nil {
+			var process *manualHostUpgradeRecoveryUnconfirmed
+			if errors.As(err, &process) {
+				return manualHostUpgradeRecoveryWaitRefusal(canceled, err)
+			}
+			return manualHostUpgradeRecoveryWaitRefusal(canceled, lastMissing)
+		}
 		if err == nil {
 			return nil
 		}
 		if !manualHostUpgradeRecoveryCanSettle(err) {
-			return err
+			if !manualHostUpgradeRecoveryMissingCanBeReobserved(ctx, err) {
+				return manualHostUpgradeRecoveryWaitRefusal(err, err)
+			}
+			lastMissing = err
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ctx.Err()
+			return manualHostUpgradeRecoveryWaitRefusal(ctx.Err(), lastMissing)
 		case <-timer.C:
 		}
 	}
+}
+
+// Only the caller after an attempt's deferred unlocks may use this predicate.
+// A missing process is never quiescence: the next poll must read all five fields.
+func manualHostUpgradeRecoveryMissingCanBeReobserved(ctx context.Context, err error) bool {
+	var process *manualHostUpgradeRecoveryUnconfirmed
+	if ctx.Err() != nil || !errors.As(err, &process) || process.pathMismatch ||
+		!errors.Is(process.cause, os.ErrNotExist) || process.observed.mainPID <= 0 ||
+		process.observed.controlPID != 0 {
+		return false
+	}
+	if process.unit != manualHostRecoveryUnitInstances[0] && process.unit != manualHostRecoveryUnitInstances[1] {
+		return false
+	}
+	switch process.observed.state {
+	case "active", "activating", "deactivating":
+		return true
+	default:
+		return false
+	}
+}
+
+func manualHostUpgradeRecoveryWaitRefusal(err, observation error) error {
+	var process *manualHostUpgradeRecoveryUnconfirmed
+	if !errors.As(observation, &process) {
+		return err
+	}
+	// Classification is evidence only; retry uses the typed cause above.
+	log.Printf("autostream-local-executor: manual Host recovery process refusal cause=%s", process.classification())
+	if err == observation {
+		return err
+	}
+	return &manualHostUpgradeRecoveryWaitError{cause: err, observation: observation}
+}
+
+type manualHostUpgradeRecoveryWaitError struct {
+	cause       error
+	observation error
+}
+
+func (e *manualHostUpgradeRecoveryWaitError) Error() string { return e.cause.Error() }
+func (e *manualHostUpgradeRecoveryWaitError) Unwrap() []error {
+	return []error{e.cause, e.observation}
 }
 
 func captureManualHostUpgradePreflight(

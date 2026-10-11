@@ -336,6 +336,13 @@ states = r'(?:inactive|failed|active|activating|deactivating|reloading)'
 substates = r'(?:dead|failed|running|start|start-pre|start-post|stop|stop-sigterm|stop-sigkill|auto-restart|exited)'
 results = r'(?:success|exit-code|signal|core-dump|timeout|resources|watchdog|start-limit-hit|condition)'
 busy = unit + r' must be inactive and have no MainPID(?: \(state=' + states + r' substate=' + substates + r' MainPID=[0-9]{1,10} ControlPID=[0-9]{1,10} result=' + results + r'\))?'
+process_cause = r'(resolution_error/(?:ENOENT|EACCES|EPERM|ENODEV|EIO|OTHER)|path_mismatch|UNKNOWN)'
+process_refusal = unit + r' recovery process is unconfirmed'
+def process_classification(cause):
+    if re.fullmatch(process_refusal, cause):
+        return 'process_cause_UNKNOWN'
+    match = re.fullmatch(r'manual Host recovery process refusal cause=' + process_cause, cause)
+    return match[1] if match else None
 def classify(line, hook):
     origin = 'fixture_hook' if hook else 'UNKNOWN'
     helper = re.fullmatch(r'(?:[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?autostream-local-executor: (.+)', line)
@@ -349,12 +356,18 @@ def classify(line, hook):
                               ('Host recovery preflight did not settle: ', 'PREFLIGHT_WAIT')]:
             if line.startswith(prefix):
                 cause = line.removeprefix(prefix)
+                process = process_classification(cause)
+                if process is not None:
+                    return origin, label, process
                 if cause in static or re.fullmatch(busy, cause):
                     return origin, label, 'preflight_wait_deadline' if cause == 'context deadline exceeded' else 'preflight_wait_attempt'
         if line in static:
             return origin, *static[line]
         if re.fullmatch(busy, line):
             return origin, 'RECOVERY_SERVICE_BUSY', 'service_busy'
+        process = process_classification(line)
+        if process is not None:
+            return origin, 'RECOVERY_SERVICE_REFUSAL', process
         if re.fullmatch(unit + r' (?:must have no ControlPID|recovery process is unconfirmed|inactive recovery service retains a MainPID)', line):
             return origin, 'RECOVERY_SERVICE_REFUSAL', 'service_refusal'
     if hook and (line == 'Traceback (most recent call last):' or line == 'AssertionError'):

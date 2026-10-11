@@ -5,10 +5,16 @@ package hostruntime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestManualHostUpgradeStopFailureUsesDetachedAgentRecovery(
@@ -317,5 +323,395 @@ func TestManualHostUpgradeLoadsLegacyHelperTargetsBeforeLocking(t *testing.T) {
 	if len(lockedLegacy) != 1 || lockedLegacy[0].Systemd == nil ||
 		lockedLegacy[0].Systemd.Unit != "custom-legacy-worker.service" {
 		t.Fatalf("legacy targets were not fenced: %+v", lockedLegacy)
+	}
+}
+
+func TestManualHostUpgradeUnlockedWaitProcessExit(t *testing.T) {
+	// A real process at the expected slot path exits strictly after the query
+	// returns its PID and before EvalSymlinks reads /proc/<pid>/exe. This is a
+	// process-boundary fixture, not the real systemd installer oracle.
+	for index, unit := range manualHostRecoveryUnitInstances {
+		for _, state := range []string{"active", "activating", "deactivating"} {
+			for _, after := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%d/%s/after_%t", index, state, after), func(t *testing.T) {
+					root := t.TempDir()
+					slot := []string{"a", "b"}[index]
+					executable := filepath.Join(root, slot, "bin", "autostream-local-executor")
+					body, err := os.ReadFile("/bin/sleep")
+					if err != nil {
+						t.Fatal(err)
+					}
+					manualHostUpgradeLinuxWriteFile(t, executable, body, 0o755)
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+					process := exec.CommandContext(ctx, executable, "10")
+					if err := process.Start(); err != nil {
+						t.Fatal(err)
+					}
+					reaped := false
+					t.Cleanup(func() {
+						if !reaped {
+							_ = process.Process.Kill()
+							_ = process.Wait()
+						}
+					})
+					procPath := fmt.Sprintf("/proc/%d/exe", process.Process.Pid)
+					if actual, err := filepath.EvalSymlinks(procPath); err != nil || actual != executable {
+						t.Fatalf("regular slot process was not established: err=%v", err)
+					}
+					queries, resolves := 0, 0
+					rt := manualHostUpgradeRuntime{selfUpdate: hostSelfUpdateExecutorRuntime{slotsRoot: root}}
+					rt.runner = softwareClaimRecoveryDiagnosticTestRunner(func(_ context.Context, dir string, env []string, name string, args ...string) (string, error) {
+						if dir != "/" || env != nil || name != "/usr/bin/systemctl" || len(args) != 7 ||
+							strings.Join(args[:6], " ") != "show --property=ActiveState --property=SubState --property=MainPID --property=ControlPID --property=Result" {
+							t.Fatal("process fixture changed the bounded query or mutated services")
+						}
+						if args[6] == unit {
+							queries++
+							if !reaped {
+								return fmt.Sprintf("ActiveState=%s\nSubState=running\nMainPID=%d\nControlPID=0\nResult=success\n", state, process.Process.Pid), nil
+							}
+						}
+						return "ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\nResult=success\n", nil
+					})
+					rt.resolveProcessExe = func(pid int) (string, error) {
+						resolves++
+						if pid != process.Process.Pid || reaped || queries != 1 {
+							t.Fatal("exit was not between the PID query and resolver")
+						}
+						if err := process.Process.Kill(); err != nil {
+							t.Fatal(err)
+						}
+						_ = process.Wait()
+						reaped = true
+						return filepath.EvalSymlinks(procPath)
+					}
+					started := time.Now()
+					if after {
+						err = waitManualHostUpgradeRecoveryQuiescent(ctx, rt, false)
+						if err != nil || queries != 2 || resolves != 1 || time.Since(started) < 100*time.Millisecond {
+							t.Fatalf("missing did not require a fresh stopped observation: queries=%d resolves=%d err=%v", queries, resolves, err)
+						}
+					} else {
+						// Frozen 90361b2 wait returns this non-CanSettle error directly.
+						err = validateManualHostUpgradeRecoveryServicePreconditions(ctx, rt, false)
+						if err == nil || err.Error() != unit+" recovery process is unconfirmed" ||
+							!errors.Is(err, os.ErrNotExist) || manualHostUpgradeRecoveryCanSettle(err) || queries != 1 {
+							t.Fatalf("base refusal or original cause was lost: err=%v queries=%d", err, queries)
+						}
+					}
+					t.Logf("UI183-R4 process_exit slot=%s state=%s after=%t queries=%d resolves=%d", slot, state, after, queries, resolves)
+				})
+			}
+		}
+	}
+}
+
+func TestManualHostUpgradeUnlockedWaitMissingFreshPreflight(t *testing.T) {
+	for _, unit := range manualHostRecoveryUnitInstances {
+		for _, mode := range []string{"success", "persistent", "canceled", "foreign", "identity", "policy", "state", "slot", "lock", "under_lock", "after_side_effect"} {
+			t.Run(unit+"/"+mode, func(t *testing.T) {
+				fixture, runner := newManualHostUpgradeConcurrencyFixture(t, unit, "after_lock", true)
+				ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+				defer cancel()
+				identity := snapshotManualHostUpgradeLinuxProtectedFile(t, fixture.identityPath)
+				policy := snapshotManualHostUpgradeLinuxProtectedFile(t, fixture.policyPath)
+				state := snapshotManualHostUpgradeLinuxProtectedFile(t, fixture.runtime.selfUpdate.statePath)
+				targetHeld, targetAcquires, polls, missing := false, 0, 0, 0
+				waitComplete := false
+				var unlockOrder []string
+				lockPath := filepath.Join(fixture.root, "permanent-lifecycle.lock")
+				manualHostUpgradeLinuxWriteFile(t, lockPath, []byte("lock"), 0o600)
+				lockInfo, err := os.Lstat(lockPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				acquire := fixture.runtime.acquireLocks
+				fixture.runtime.acquireLocks = func() (func(), error) {
+					if runner.attempts == 1 {
+						switch mode {
+						case "identity":
+							manualHostUpgradeLinuxWriteFile(t, fixture.identityPath, append(identity.payload, '\n'), 0o600)
+						case "policy":
+							manualHostUpgradeLinuxWriteFile(t, fixture.policyPath, append(policy.payload, '\n'), 0o600)
+						case "state":
+							manualHostUpgradeLinuxWriteFile(t, fixture.runtime.selfUpdate.statePath, append(state.payload, '\n'), 0o600)
+						case "slot":
+							path := filepath.Join(fixture.runtime.selfUpdate.slotsRoot, "a", "bin", "autostream-host-agent")
+							body, err := os.ReadFile(path)
+							if err != nil {
+								t.Fatal(err)
+							}
+							manualHostUpgradeLinuxWriteFile(t, path, append(body, '\n'), 0o755)
+						case "lock":
+							if err := os.Rename(lockPath, lockPath+".retained"); err != nil {
+								t.Fatal(err)
+							}
+							manualHostUpgradeLinuxWriteFile(t, lockPath, []byte("other"), 0o600)
+							return nil, verifyManualHostUpgradePreflightLocks([]manualHostUpgradePreflightLock{{path: lockPath, info: lockInfo}})
+						}
+					}
+					unlock, err := acquire()
+					return func() { unlockOrder = append(unlockOrder, "lifecycle"); unlock() }, err
+				}
+				fixture.runtime.acquireTargetLocks = func(LocalExecutorPolicy, []Target) (func(), error) {
+					targetHeld = true
+					targetAcquires++
+					return func() { targetHeld = false; unlockOrder = append(unlockOrder, "target") }, nil
+				}
+				fixture.runtime.runner = softwareClaimRecoveryDiagnosticTestRunner(func(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
+					if name == "/usr/bin/systemctl" && len(args) == 7 && args[0] == "show" && args[6] == unit &&
+						!runner.locked && runner.handoffs == 1 && fixture.runner.stopCalls == 0 && !waitComplete {
+						if targetHeld || strings.Join(unlockOrder, ",") != "target,lifecycle" {
+							t.Fatal("wait began before both deferred unlocks")
+						}
+						deadline, ok := ctx.Deadline()
+						if !ok || time.Until(deadline) > 30*time.Second {
+							t.Fatal("wait escaped the shared preflight deadline")
+						}
+						polls++
+						if polls == 1 || mode == "persistent" || mode == "foreign" {
+							return "ActiveState=deactivating\nSubState=stop\nMainPID=5101\nControlPID=0\nResult=success\n", nil
+						}
+						waitComplete = true
+					}
+					return runner.Run(ctx, dir, env, name, args...)
+				})
+				resolve := fixture.runtime.resolveProcessExe
+				cause := &os.PathError{Op: "readlink", Path: "private-process-path", Err: syscall.ENOENT}
+				fixture.runtime.resolveProcessExe = func(pid int) (string, error) {
+					if pid == 5101 && (mode == "under_lock" || !runner.locked) {
+						if mode == "foreign" && polls > 1 {
+							return "/private-foreign-executable", nil
+						}
+						missing++
+						if mode == "canceled" {
+							cancel()
+						}
+						return "", cause
+					}
+					return resolve(pid)
+				}
+				if mode == "after_side_effect" {
+					fixture.runner.stopHook = func() error {
+						return &manualHostUpgradeRecoveryUnconfirmed{unit: unit, cause: cause,
+							observed: manualHostRecoveryServiceProperties{state: "active", mainPID: 5101}}
+					}
+				}
+				result, err := upgradeHostRuntimeWithRuntime(ctx, fixture.request, fixture.runtime)
+				if mode == "success" {
+					if err != nil || result.ActiveSlot != HostSelfUpdateSlotB || runner.attempts != 2 ||
+						runner.handoffs != 1 || targetAcquires != 2 || missing != 1 || polls != 2 {
+						t.Fatalf("fresh preflight incomplete: result=%+v err=%v attempts=%d targets=%d missing=%d polls=%d", result, err, runner.attempts, targetAcquires, missing, polls)
+					}
+					assertManualHostUpgradeLinuxSlotBinding(t, fixture, HostSelfUpdateSlotB)
+					assertManualHostUpgradeLinuxNoTransitionResidue(t, fixture)
+				} else {
+					if err == nil || result != (ManualHostUpgradeResult{}) {
+						t.Fatal("negative became successful")
+					}
+					if mode == "after_side_effect" {
+						if runner.attempts != 2 || runner.handoffs != 1 || fixture.runner.stopCalls != 1 {
+							t.Fatal("side-effecting refusal retried")
+						}
+					} else if fixture.runner.stopCalls != 0 || len(fixture.runner.restartOrder) != 0 ||
+						fixture.runner.recoveryReloads != 0 || fixture.runner.recoveryResetFailedAttempts != 0 {
+						t.Fatal("negative crossed the first mutation boundary")
+					}
+					if mode == "persistent" && (!errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, cause) || missing < 2) {
+						t.Fatalf("persistent missing lost deadline/cause: missing=%d err=%v", missing, err)
+					}
+					if mode == "canceled" && (!errors.Is(err, context.Canceled) || !errors.Is(err, cause) || missing != 1) {
+						t.Fatal("cancellation lost its original missing cause")
+					}
+					var process *manualHostUpgradeRecoveryUnconfirmed
+					if mode == "foreign" && (!errors.As(err, &process) || process.classification() != "path_mismatch") {
+						t.Fatal("fresh foreign PID was not classified and refused")
+					}
+					if mode == "under_lock" && (runner.attempts != 1 || runner.handoffs != 1 || polls != 0 || !errors.Is(err, cause)) {
+						t.Fatal("under-lock missing acquired a new wait/handoff")
+					}
+					if mode != "state" && mode != "after_side_effect" {
+						assertManualHostUpgradeLinuxProtectedFileUnchanged(t, fixture.runtime.selfUpdate.statePath, state)
+					}
+				}
+				if mode != "identity" {
+					assertManualHostUpgradeLinuxProtectedFileUnchanged(t, fixture.identityPath, identity)
+				}
+				if mode != "policy" {
+					assertManualHostUpgradeLinuxProtectedFileUnchanged(t, fixture.policyPath, policy)
+				}
+				if mode != "lock" {
+					current, statErr := os.Lstat(lockPath)
+					if statErr != nil || !os.SameFile(lockInfo, current) {
+						t.Fatal("permanent lifecycle inode changed")
+					}
+				}
+				t.Logf("UI183-R4 preflight unit=%s mode=%s attempts=%d missing=%d polls=%d stops=%d", unit, mode, runner.attempts, missing, polls, fixture.runner.stopCalls)
+			})
+		}
+	}
+}
+
+func TestManualHostUpgradeUnlockedWaitRejectsUnconfirmed(t *testing.T) {
+	for _, item := range []struct {
+		name           string
+		cause          error
+		classification string
+	}{
+		{"EACCES", syscall.EACCES, "resolution_error/EACCES"},
+		{"EPERM", syscall.EPERM, "resolution_error/EPERM"},
+		{"ENODEV", syscall.ENODEV, "resolution_error/ENODEV"},
+		{"EIO", syscall.EIO, "resolution_error/EIO"},
+		{"unknown", errors.New("private-arbitrary-error"), "resolution_error/OTHER"},
+		{"string_ENOENT", errors.New("ENOENT"), "resolution_error/OTHER"},
+		{"mismatch", nil, "path_mismatch"},
+		{"inactive_pid", syscall.ENOENT, "resolution_error/ENOENT"},
+		{"failed_pid", syscall.ENOENT, "resolution_error/ENOENT"},
+		{"control_pid", syscall.ENOENT, ""},
+		{"zero_pid", syscall.ENOENT, ""},
+		{"invalid_query", syscall.ENOENT, ""},
+		{"unknown_state", syscall.ENOENT, ""},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			var diagnostic bytes.Buffer
+			writer := log.Writer()
+			log.SetOutput(&diagnostic)
+			t.Cleanup(func() { log.SetOutput(writer) })
+			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+			defer cancel()
+			unit := manualHostRecoveryUnitInstances[0]
+			body := "ActiveState=active\nSubState=running\nMainPID=42\nControlPID=0\nResult=success\n"
+			switch item.name {
+			case "inactive_pid":
+				body = strings.Replace(body, "active", "inactive", 1)
+			case "failed_pid":
+				body = strings.Replace(body, "active", "failed", 1)
+			case "control_pid":
+				body = strings.Replace(body, "ControlPID=0", "ControlPID=43", 1)
+			case "zero_pid":
+				body = strings.Replace(body, "MainPID=42", "MainPID=0", 1)
+			case "invalid_query":
+				body = strings.Replace(body, "Result=success\n", "", 1)
+			case "unknown_state":
+				body = strings.Replace(body, "active", "private-state", 1)
+			}
+			calls, resolves := 0, 0
+			rt := manualHostUpgradeRuntime{}
+			rt.runner = softwareClaimRecoveryDiagnosticTestRunner(func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+				calls++
+				if name != "/usr/bin/systemctl" || len(args) != 7 || args[6] != unit {
+					t.Fatal("negative changed services or queried an unrelated unit")
+				}
+				return body, nil
+			})
+			rt.resolveProcessExe = func(int) (string, error) {
+				resolves++
+				if item.cause == nil {
+					return "/private-foreign-path", nil
+				}
+				return "", &os.PathError{Op: "readlink", Path: "private-process-path", Err: item.cause}
+			}
+			if item.name == "zero_pid" {
+				// PID0 alone is not quiescence while active; keep the old busy wait.
+				if err := waitManualHostUpgradeRecoveryQuiescent(ctx, rt, false); !errors.Is(err, context.DeadlineExceeded) || resolves != 0 {
+					t.Fatal("active PID0 became successful or resolved a process")
+				}
+				return
+			}
+			err := waitManualHostUpgradeRecoveryQuiescent(ctx, rt, false)
+			var process *manualHostUpgradeRecoveryUnconfirmed
+			if err == nil || calls != 1 || strings.Contains(err.Error(), "private-") ||
+				item.classification != "" && (!errors.As(err, &process) || process.classification() != item.classification) {
+				t.Fatalf("non-missing refusal changed or disclosed cause: calls=%d err=%v", calls, err)
+			}
+			if item.classification == "" && resolves != 0 {
+				t.Fatal("invalid query/control PID reached resolver")
+			}
+			if item.cause != nil && item.classification != "" && !errors.Is(err, item.cause) {
+				t.Fatal("final refusal lost the typed original cause")
+			}
+			if strings.Contains(diagnostic.String(), "private-") || item.classification != "" &&
+				!strings.Contains(diagnostic.String(), "manual Host recovery process refusal cause="+item.classification) {
+				t.Fatal("final closed diagnostic was absent or disclosed a raw cause")
+			}
+		})
+	}
+	t.Run("closed_unknown_and_fixed_unit", func(t *testing.T) {
+		process := &manualHostUpgradeRecoveryUnconfirmed{unit: "private-unit", cause: os.ErrNotExist,
+			observed: manualHostRecoveryServiceProperties{state: "active", mainPID: 42}}
+		if manualHostUpgradeRecoveryMissingCanBeReobserved(context.Background(), process) {
+			t.Fatal("non-A/B unit acquired wait permission")
+		}
+		process.cause = nil
+		if process.classification() != "UNKNOWN" {
+			t.Fatal("unrecorded cause was inferred")
+		}
+	})
+}
+
+func TestManualHostUpgradeUnlockedWaitDiagnosticParity(t *testing.T) {
+	for _, unit := range manualHostRecoveryUnitInstances {
+		for _, failure := range []error{syscall.ENOENT, syscall.EACCES, nil} {
+			t.Run(fmt.Sprintf("%s/%v", unit, failure), func(t *testing.T) {
+				var outcomes []string
+				for _, enabled := range []bool{false, true} {
+					calls, queries := 0, 0
+					d := newSoftwareClaimRecoveryRootRefusal(SoftwareClaimRecoveryRequest{})
+					d.Phase, d.LifecycleHeld = "recovery_service", false
+					body := "ActiveState=active\nSubState=running\nMainPID=42\nControlPID=0\nResult=success\n"
+					inner := softwareClaimRecoveryDiagnosticTestRunner(func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+						calls++
+						if name != "/usr/bin/systemctl" || len(args) != 7 {
+							t.Fatal("diagnostic parity mutated services")
+						}
+						if args[6] == unit {
+							queries++
+							if queries == 1 {
+								return body, nil
+							}
+						}
+						return "ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\nResult=success\n", nil
+					})
+					var selected CommandRunner = inner
+					if enabled {
+						selected = softwareClaimRecoveryDiagnosticRunner{inner, &d}
+					}
+					rt := manualHostUpgradeRuntime{runner: selected, resolveProcessExe: func(int) (string, error) {
+						if failure != nil {
+							return "", &os.PathError{Op: "readlink", Path: "private-path", Err: failure}
+						}
+						return "/private-foreign-path", nil
+					}}
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					err := waitManualHostUpgradeRecoveryQuiescent(ctx, rt, false)
+					message, classification := "", "NONE"
+					if err != nil {
+						message = err.Error()
+						var process *manualHostUpgradeRecoveryUnconfirmed
+						if !errors.As(err, &process) || failure != nil && !errors.Is(err, failure) {
+							t.Fatal("diagnostic wrapper replaced the original cause")
+						}
+						classification = process.classification()
+					}
+					outcomes = append(outcomes, fmt.Sprintf("%s/%s/%d/%d", message, classification, calls, queries))
+					if failure == syscall.ENOENT {
+						wantCalls := 3
+						if unit == manualHostRecoveryUnitInstances[1] {
+							wantCalls = 4
+						}
+						if err != nil || calls != wantCalls || queries != 2 {
+							t.Fatal("missing skipped complete A/B stopped observation")
+						}
+					} else if err == nil || message != unit+" recovery process is unconfirmed" || queries != 1 {
+						t.Fatal("diagnostic parity weakened a refusal")
+					}
+				}
+				if outcomes[0] != outcomes[1] {
+					t.Fatal("OFF/ON changed output/error, calls or cause classification")
+				}
+			})
+		}
 	}
 }
