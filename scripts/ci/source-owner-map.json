@@ -2049,7 +2049,7 @@
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_root_linux.go",
-        "sha256": "862965cdc3d3a5f6acb889acfe200e5d149ee9a54287993da9c03ef6b27bda91",
+        "sha256": "cc17e900a9b468d8d98aadfe95f58624a3e34dc19460e525e295a42b41a8fb54",
         "symbols": [
           "defaultSoftwareClaimRecoveryRootRuntime",
           "handleLocalExecutorSoftwareClaimRecovery",
@@ -2058,9 +2058,10 @@
           "scanSoftwareClaimRecoveryRemoteRecords",
           "scanSoftwareClaimRecoveryRootRecords",
           "softwareClaimRecoveryIntentBlocksHost",
-          "softwareClaimRecoveryRootRuntime"
+          "softwareClaimRecoveryRootRuntime",
+          "softwareClaimRecoveryTerminalStageContainer"
         ],
-        "physical_lines": 409
+        "physical_lines": 466
       },
       {
         "path": "internal/hostruntime/software_claim_recovery_diagnostics_linux.go",

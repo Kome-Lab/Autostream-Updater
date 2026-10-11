@@ -106,8 +106,10 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 	}
 	if !t.Run("FixedRootOrphanTerminalOnly", func(t *testing.T) {
 		h.waitClaimRecoveryServices(t)
+		history := ui185PrepareChainHistory(t, h, orphan.ID)
 		recovery := h.start(t, "recovery", h.testBinary, "TestSoftwareUpdateFullChainRecoveryProcess", h.uid, h.gid)
 		defer recovery.stop()
+		ui185InspectChainHistory(t, h, recovery, orphan.ID, &history)
 		rootWindow := softwareUpdateChainRootJournalStart()
 		response := recovery.call(t, stPortChainCommand{Command: "recover", JobID: orphan.ID, LeaseGeneration: 1})
 		settled := h.readSoftware(t, orphan.ID)
@@ -120,6 +122,11 @@ func TestSoftwareUpdateFullChain(t *testing.T) {
 			t.Fatal("explicit real-root absence proof did not settle only the exact orphan job without a software mutation")
 		}
 		h.requireSettledSoftwareClaimIntent(t, settled, 1)
+		ui185RequireSnapshot(t, history.before, history.roots...)
+		history.evidence["terminal_clear_passed"] = true
+		history.evidence["terminal_history_bytes_metadata_preserved"] = true
+		history.evidence["recovery_stage_calls"], history.evidence["recovery_apply_calls"], history.evidence["recovery_reconcile_calls"] = calls.Stage, calls.Apply, calls.Reconcile
+		ui185WriteChainEvidence(t, h, history)
 		h.requireDownloads(t, 0, 0)
 		h.requireUnchangedBaseline(t)
 		observation := h.cp.call(t, stPortChainCommand{Command: "observe", JobID: orphan.ID})
@@ -298,6 +305,7 @@ func softwareUpdateChainDecodeWire(t *testing.T, response stPortChainResponse) s
 }
 func (h *softwareUpdateChainHarness) requireDownloads(t *testing.T, agent, root int) {
 	t.Helper()
+	root += ui185PreparationDownloads // Exact setup downloads are separate from recovery's zero downloads.
 	var counts struct {
 		Agent   int `json:"agent_downloads"`
 		Root    int `json:"root_downloads"`

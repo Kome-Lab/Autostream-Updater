@@ -340,12 +340,14 @@ func scanSoftwareClaimRecoveryRootRecords(jobID string, policy LocalExecutorPoli
 }
 
 func scanSoftwareClaimRecoveryRemoteRecords(jobID, root string, rt manualHostUpgradeRuntime) error {
+	stages := filepath.Join(root, "stages")
 	ledgerRoot := filepath.Join(root, "ledger")
 	entries, err := readOptionalManualHostDirectory(ledgerRoot, rt)
 	if err != nil {
 		return err
 	}
 	terminalStages := make(map[string]bool)
+	nestedStages := make(map[string]bool)
 	for _, entry := range entries {
 		var ledger executorMutationLedger
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" ||
@@ -355,7 +357,23 @@ func scanSoftwareClaimRecoveryRemoteRecords(jobID, root string, rt manualHostUpg
 			return errors.New("software claim recovery cannot discard a requested-job or non-terminal root mutation record")
 		}
 		if ledger.Stage != nil {
-			terminalStages[filepath.Clean(ledger.Stage.RootDir)] = true
+			if ledger.Stage.RootDir == filepath.Clean(ledger.Stage.RootDir) {
+				if nestedStages[ledger.Stage.RootDir] {
+					return errors.New("software claim recovery has an ambiguous root stage reference")
+				}
+				terminalStages[ledger.Stage.RootDir] = true
+			}
+			container, err := softwareClaimRecoveryTerminalStageContainer(stages, ledger, rt)
+			if err != nil {
+				return err
+			}
+			if container != "" {
+				if terminalStages[container] {
+					return errors.New("software claim recovery has an ambiguous root stage reference")
+				}
+				terminalStages[container] = true
+				nestedStages[container] = true
+			}
 		}
 	}
 	for _, directory := range []string{"requests", "results"} {
@@ -364,7 +382,6 @@ func scanSoftwareClaimRecoveryRemoteRecords(jobID, root string, rt manualHostUpg
 			return errors.New("software claim recovery has unconfirmed root execution residue")
 		}
 	}
-	stages := filepath.Join(root, "stages")
 	entries, err = readOptionalManualHostDirectory(stages, rt)
 	if err != nil {
 		return err
@@ -378,6 +395,46 @@ func scanSoftwareClaimRecoveryRemoteRecords(jobID, root string, rt manualHostUpg
 		}
 	}
 	return nil
+}
+
+// Only newly recognized nested systemd references need this proof. Historical
+// external or removed stages and the existing direct-root contract are retained.
+func softwareClaimRecoveryTerminalStageContainer(stages string, ledger executorMutationLedger, rt manualHostUpgradeRuntime) (string, error) {
+	path := ledger.Stage.RootDir
+	rel, err := filepath.Rel(stages, path)
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
+		return "", nil
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 1 {
+		return "", nil
+	}
+	if ledger.Intent.DeploymentMode != ModeSystemd || path != filepath.Clean(path) ||
+		len(parts) != 4 || !mutationPlanHashPattern.MatchString(parts[0]) ||
+		parts[1] != "artifact" || parts[2] != "extracted" {
+		return "", nil
+	}
+	container := filepath.Join(stages, parts[0])
+	if _, err := os.Lstat(container); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	// Check every component without following symlinks. Root-controlled parents
+	// and the held lifecycle lock prevent an unprivileged replacement during inspect.
+	current := stages
+	for _, component := range parts {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+			info.Mode().Perm()&0o022 != 0 ||
+			(rt.allowTestPaths && !managedSnapshotOwnedByCurrentUser(info)) ||
+			(!rt.allowTestPaths && !isRootOwner(info)) {
+			return "", errors.New("software claim recovery has an unsafe nested stage reference")
+		}
+	}
+	if !rt.allowTestPaths && validateSecureRootPath(path, true) != nil {
+		return "", errors.New("software claim recovery has an unsafe nested stage reference")
+	}
+	return container, nil
 }
 
 // The parent mutation dispatcher calls this after acquiring the canonical

@@ -58,6 +58,7 @@ func writeSoftwareClaimRecoveryRootJSON(t *testing.T, path string, value any) {
 }
 
 func TestSoftwareClaimRecoveryRootProofIsReadOnlyAndKeepsUnrelatedTerminalHistory(t *testing.T) {
+	ui185StageReferenceChecks(t)
 	fixture, policy, request, runtime := newSoftwareClaimRecoveryRootHarness(t)
 	checkpoint := updateCheckpoint{SchemaVersion: 1, JobID: "unrelated-terminal-job", TargetID: "worker-01", DeploymentMode: ModeSystemd, Phase: "succeeded", TargetVersion: "v2.0.0"}
 	path := filepath.Join(fixture.runtime.paths.localExecutorStateRoot, ".autostream-updater-terminal.checkpoint.json")

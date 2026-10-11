@@ -20,6 +20,7 @@ readonly repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && p
 readonly updater_sha="${GITHUB_SHA:?}"
 readonly before_sha=b1c94afe2ee2fe8854abb12e2c85565a1bd448dc
 readonly installer_before_sha=f72d1bddb712eeb64bab2b852b648c2c6b0f4641
+readonly ui185_before_sha=1569e55db8c76cab24739fc971765c8aac11c840
 [[ ${updater_sha} =~ ^[0-9a-f]{40}$ && $(git -C "${repository_root}" rev-parse HEAD) == "${updater_sha}" ]] || die 'current checkout is not the final declared Actions SHA'
 [[ -z $(git -C "${repository_root}" status --porcelain --untracked-files=no) ]] || die 'candidate product source is modified before compilation'
 [[ ! -e $2 ]] || die 'evidence directory already exists; preserve the earlier attempt'
@@ -70,6 +71,11 @@ checkout_fixed() {
 }
 checkout_fixed https://github.com/Kome-Lab/Autostream-Updater.git "${before_sha}" "${work}/before" > "${evidence}/build/before-checkout.log" 2>&1
 checkout_fixed https://github.com/Kome-Lab/Autostream-Updater.git "${installer_before_sha}" "${work}/baseline" > "${evidence}/build/baseline-checkout.log" 2>&1
+checkout_fixed https://github.com/Kome-Lab/Autostream-Updater.git "${ui185_before_sha}" "${work}/ui185-before" > "${evidence}/build/ui185-before-checkout.log" 2>&1
+[[ $(git -C "${work}/ui185-before" rev-parse 'HEAD^{tree}') == 9634114b58247b32416f6913d4c8ea26453ae8b5 ]]
+# Only the read-only comparison test is overlaid; fixed-base product bytes stay intact.
+cp -- "${repository_root}/internal/hostruntime/software_claim_recovery_stage_reference_linux_test.go" \
+  "${work}/ui185-before/internal/hostruntime/software_claim_recovery_stage_reference_linux_test.go"
 checkout_fixed https://github.com/Kome-Lab/Autostream-ControlPanel.git "${cp_sha}" "${work}/control-panel" > "${evidence}/build/cp-checkout.log" 2>&1
 readonly before_tree="$(git -C "${work}/before" rev-parse 'HEAD^{tree}')"
 readonly cp_tree="$(git -C "${work}/control-panel" rev-parse 'HEAD^{tree}')"
@@ -123,6 +129,13 @@ readonly candidate_flags="-X ${version_package}.Version=v2.0.1 -X ${version_pack
   run_bounded go build -p 1 -trimpath -ldflags "${candidate_flags}" -o "${work}/candidate-production/autostream-local-executor" ./cmd/autostream-local-executor
 ) > "${evidence}/build/candidate-compile.log" 2>&1
 (
+  cd -- "${work}/ui185-before"
+  run_bounded go test -c -p 1 \
+    -ldflags "-X ${version_package}.Version=v2.0.2 -X ${version_package}.Commit=${ui185_before_sha} -X ${version_package}.BuildDate=${build_date}" \
+    -o "${work}/ui185-before-hostruntime.test" ./internal/hostruntime
+  test -z "$(git status --porcelain --untracked-files=no)"
+) > "${evidence}/build/ui185-before-compile.log" 2>&1
+(
   cd -- "${work}/control-panel"
   run_bounded go test -c -p 1 -ldflags "-X github.com/example/autostream-control-panel/internal/version.Version=${cp_product_version} -X github.com/example/autostream-control-panel/internal/version.Commit=${cp_sha}" \
     -o "${work}/control-panel.test" ./internal/httpapi
@@ -136,6 +149,7 @@ paths = [root / 'internal/hostruntime' / name for name in (
     'st_port_full_chain_harness_linux_test.go', 'st_port_full_chain_process_linux_test.go',
     'software_update_full_chain_process_linux_test.go', 'software_update_full_chain_before_test.go')]
 paths += sorted((root / 'testdata/software-update-cp-overlay').glob('*_test.go'))
+paths.append(root / 'internal/hostruntime/software_claim_recovery_stage_reference_linux_test.go')
 sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
 manifest = {
     'schema_version': 1, 'updater_sha': sys.argv[4], 'updater_product_tree': sys.argv[5],
@@ -146,9 +160,12 @@ manifest = {
     'target_application': 'synthetic_checked_fixture', 'executed_arch': 'amd64',
     'cp_product_source_modified': False, 'before_product_source_modified': False,
     'installer_refusal_before_sha': 'f72d1bddb712eeb64bab2b852b648c2c6b0f4641',
+    'ui185_before_sha': '1569e55db8c76cab24739fc971765c8aac11c840',
+    'ui185_before_product_tree': '9634114b58247b32416f6913d4c8ea26453ae8b5',
+    'ui185_before_product_source_modified': False,
     'oracle_overlays': {str(p.relative_to(root)): sha(p) for p in paths},
     'binaries': {str(p.relative_to(work)): sha(p) for p in (
-        work / 'hostruntime.test', work / 'before-hostruntime.test', work / 'control-panel.test',
+        work / 'hostruntime.test', work / 'before-hostruntime.test', work / 'ui185-before-hostruntime.test', work / 'control-panel.test',
         work / 'before-production/autostream-host-agent', work / 'before-production/autostream-local-executor',
         work / 'candidate-production/autostream-host-agent', work / 'candidate-production/autostream-local-executor',
         work / 'baseline-production/autostream-host-agent', work / 'baseline-production/autostream-local-executor')},
@@ -202,12 +219,12 @@ run_tuple() {
   run_bounded docker exec "${container_id}" systemctl show-environment >/dev/null 2>&1 || { capture_boot_failure "${tuple}"; return 1; }
   record_phase "${tuple}" input_copy
   run_bounded docker exec "${container_id}" /usr/bin/install -d -m 0755 /opt/software-input /opt/software-input/repository /run/autostream-st-port-full-chain || return 1
-  for input in hostruntime.test before-hostruntime.test control-panel.test before-production candidate-production baseline-production repository; do
+  for input in hostruntime.test before-hostruntime.test ui185-before-hostruntime.test control-panel.test before-production candidate-production baseline-production repository; do
     run_bounded docker cp "${work}/${input}" "${container_id}:/opt/software-input/" || return 1
   done
   run_bounded docker exec "${container_id}" chmod -R go-w /opt/software-input || return 1
   run_bounded docker exec "${container_id}" /usr/bin/chown -R root:root /opt/software-input || return 1
-  run_bounded docker exec "${container_id}" chmod 0755 /opt/software-input/hostruntime.test /opt/software-input/before-hostruntime.test /opt/software-input/control-panel.test \
+  run_bounded docker exec "${container_id}" chmod 0755 /opt/software-input/hostruntime.test /opt/software-input/before-hostruntime.test /opt/software-input/ui185-before-hostruntime.test /opt/software-input/control-panel.test \
     /opt/software-input/before-production/autostream-host-agent /opt/software-input/before-production/autostream-local-executor \
     /opt/software-input/candidate-production/autostream-host-agent /opt/software-input/candidate-production/autostream-local-executor || return 1
   run_bounded docker exec "${container_id}" chmod 0755 \
@@ -232,6 +249,7 @@ BOOTSTRAP
     --env "AUTOSTREAM_SOFTWARE_UPDATE_REVISION_TUPLE=${tuple}" \
     --env AUTOSTREAM_ST_PORT_CP_TEST_BINARY=/opt/software-input/control-panel.test \
     --env AUTOSTREAM_SOFTWARE_UPDATE_BEFORE_TEST_BINARY=/opt/software-input/before-hostruntime.test \
+    --env AUTOSTREAM_UI185_BASE_TEST_BINARY=/opt/software-input/ui185-before-hostruntime.test \
     --env AUTOSTREAM_SOFTWARE_UPDATE_INSTALLER_HOOK=/opt/software-input/repository/scripts/ci/run-software-update-installer-order.sh \
     --env AUTOSTREAM_ST_PORT_DSN_FILE=/run/autostream-st-port-full-chain/dsn --env AUTOSTREAM_ST_PORT_EVIDENCE=/evidence \
     --env "AUTOSTREAM_ST_PORT_CONTROL_PANEL_SHA=${cp_sha}" --env "AUTOSTREAM_ST_PORT_UPDATER_SHA=${updater_sha}" \
@@ -512,6 +530,45 @@ BOUNDARY
     "${evidence}/${tuple}/go" "${repository_root}/internal/hostruntime" \
     "${repository_root}/scripts/ci/required-software-update-full-chain-tests.txt" \
     > "${evidence}/artifacts/required-${tuple}.json"
+  run_bounded python3 -B - "${evidence}/${tuple}/artifacts/ui185-stage-reference.json" \
+    "${updater_sha}" "${cp_sha}" "${tuple}" \
+    > "${evidence}/artifacts/ui185-required-${tuple}.json" <<'UI185_PROJECTION'
+import json, re, sys
+from pathlib import Path
+path, sha, cp, tuple_name = sys.argv[1:]
+record = json.loads(Path(path).read_bytes())
+expected = {'schema_version': 1, 'base': '1569e55db8c76cab24739fc971765c8aac11c840',
+            'updater_sha': sha, 'control_panel_sha': cp, 'tuple': tuple_name,
+            'producer': 'prepareExecutorStage', 'terminal_records': 2,
+            'nested_layout': 'hash/artifact/extracted/package',
+            'preparation_root_downloads': 2, 'producer_stage_calls': 2, 'producer_apply_calls': 0}
+for key in ('requested_target_old_job before_refused before_bytes_metadata_preserved '
+            'inspect_uds_passed inspect_bytes_metadata_preserved inspect_central_claim_preserved '
+            'terminal_clear_passed terminal_history_bytes_metadata_preserved '
+            'independent_unknown_stage_refused negative_bytes_metadata_preserved snapshot_non_atomic').split():
+    expected[key] = True
+for key in ('positive_fixture_has_unknown_stage', 'negative_fixture_repaired'):
+    expected[key] = False
+for key in ('inspect_stage_calls inspect_apply_calls inspect_reconcile_calls '
+            'recovery_stage_calls recovery_apply_calls recovery_reconcile_calls').split():
+    expected[key] = 0
+hashes = ('same_input_snapshot_sha256', 'terminal_history_snapshot_sha256')
+extra = set(hashes) | {'terminal_ledger_sha256', 'terminal_ledger_bytes', 'history_snapshot_entries'}
+if set(record) != set(expected) | extra:
+    raise ValueError('UI185 projection contains missing or unapproved fields')
+if any(type(record[key]) is not type(value) or record[key] != value for key, value in expected.items()):
+    raise ValueError('UI185 exact-source producer, read-only recovery or independent negative proof failed')
+for value in [record[key] for key in hashes] + record['terminal_ledger_sha256']:
+    if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
+        raise ValueError('UI185 original-byte fingerprint missing')
+sizes = record['terminal_ledger_bytes']
+if (len(record['terminal_ledger_sha256']) != 2 or len(sizes) != 2 or
+        any(type(value) is not int or not 0 < value <= 65536 for value in sizes) or
+        type(record['history_snapshot_entries']) is not int or not 8 <= record['history_snapshot_entries'] <= 256):
+    raise ValueError('UI185 retained history bounds failed')
+print(json.dumps({'schema_version': 1, 'updater_sha': sha, 'control_panel_sha': cp,
+                  'tuple': tuple_name, 'ui185_stage_reference_projection': 'PASS'}, sort_keys=True))
+UI185_PROJECTION
 }
 
 # Each independently seeded tuple runs once, including after an earlier
