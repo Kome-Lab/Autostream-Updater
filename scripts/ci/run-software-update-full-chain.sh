@@ -405,7 +405,7 @@ def project_comparison(raw_line):
         raise ValueError('INVALID_RECORD')
     if any(type(value[key]) is not bool for key in ('resolver_error_nil', 'actual_equals_expected', 'non_atomic')) or not value['non_atomic']:
         raise ValueError('INVALID_RECORD')
-    classes = 'expected_slot_binary other_fixed_slot_binary systemd_executor systemd_manager fixed_shell other empty not_captured'.split()
+    classes = 'expected_slot_binary other_fixed_slot_binary systemd_executor systemd_manager other empty not_captured'.split()
     for key in ('actual', 'expected'):
         operand = value[key]
         if type(operand) is not dict or set(operand) != {'class', 'bytes', 'sha256', 'canonical'} or type(operand['class']) is not str or operand['class'] not in classes:
@@ -481,7 +481,7 @@ if logs['candidate']['file']['capture'] != 'CAPTURED' or logs['candidate']['line
 if comparison_rejected or len(comparison_records) > 1:
     capture = 'CAPTURE_FAILED'
 comparison_result = {'schema_version': 1, 'evidence_status': capture, 'collection_timing': 'post_fixture_exit',
-                     'base_updater_sha': 'd3776cf697552edcb10ad9fb61cba42e0cf69692',
+                     'base_updater_sha': '689a1fce6ec877c379bca80fc765858a44b2d4ab',
                      'updater_sha': sys.argv[1], 'control_panel_sha': sys.argv[2], 'tuple': sys.argv[3],
                      'observation_timing': 'preceding_unit_query_then_single_resolver', 'non_atomic': True,
                      'source_log_file': logs['candidate']['file'], 'lines_truncated': logs['candidate']['lines_truncated'],

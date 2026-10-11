@@ -727,7 +727,7 @@ func TestManualHostUpgradeUnlockedWaitDiagnosticParity(t *testing.T) {
 			{"executor_noncanonical", "/usr/lib/systemd/./systemd-executor", "systemd_executor", false, nil},
 			{"other_slot", "other_slot", "other_fixed_slot_binary", true, nil},
 			{"manager", "/usr/lib/systemd/systemd", "systemd_manager", true, nil},
-			{"shell", "/bin/bash", "fixed_shell", true, nil},
+			{"shell", "/bin/bash", "other", true, nil},
 			{"foreign", "/private-observation-秘密/foreign", "other", true, nil},
 			{"empty", "", "empty", false, nil},
 			{"limit", strings.Repeat("x", 4096), "other", true, nil},

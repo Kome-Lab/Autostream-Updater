@@ -286,9 +286,6 @@ func captureManualHostUpgradeExecutableOperand(slotsRoot, slot, value, expected 
 		operand.Class = "systemd_executor"
 	case filepath.Clean(value) == "/lib/systemd/systemd" || filepath.Clean(value) == "/usr/lib/systemd/systemd":
 		operand.Class = "systemd_manager"
-	case filepath.Clean(value) == "/bin/bash" || filepath.Clean(value) == "/usr/bin/bash" ||
-		filepath.Clean(value) == "/bin/dash" || filepath.Clean(value) == "/usr/bin/dash":
-		operand.Class = "fixed_shell"
 	}
 	return operand
 }

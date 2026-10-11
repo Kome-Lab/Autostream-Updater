@@ -155,7 +155,7 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_retry_linux_test.go",
-        "sha256": "e3b27fb35aea35ec9d5fbc039869bbe63f2525b86d99f1f664949a7feb7615f4",
+        "sha256": "321c33d9875d8851d0a93dcff33689c2f51e30f46931597f67776f35a46ae3fb",
         "symbols": [
           "TestManualHostUpgradeBlocksOnTerminalGrantWithoutMutation",
           "TestManualHostUpgradeLoadsLegacyHelperTargetsBeforeLocking",
@@ -425,7 +425,7 @@
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_services_linux.go",
-        "sha256": "c5e33f7e378bb3216773edea3c71315cd8c0181e7af6a63d437605be66b2e95d",
+        "sha256": "424d089f64c8eb76163bcd0723f2bb037a2cae2a5d579312b24b552025a7f957",
         "symbols": [
           "captureManualHostUpgradeExecutableComparison",
           "captureManualHostUpgradeExecutableOperand",
@@ -446,7 +446,7 @@
           "validateManualHostUpgradeCoreServicePreconditions",
           "validateManualHostUpgradeRecoveryServicePreconditions"
         ],
-        "physical_lines": 446
+        "physical_lines": 443
       },
       {
         "path": "internal/hostruntime/host_manual_upgrade_snapshot_linux.go",
