@@ -120,6 +120,8 @@ func validateManualHostUpgradeRecoveryServicePreconditions(
 			if err != nil || actual != expected {
 				return &manualHostUpgradeRecoveryUnconfirmed{
 					unit: unit, observed: observed, cause: err, pathMismatch: err == nil,
+					startupExecutor: err == nil && actual == filepath.Clean(actual) &&
+						isHostRuntimeSystemdExecutor(actual),
 					comparison: captureManualHostUpgradeExecutableComparison(
 						rt.selfUpdate.slotsRoot, slot, actual, expected, err, observed,
 					),
@@ -188,11 +190,12 @@ type manualHostUpgradeRecoveryBusy struct {
 // Retain the resolver cause without exposing its path or arbitrary error text.
 // This is a refusal, not a busy service or an under-lock handoff permission.
 type manualHostUpgradeRecoveryUnconfirmed struct {
-	unit         string
-	observed     manualHostRecoveryServiceProperties
-	cause        error
-	pathMismatch bool
-	comparison   *manualHostUpgradeExecutableComparison
+	unit            string
+	observed        manualHostRecoveryServiceProperties
+	cause           error
+	pathMismatch    bool
+	startupExecutor bool // Same resolver's exact canonical helper; never final permission.
+	comparison      *manualHostUpgradeExecutableComparison
 }
 
 // Evidence only: operands come from the comparison that already chose refusal.

@@ -411,8 +411,11 @@ func TestManualHostUpgradeUnlockedWaitProcessExit(t *testing.T) {
 
 func TestManualHostUpgradeUnlockedWaitMissingFreshPreflight(t *testing.T) {
 	for _, unit := range manualHostRecoveryUnitInstances {
-		for _, mode := range []string{"success", "persistent", "canceled", "foreign", "identity", "policy", "state", "slot", "lock", "under_lock", "after_side_effect"} {
+		for _, mode := range []string{"success", "persistent", "canceled", "foreign", "identity", "policy", "state", "slot", "lock", "under_lock", "after_side_effect",
+			"startup_success", "startup_persistent", "startup_canceled", "startup_foreign", "startup_identity", "startup_policy", "startup_state", "startup_slot", "startup_lock", "startup_under_lock"} {
 			t.Run(unit+"/"+mode, func(t *testing.T) {
+				startup := strings.HasPrefix(mode, "startup_")
+				mode = strings.TrimPrefix(mode, "startup_")
 				fixture, runner := newManualHostUpgradeConcurrencyFixture(t, unit, "after_lock", true)
 				ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 				defer cancel()
@@ -473,6 +476,9 @@ func TestManualHostUpgradeUnlockedWaitMissingFreshPreflight(t *testing.T) {
 						}
 						polls++
 						if polls == 1 || mode == "persistent" || mode == "foreign" {
+							if startup {
+								return "ActiveState=activating\nSubState=start\nMainPID=5101\nControlPID=0\nResult=success\n", nil
+							}
 							return "ActiveState=deactivating\nSubState=stop\nMainPID=5101\nControlPID=0\nResult=success\n", nil
 						}
 						waitComplete = true
@@ -480,7 +486,10 @@ func TestManualHostUpgradeUnlockedWaitMissingFreshPreflight(t *testing.T) {
 					return runner.Run(ctx, dir, env, name, args...)
 				})
 				resolve := fixture.runtime.resolveProcessExe
-				cause := &os.PathError{Op: "readlink", Path: "private-process-path", Err: syscall.ENOENT}
+				var cause error = &os.PathError{Op: "readlink", Path: "private-process-path", Err: syscall.ENOENT}
+				if startup {
+					cause = nil
+				}
 				fixture.runtime.resolveProcessExe = func(pid int) (string, error) {
 					if pid == 5101 && (mode == "under_lock" || !runner.locked) {
 						if mode == "foreign" && polls > 1 {
@@ -489,6 +498,9 @@ func TestManualHostUpgradeUnlockedWaitMissingFreshPreflight(t *testing.T) {
 						missing++
 						if mode == "canceled" {
 							cancel()
+						}
+						if startup {
+							return "/usr/lib/systemd/systemd-executor", nil
 						}
 						return "", cause
 					}
@@ -520,17 +532,21 @@ func TestManualHostUpgradeUnlockedWaitMissingFreshPreflight(t *testing.T) {
 						fixture.runner.recoveryReloads != 0 || fixture.runner.recoveryResetFailedAttempts != 0 {
 						t.Fatal("negative crossed the first mutation boundary")
 					}
-					if mode == "persistent" && (!errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, cause) || missing < 2) {
+					if mode == "persistent" && (!errors.Is(err, context.DeadlineExceeded) || !startup && !errors.Is(err, cause) || missing < 2) {
 						t.Fatalf("persistent missing lost deadline/cause: missing=%d err=%v", missing, err)
 					}
-					if mode == "canceled" && (!errors.Is(err, context.Canceled) || !errors.Is(err, cause) || missing != 1) {
+					if mode == "canceled" && (!errors.Is(err, context.Canceled) || !startup && !errors.Is(err, cause) || missing != 1) {
 						t.Fatal("cancellation lost its original missing cause")
 					}
 					var process *manualHostUpgradeRecoveryUnconfirmed
+					if startup && (mode == "persistent" || mode == "canceled" || mode == "under_lock") &&
+						(!errors.As(err, &process) || !process.startupExecutor || process.classification() != "path_mismatch" || process.cause != nil) {
+						t.Fatal("startup refusal lost the original typed nil-error mismatch")
+					}
 					if mode == "foreign" && (!errors.As(err, &process) || process.classification() != "path_mismatch") {
 						t.Fatal("fresh foreign PID was not classified and refused")
 					}
-					if mode == "under_lock" && (runner.attempts != 1 || runner.handoffs != 1 || polls != 0 || !errors.Is(err, cause)) {
+					if mode == "under_lock" && (runner.attempts != 1 || runner.handoffs != 1 || polls != 0 || !startup && !errors.Is(err, cause)) {
 						t.Fatal("under-lock missing acquired a new wait/handoff")
 					}
 					if mode != "state" && mode != "after_side_effect" {

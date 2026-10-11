@@ -5,10 +5,120 @@ package hostruntime
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
+
+func TestManualHostUpgradeUnlockedStartupExecutorFreshObservation(t *testing.T) {
+	for _, slot := range []string{"a", "b"} {
+		for _, tc := range []struct {
+			name, actual, state, substate, result string
+			control                               int
+			cause                                 error
+		}{
+			{"usr", "/usr/lib/systemd/systemd-executor", "activating", "start", "success", 0, nil},
+			{"lib", "/lib/systemd/systemd-executor", "activating", "start", "success", 0, nil},
+			{"noncanonical", "/usr/lib/systemd/./systemd-executor", "activating", "start", "success", 0, nil},
+			{"other_slot", "other_slot", "activating", "start", "success", 0, nil},
+			{"manager", "/usr/lib/systemd/systemd", "activating", "start", "success", 0, nil},
+			{"foreign", "/private-foreign-executor", "activating", "start", "success", 0, nil},
+			{"inactive_pid", "/usr/lib/systemd/systemd-executor", "inactive", "dead", "success", 0, nil},
+			{"active_start", "/usr/lib/systemd/systemd-executor", "active", "start", "success", 0, nil},
+			{"active_running", "/usr/lib/systemd/systemd-executor", "active", "running", "success", 0, nil},
+			{"deactivating", "/usr/lib/systemd/systemd-executor", "deactivating", "stop", "success", 0, nil},
+			{"start_pre", "/usr/lib/systemd/systemd-executor", "activating", "start-pre", "success", 0, nil},
+			{"failed_result", "/usr/lib/systemd/systemd-executor", "activating", "start", "exit-code", 0, nil},
+			{"control_pid", "/usr/lib/systemd/systemd-executor", "activating", "start", "success", 1, nil},
+			{"permission", "/usr/lib/systemd/systemd-executor", "activating", "start", "success", 0, os.ErrPermission},
+			{"ENODEV", "/usr/lib/systemd/systemd-executor", "activating", "start", "success", 0, syscall.ENODEV},
+		} {
+			t.Run(slot+"/"+tc.name, func(t *testing.T) {
+				unit, root := "autostream-host-self-update-recovery@"+slot+".service", "/private-startup-slots"
+				expected := filepath.Join(root, slot, "bin", "autostream-local-executor")
+				actual := tc.actual
+				if actual == "other_slot" {
+					other := "a"
+					if slot == "a" {
+						other = "b"
+					}
+					actual = filepath.Join(root, other, "bin", "autostream-local-executor")
+				}
+				initial := fmt.Sprintf("ActiveState=%s\nSubState=%s\nMainPID=42\nControlPID=%d\nResult=%s\n", tc.state, tc.substate, tc.control, tc.result)
+				const stopped = "ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\nResult=success\n"
+				body, queries, resolves := initial, 0, 0
+				complete := tc.name == "usr" || tc.name == "lib"
+				rt := manualHostUpgradeRuntime{runner: softwareClaimRecoveryDiagnosticTestRunner(func(_ context.Context, _ string, _ []string, name string, args ...string) (string, error) {
+					if name != "/usr/bin/systemctl" || len(args) != 7 || strings.Join(args[:6], " ") != "show --property=ActiveState --property=SubState --property=MainPID --property=ControlPID --property=Result" {
+						t.Fatal("startup wait changed services/query")
+					}
+					queries++
+					if args[6] == unit {
+						return body, nil
+					}
+					return stopped, nil
+				}), resolveProcessExe: func(pid int) (string, error) {
+					resolves++
+					if pid == 43 && complete {
+						body = stopped
+						return expected, nil
+					}
+					if pid != 42 {
+						t.Fatal("resolver inherited a stale PID")
+					}
+					body = "ActiveState=active\nSubState=running\nMainPID=43\nControlPID=0\nResult=success\n"
+					return actual, tc.cause
+				}}
+				rt.selfUpdate.slotsRoot = root
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if complete {
+					// Reproduce the original refusal before the unlocked-only correction.
+					err := validateManualHostUpgradeRecoveryServicePreconditions(ctx, rt, false)
+					var process *manualHostUpgradeRecoveryUnconfirmed
+					if !errors.As(err, &process) || process.classification() != "path_mismatch" || errors.Unwrap(process) != nil || manualHostUpgradeRecoveryCanSettle(err) {
+						t.Fatal("helper became an under-lock handoff/final permission")
+					}
+					process.comparison.Actual.Class = "other" // Diagnostic metadata is never authority.
+					if !manualHostUpgradeRecoveryStartupCanBeReobserved(ctx, err) {
+						t.Fatal("typed same-resolver condition was lost")
+					}
+					process.unit = "private-unit"
+					if manualHostUpgradeRecoveryStartupCanBeReobserved(ctx, err) {
+						t.Fatal("unknown unit acquired helper wait")
+					}
+					body, queries, resolves = initial, 0, 0
+				}
+				err := waitManualHostUpgradeRecoveryQuiescent(ctx, rt, false)
+				wantQueries := 1
+				if slot == "b" {
+					wantQueries = 2
+				}
+				if complete {
+					wantQueries *= 3
+					if slot == "a" {
+						wantQueries++
+					} // Final poll also reads unchanged B.
+					if err != nil || queries != wantQueries || resolves != 2 || body != stopped {
+						t.Fatalf("helper skipped fresh PID, regular binary or complete stop: queries=%d resolves=%d err=%v", queries, resolves, err)
+					}
+				} else {
+					wantResolves := 1
+					if tc.control != 0 {
+						wantResolves = 0
+					}
+					if err == nil || queries != wantQueries || resolves != wantResolves || tc.cause != nil && !errors.Is(err, tc.cause) {
+						t.Fatal("unconfirmed helper negative was reobserved or lost cause")
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestVerifyManualHostUnitProcessWaitsForTransientSystemdExecutor(
 	t *testing.T,

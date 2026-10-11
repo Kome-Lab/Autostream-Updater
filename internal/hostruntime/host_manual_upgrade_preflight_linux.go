@@ -83,10 +83,10 @@ func waitManualHostUpgradeRecoveryQuiescent(
 	rt manualHostUpgradeRuntime,
 	allowFailedBootstrap bool,
 ) error {
-	var lastMissing error
+	var lastUnconfirmed error
 	for {
 		if err := ctx.Err(); err != nil {
-			return manualHostUpgradeRecoveryWaitRefusal(err, lastMissing, "unlocked_wait")
+			return manualHostUpgradeRecoveryWaitRefusal(err, lastUnconfirmed, "unlocked_wait")
 		}
 		err := validateManualHostUpgradeRecoveryServicePreconditions(ctx, rt, allowFailedBootstrap)
 		if canceled := ctx.Err(); canceled != nil {
@@ -94,25 +94,42 @@ func waitManualHostUpgradeRecoveryQuiescent(
 			if errors.As(err, &process) {
 				return manualHostUpgradeRecoveryWaitRefusal(canceled, err, "unlocked_wait")
 			}
-			return manualHostUpgradeRecoveryWaitRefusal(canceled, lastMissing, "unlocked_wait")
+			return manualHostUpgradeRecoveryWaitRefusal(canceled, lastUnconfirmed, "unlocked_wait")
 		}
 		if err == nil {
 			return nil
 		}
 		if !manualHostUpgradeRecoveryCanSettle(err) {
-			if !manualHostUpgradeRecoveryMissingCanBeReobserved(ctx, err) {
+			if !manualHostUpgradeRecoveryMissingCanBeReobserved(ctx, err) &&
+				!manualHostUpgradeRecoveryStartupCanBeReobserved(ctx, err) {
 				return manualHostUpgradeRecoveryWaitRefusal(err, err, "unlocked_wait")
 			}
-			lastMissing = err
+			lastUnconfirmed = err
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return manualHostUpgradeRecoveryWaitRefusal(ctx.Err(), lastMissing, "unlocked_wait")
+			return manualHostUpgradeRecoveryWaitRefusal(ctx.Err(), lastUnconfirmed, "unlocked_wait")
 		case <-timer.C:
 		}
 	}
+}
+
+// R6's real installer observed this oneshot startup snapshot. Only the unlocked
+// waiter may reobserve it; the original refusal and complete stop checks remain.
+func manualHostUpgradeRecoveryStartupCanBeReobserved(ctx context.Context, err error) bool {
+	var process *manualHostUpgradeRecoveryUnconfirmed
+	if ctx.Err() != nil || !errors.As(err, &process) || !process.pathMismatch ||
+		process.cause != nil || !process.startupExecutor || process.observed.mainPID <= 0 ||
+		process.observed.controlPID != 0 {
+		return false
+	}
+	if process.unit != manualHostRecoveryUnitInstances[0] && process.unit != manualHostRecoveryUnitInstances[1] {
+		return false
+	}
+	return process.observed.state == "activating" && process.observed.subState == "start" &&
+		process.observed.result == "success"
 }
 
 // Only the caller after an attempt's deferred unlocks may use this predicate.
