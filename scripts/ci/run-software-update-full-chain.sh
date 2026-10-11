@@ -529,7 +529,7 @@ BOUNDARY
   run_bounded bash "${repository_root}/scripts/ci/verify-go-test-evidence.sh" --exact-subtests \
     "${evidence}/${tuple}/go" "${repository_root}/internal/hostruntime" \
     "${repository_root}/scripts/ci/required-software-update-full-chain-tests.txt" \
-    > "${evidence}/artifacts/required-${tuple}.json"
+    > "${evidence}/artifacts/required-${tuple}.json" || return $?
   run_bounded python3 -B - "${evidence}/${tuple}/artifacts/ui185-stage-reference.json" \
     "${updater_sha}" "${cp_sha}" "${tuple}" \
     > "${evidence}/artifacts/ui185-required-${tuple}.json" <<'UI185_PROJECTION'
