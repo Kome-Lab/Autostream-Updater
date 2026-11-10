@@ -237,6 +237,15 @@ const (
 	PlanReconciliationAction QueryAction = "registry.plan_reconciliation"
 )
 
+// QueryTarget binds current read authority to the actual requested execution.
+// Host-only reference reads omit Execution and Binding instead of dummy IDs.
+type QueryTarget struct {
+	Action    QueryAction
+	Scope     Scope
+	Execution *Execution
+	Binding   Binding
+}
+
 type ReadRequest struct {
 	Call  Call
 	Scope Scope
@@ -265,7 +274,7 @@ type ReadPort interface {
 }
 
 type QueryAuthorizer interface {
-	Authorize(context.Context, Call, QueryAction, Scope) error
+	Authorize(context.Context, Call, QueryTarget) error
 }
 
 // Verifier authenticates owner-issued receipts separately from current freshness.

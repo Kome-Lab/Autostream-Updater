@@ -25,13 +25,27 @@ func (p *readTestPort) ReadExecution(context.Context, Request) (ExecutionSnapsho
 }
 
 type readTestAuthorizer struct {
-	err     error
-	actions []QueryAction
+	err         error
+	actions     []QueryAction
+	targets     []QueryTarget
+	onAuthorize func(QueryTarget) error
 }
 
-func (a *readTestAuthorizer) Authorize(_ context.Context, _ Call, action QueryAction, _ Scope) error {
-	a.actions = append(a.actions, action)
-	return a.err
+func (a *readTestAuthorizer) Authorize(_ context.Context, _ Call, target QueryTarget) error {
+	a.actions = append(a.actions, target.Action)
+	stored := target
+	if target.Execution != nil {
+		execution := *target.Execution
+		stored.Execution = &execution
+	}
+	a.targets = append(a.targets, stored)
+	if a.err != nil {
+		return a.err
+	}
+	if a.onAuthorize != nil {
+		return a.onAuthorize(target)
+	}
+	return nil
 }
 
 type readTestVerifier struct {
@@ -564,5 +578,82 @@ func TestVerifierReceivesWholeDetachedObservedPayload(t *testing.T) {
 	plan, err := reader.ReconcilePartialRestore(context.Background(), LookupRequest{Call: readTestCall(), Request: request})
 	if err != nil || plan.Knowledge != Known || !reflect.DeepEqual(before, port.snapshot) {
 		t.Fatalf("witness callback mutated retained evidence: %#v %v", plan, err)
+	}
+}
+
+func TestQueryAuthorizationBindsExactExecutionWithoutHostDummy(t *testing.T) {
+	request, snapshot := readTestSnapshot(t, Positive)
+	reader, port, auth, _ := readTestReader(t, snapshot)
+	before := readCloneSnapshot(port.snapshot)
+	auth.onAuthorize = func(target QueryTarget) error {
+		if target.Execution != nil {
+			target.Execution.ExecutionKey = "callback-changed"
+			target.Binding = "callback-changed"
+		}
+		return nil
+	}
+	ctx := context.Background()
+	if _, err := reader.ReadActiveReference(ctx, ReadRequest{Call: readTestCall(), Scope: request.Command.Scope}); err != nil {
+		t.Fatal(err)
+	}
+	query := LookupRequest{Call: readTestCall(), Request: request}
+	if _, err := reader.LookupExecution(ctx, query); err != nil {
+		t.Fatalf("authorizer changed the subsequent request: %v", err)
+	}
+	if _, err := reader.ReconcilePartialRestore(ctx, query); err != nil {
+		t.Fatalf("authorizer changed the reconciliation request: %v", err)
+	}
+	if len(auth.targets) != 3 || auth.targets[0].Execution != nil || auth.targets[0].Binding != "" {
+		t.Fatal("host query acquired dummy execution or binding")
+	}
+	for _, target := range auth.targets[1:] {
+		if target.Scope != request.Command.Scope || target.Execution == nil ||
+			*target.Execution != request.Command.Execution || target.Binding != request.Binding {
+			t.Fatal("execution query omitted actual identity/binding")
+		}
+	}
+	if !reflect.DeepEqual(before, port.snapshot) || query.Request != request {
+		t.Fatal("authorizer mutated caller or port-owned data")
+	}
+}
+
+func TestQueryAuthorizationRejectsOtherKeyAttemptAndBindingBeforeRead(t *testing.T) {
+	for _, action := range []QueryAction{LookupExecutionAction, PlanReconciliationAction} {
+		for _, name := range []string{"key", "attempt", "binding"} {
+			t.Run(string(action)+"/"+name, func(t *testing.T) {
+				request, snapshot := readTestSnapshot(t, Positive)
+				reader, port, auth, _ := readTestReader(t, snapshot)
+				auth.onAuthorize = func(target QueryTarget) error {
+					if target.Execution == nil || *target.Execution != request.Command.Execution ||
+						target.Binding != request.Binding {
+						return errors.New("outside_current_query_capability")
+					}
+					return nil
+				}
+				other := request
+				switch name {
+				case "key":
+					other.Command.Execution.ExecutionKey = "other-key"
+				case "attempt":
+					other.Command.Execution.AttemptID = "other-attempt"
+				case "binding":
+					other.Command.OriginalBudget = "other-budget"
+				}
+				var err error
+				other.Binding, err = CanonicalBinding(other.Command)
+				if err != nil {
+					t.Fatal(err)
+				}
+				query := LookupRequest{Call: readTestCall(), Request: other}
+				if action == LookupExecutionAction {
+					_, err = reader.LookupExecution(context.Background(), query)
+				} else {
+					_, err = reader.ReconcilePartialRestore(context.Background(), query)
+				}
+				if !IsCode(err, CodeUnauthorized) || port.reads != 0 {
+					t.Fatalf("execution-scoped authority widened before read: %v", err)
+				}
+			})
+		}
 	}
 }

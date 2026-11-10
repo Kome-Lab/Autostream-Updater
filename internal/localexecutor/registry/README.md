@@ -6,7 +6,8 @@ or an activated Local Executor endpoint. It is not imported by the v2 binaries.
 - Strict v3 Request / Binding / Execution identity validation.
 - Positive, qualified-negative, UNKNOWN and conflicting receipt validation.
 - ReadActiveReference and LookupExecution through mandatory read, current query
-  authorization and owner-evidence ports.
+  authorization and owner-evidence ports. Query authorization receives the actual
+  execution tuple and binding for Lookup/Plan; host-only reads have neither.
 - D-01 terminal record descriptions for Executor Ledger, CP result and audit.
 - D-02 pure partial-restore reconciliation and record-only repair plans.
 

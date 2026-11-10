@@ -49,17 +49,37 @@ func readUnknownResult(scope Scope) LookupResult {
 	}
 }
 
-func (r *Reader) authorize(ctx context.Context, call Call, action QueryAction, scope Scope) error {
+func (r *Reader) authorize(ctx context.Context, call Call, target QueryTarget) error {
 	if r == nil || ctx == nil || readNilPort(r.port) || readNilPort(r.authorizer) || readNilPort(r.verifier) {
 		return invalid("reader.context")
 	}
 	if err := validateCall(call); err != nil {
 		return err
 	}
+	if err := ValidateScope(target.Scope); err != nil {
+		return err
+	}
+	switch target.Action {
+	case ReadReferenceAction:
+		if target.Execution != nil || target.Binding != "" {
+			return invalid("query.host_target")
+		}
+	case LookupExecutionAction, PlanReconciliationAction:
+		if target.Execution == nil || target.Binding == "" {
+			return invalid("query.execution_target")
+		}
+		if err := ValidateExecution(*target.Execution); err != nil {
+			return err
+		}
+		execution := *target.Execution
+		target.Execution = &execution
+	default:
+		return invalid("query.action")
+	}
 	if err := ctx.Err(); err != nil {
 		return fault(CodeUnavailable, "context")
 	}
-	if err := r.authorizer.Authorize(ctx, call, action, scope); err != nil {
+	if err := r.authorizer.Authorize(ctx, call, target); err != nil {
 		return fault(CodeUnauthorized, "query_authority")
 	}
 	return nil
@@ -104,7 +124,7 @@ func (r *Reader) ReadActiveReference(ctx context.Context, request ReadRequest) (
 	if err := ValidateScope(request.Scope); err != nil {
 		return result, err
 	}
-	if err := r.authorize(ctx, request.Call, ReadReferenceAction, request.Scope); err != nil {
+	if err := r.authorize(ctx, request.Call, QueryTarget{Action: ReadReferenceAction, Scope: request.Scope}); err != nil {
 		return result, err
 	}
 	active, err := r.port.ReadActiveReference(ctx, request.Scope)
@@ -135,7 +155,8 @@ func (r *Reader) lookup(ctx context.Context, query LookupRequest, action QueryAc
 		return result, snapshot, false, err
 	}
 	scope := query.Request.Command.Scope
-	if err := r.authorize(ctx, query.Call, action, scope); err != nil {
+	execution := query.Request.Command.Execution
+	if err := r.authorize(ctx, query.Call, QueryTarget{Action: action, Scope: scope, Execution: &execution, Binding: query.Request.Binding}); err != nil {
 		return result, snapshot, false, err
 	}
 	observed, err := r.port.ReadExecution(ctx, query.Request)
