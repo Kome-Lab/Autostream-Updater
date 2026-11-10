@@ -6,17 +6,17 @@ import "errors"
 type Code string
 
 const (
-	CodeInvalid Code = "invalid"
+	CodeInvalid         Code = "invalid"
 	CodeBindingConflict Code = "binding_conflict"
-	CodeUnauthorized Code = "unauthorized"
-	CodeUnavailable Code = "unavailable"
+	CodeUnauthorized    Code = "unauthorized"
+	CodeUnavailable     Code = "unavailable"
 	CodeEvidenceUnknown Code = "evidence_unknown"
 )
 
 // Error is safe to return from this internal boundary. It never implies that a
 // mutation was not started, that a grant is unused, or that retry is authorized.
 type Error struct {
-	Code Code
+	Code  Code
 	Field string
 }
 

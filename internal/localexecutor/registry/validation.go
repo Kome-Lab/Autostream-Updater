@@ -20,7 +20,10 @@ func ValidateExecutionKey(key ID) error {
 
 // ValidateScope accepts canonical, opaque resource identities, never OS paths.
 func ValidateScope(scope Scope) error {
-	for _, item := range []struct { value ID; field string }{
+	for _, item := range []struct {
+		value ID
+		field string
+	}{
 		{scope.Realm, "scope.realm"},
 		{scope.Host, "scope.host"},
 		{scope.Resource, "scope.resource"},
@@ -37,7 +40,10 @@ func ValidateExecution(execution Execution) error {
 	if err := ValidateExecutionKey(execution.ExecutionKey); err != nil {
 		return err
 	}
-	for _, item := range []struct { value ID; field string }{
+	for _, item := range []struct {
+		value ID
+		field string
+	}{
 		{execution.RequestID, "execution.request_id"},
 		{execution.OperationID, "execution.operation_id"},
 		{execution.AttemptID, "execution.attempt_id"},
@@ -67,7 +73,10 @@ func validateID(value ID, field string) error {
 }
 
 func validateCall(call Call) error {
-	for _, item := range []struct { value ID; field string }{
+	for _, item := range []struct {
+		value ID
+		field string
+	}{
 		{call.Principal, "call.principal"},
 		{call.Capability, "call.capability"},
 		{call.CorrelationID, "call.correlation_id"},
@@ -80,7 +89,10 @@ func validateCall(call Call) error {
 }
 
 func validateEvidence(evidence Evidence) error {
-	for _, item := range []struct { value ID; field string }{
+	for _, item := range []struct {
+		value ID
+		field string
+	}{
 		{evidence.Issuer, "evidence.issuer"},
 		{evidence.ServingIncarnation, "evidence.serving_incarnation"},
 		{evidence.Generation, "evidence.generation"},
@@ -108,7 +120,10 @@ func validateCommand(command Command) error {
 	if err := ValidateExecution(command.Execution); err != nil {
 		return err
 	}
-	for _, item := range []struct { value ID; field string }{
+	for _, item := range []struct {
+		value ID
+		field string
+	}{
 		{command.RequestingPrincipal, "command.requesting_principal"},
 		{command.AuthorizationIssuer, "command.authorization_issuer"},
 		{command.CandidateRevision, "command.candidate_revision"},

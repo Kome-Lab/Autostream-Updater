@@ -11,9 +11,9 @@ import (
 func (r *Reader) ReconcilePartialRestore(ctx context.Context, query LookupRequest) (ReconciliationPlan, error) {
 	result, snapshot, fresh, err := r.lookup(ctx, query, PlanReconciliationAction)
 	plan := ReconciliationPlan{
-		Knowledge: Unknown,
-		Result: result,
-		Outstanding: append([]ID(nil), result.Outstanding...),
+		Knowledge:                  Unknown,
+		Result:                     result,
+		Outstanding:                append([]ID(nil), result.Outstanding...),
 		OriginalMutationAuthorized: false,
 	}
 	if err != nil {
@@ -109,13 +109,13 @@ func (r *Reader) ReconcilePartialRestore(ctx context.Context, query LookupReques
 			}
 		}
 		step := RepairStep{
-			Action: action,
-			Boundary: record.Boundary,
+			Action:             action,
+			Boundary:           record.Boundary,
 			RequiredCapability: capability,
-			Expected: readCloneProjection(projection),
-			Outcome: record,
-			SourceReceipt: receipt.ReceiptID,
-			SourceWitness: witness.Evidence,
+			Expected:           readCloneProjection(projection),
+			Outcome:            record,
+			SourceReceipt:      receipt.ReceiptID,
+			SourceWitness:      witness.Evidence,
 		}
 		if record.Boundary == CPAudit {
 			// Missing current audit does not reconstruct the historical actor,

@@ -9,11 +9,12 @@ import (
 
 // These doubles contain no mutation/SQL/provider/restore method or credential.
 type readTestPort struct {
-	active ActiveReference
+	active   ActiveReference
 	snapshot ExecutionSnapshot
-	err error
-	reads int
+	err      error
+	reads    int
 }
+
 func (p *readTestPort) ReadActiveReference(context.Context, Scope) (ActiveReference, error) {
 	p.reads++
 	return p.active, p.err
@@ -22,22 +23,26 @@ func (p *readTestPort) ReadExecution(context.Context, Request) (ExecutionSnapsho
 	p.reads++
 	return p.snapshot, p.err
 }
+
 type readTestAuthorizer struct {
-	err error
+	err     error
 	actions []QueryAction
 }
+
 func (a *readTestAuthorizer) Authorize(_ context.Context, _ Call, action QueryAction, _ Scope) error {
 	a.actions = append(a.actions, action)
 	return a.err
 }
+
 type readTestVerifier struct {
-	receiptErr error
+	receiptErr  error
 	snapshotErr error
-	witnessErr error
-	receipts int
-	snapshots int
-	witnesses int
+	witnessErr  error
+	receipts    int
+	snapshots   int
+	witnesses   int
 }
+
 func (v *readTestVerifier) VerifyReceipt(context.Context, Request, Receipt) error {
 	v.receipts++
 	return v.receiptErr
@@ -57,18 +62,18 @@ func (v *readTestVerifier) VerifyWitness(context.Context, Request, WitnessOutcom
 func receiptTestRequest(t *testing.T) Request {
 	t.Helper()
 	command := Command{
-		Schema: CommandSchema,
-		Operation: ReferenceOnlyOperation,
-		Scope: Scope{Realm: "realm-a", Host: "host-a", Resource: "config-a", Backend: "backend-a"},
-		Execution: Execution{RequestID: "request-a", ExecutionKey: "execution-a", OperationID: "operation-a", AttemptID: "attempt-a", StepID: "step-a"},
+		Schema:              CommandSchema,
+		Operation:           ReferenceOnlyOperation,
+		Scope:               Scope{Realm: "realm-a", Host: "host-a", Resource: "config-a", Backend: "backend-a"},
+		Execution:           Execution{RequestID: "request-a", ExecutionKey: "execution-a", OperationID: "operation-a", AttemptID: "attempt-a", StepID: "step-a"},
 		RequestingPrincipal: "operator-a",
 		AuthorizationIssuer: "cp-a",
-		CandidateRevision: "revision-b",
+		CandidateRevision:   "revision-b",
 		CandidateContentPin: "content-pin-b",
-		Expected: Reference{Revision: "revision-a", StateVersion: 7},
-		RequiredGuard: Guard{Policy: "policy-a", Trust: "trust-a", Membership: "membership-a", OwnershipEpoch: "owner-a", FenceEpoch: "fence-a", Generation: "generation-a", BootID: "boot-a", ProcessIncarnation: "process-a"},
-		Timing: Timing{TimeBase: "monotonic-a", DeadlineTick: 100},
-		OriginalBudget: "budget-a",
+		Expected:            Reference{Revision: "revision-a", StateVersion: 7},
+		RequiredGuard:       Guard{Policy: "policy-a", Trust: "trust-a", Membership: "membership-a", OwnershipEpoch: "owner-a", FenceEpoch: "fence-a", Generation: "generation-a", BootID: "boot-a", ProcessIncarnation: "process-a"},
+		Timing:              Timing{TimeBase: "monotonic-a", DeadlineTick: 100},
+		OriginalBudget:      "budget-a",
 	}
 	binding, err := CanonicalBinding(command)
 	if err != nil {
@@ -84,7 +89,7 @@ func receiptTestReceipt(t *testing.T, kind ReceiptKind) (Request, Receipt) {
 		Scope: request.Command.Scope, Execution: request.Command.Execution,
 		Binding: request.Binding, Kind: kind, Guard: request.Command.RequiredGuard,
 		Decision: Decision{Profile: D1GuardDecision, TimeBase: request.Command.Timing.TimeBase, BootID: request.Command.RequiredGuard.BootID, LowerTick: 89, UpperTick: 90, Proof: "decision-proof-a"},
-		Proof: "receipt-proof-a",
+		Proof:    "receipt-proof-a",
 	}
 	if kind == Positive {
 		receipt.Positive = &PositivePayload{TransitionID: "transition-a", Before: request.Command.Expected, After: Reference{Revision: request.Command.CandidateRevision, StateVersion: 8}, Semantic: ReferenceCommittedNotServiceApplied}
@@ -106,14 +111,14 @@ func readTestSnapshot(t *testing.T, kind ReceiptKind) (Request, ExecutionSnapsho
 	current := request.Command.Expected
 	return request, ExecutionSnapshot{
 		StoredRequest: &request,
-		Backend: BackendObservation{Knowledge: Known, Receipt: &receipt},
-		Current: ActiveReference{Knowledge: Known, Scope: request.Command.Scope, Reference: &current, Evidence: readTestEvidence()},
-		Ledger: Projection{Knowledge: Absent},
-		Report: Projection{Knowledge: Absent},
-		Audit: Projection{Knowledge: Absent},
-		Witness: &WitnessOutcome{LiabilityID: "liability-a", Scope: request.Command.Scope, Execution: request.Command.Execution, Binding: request.Binding, Receipt: readCloneReceipt(receipt), Evidence: "witness-evidence-a"},
-		Outstanding: []ID{"liability-a"},
-		Evidence: readTestEvidence(),
+		Backend:       BackendObservation{Knowledge: Known, Receipt: &receipt},
+		Current:       ActiveReference{Knowledge: Known, Scope: request.Command.Scope, Reference: &current, Evidence: readTestEvidence()},
+		Ledger:        Projection{Knowledge: Absent},
+		Report:        Projection{Knowledge: Absent},
+		Audit:         Projection{Knowledge: Absent},
+		Witness:       &WitnessOutcome{LiabilityID: "liability-a", Scope: request.Command.Scope, Execution: request.Command.Execution, Binding: request.Binding, Receipt: readCloneReceipt(receipt), Evidence: "witness-evidence-a"},
+		Outstanding:   []ID{"liability-a"},
+		Evidence:      readTestEvidence(),
 	}
 }
 func readTestReader(t *testing.T, snapshot ExecutionSnapshot) (*Reader, *readTestPort, *readTestAuthorizer, *readTestVerifier) {
@@ -162,16 +167,18 @@ func TestReceiptValidPositiveAndQualifiedNegatives(t *testing.T) {
 
 func TestReceiptRejectsMalformedAndConflictingPayloads(t *testing.T) {
 	cases := []struct {
-		name string
+		name   string
 		change func(*Receipt)
-		code Code
+		code   Code
 	}{
 		{"binding", func(r *Receipt) { r.Binding = "other-binding" }, CodeBindingConflict},
 		{"request_alias", func(r *Receipt) { r.Execution.RequestID = "request-other" }, CodeBindingConflict},
 		{"execution_key", func(r *Receipt) { r.Execution.ExecutionKey = "execution-other" }, CodeBindingConflict},
 		{"wrong_scope", func(r *Receipt) { r.Scope.Host = "host-other" }, CodeBindingConflict},
 		{"wrong_producer", func(r *Receipt) { r.ProducerBackend = "backend-other" }, CodeBindingConflict},
-		{"double_payload", func(r *Receipt) { r.Negative = &NegativePayload{Reason: GuardRejected, NoAdditionalEffectProof: "proof-b"} }, CodeInvalid},
+		{"double_payload", func(r *Receipt) {
+			r.Negative = &NegativePayload{Reason: GuardRejected, NoAdditionalEffectProof: "proof-b"}
+		}, CodeInvalid},
 		{"missing_payload", func(r *Receipt) { r.Positive = nil }, CodeInvalid},
 		{"wrong_before", func(r *Receipt) { r.Positive.Before.StateVersion++ }, CodeBindingConflict},
 		{"wrong_candidate", func(r *Receipt) { r.Positive.After.Revision = "revision-other" }, CodeBindingConflict},
@@ -421,7 +428,7 @@ func TestD02AckLossResendsReportOnlyAndDetachesExpected(t *testing.T) {
 }
 func TestD02ConflictsMissingEvidenceAndUnknownBlockRepair(t *testing.T) {
 	cases := []struct {
-		name string
+		name   string
 		change func(*ExecutionSnapshot)
 	}{
 		{"witness_missing", func(s *ExecutionSnapshot) { s.Witness = nil }},
@@ -503,8 +510,9 @@ func TestPositiveCannotPromoteProposedNoChangeIntoSuccess(t *testing.T) {
 
 type readMutatingVerifier struct {
 	seenExecution bool
-	seenActive bool
+	seenActive    bool
 }
+
 func (v *readMutatingVerifier) VerifyReceipt(_ context.Context, _ Request, receipt Receipt) error {
 	if receipt.Positive != nil {
 		receipt.Positive.After.Revision = "verifier-changed"

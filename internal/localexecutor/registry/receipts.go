@@ -5,7 +5,7 @@ package registry
 type DecisionProfile string
 
 const (
-	D1GuardDecision DecisionProfile = "D1_GUARD_DECISION"
+	D1GuardDecision            DecisionProfile = "D1_GUARD_DECISION"
 	QualifiedRejectionDecision DecisionProfile = "QUALIFIED_REJECTION"
 )
 
@@ -148,13 +148,13 @@ func DescribeTerminalRecords(request Request, receipt Receipt) ([]TerminalRecord
 	records := make([]TerminalRecord, 0, 3)
 	for _, boundary := range []Boundary{ExecutorLedger, CPReport, CPAudit} {
 		records = append(records, TerminalRecord{
-			Boundary: boundary,
-			Scope: receipt.Scope,
-			Execution: receipt.Execution,
-			Binding: receipt.Binding,
-			ReceiptID: receipt.ReceiptID,
+			Boundary:    boundary,
+			Scope:       receipt.Scope,
+			Execution:   receipt.Execution,
+			Binding:     receipt.Binding,
+			ReceiptID:   receipt.ReceiptID,
 			ReceiptKind: receipt.Kind,
-			Result: result,
+			Result:      result,
 		})
 	}
 	return records, nil

@@ -10,24 +10,24 @@ import (
 
 func validationValidCommand() Command {
 	return Command{
-		Schema: CommandSchema,
+		Schema:    CommandSchema,
 		Operation: ReferenceOnlyOperation,
-		Scope: Scope{Realm: "realm", Host: "host", Resource: "resource", Backend: "backend"},
+		Scope:     Scope{Realm: "realm", Host: "host", Resource: "resource", Backend: "backend"},
 		Execution: Execution{
 			RequestID: "request", ExecutionKey: "execution", OperationID: "operation",
 			AttemptID: "attempt", StepID: "step",
 		},
 		RequestingPrincipal: "operator",
 		AuthorizationIssuer: "cp",
-		CandidateRevision: "revision-1",
+		CandidateRevision:   "revision-1",
 		CandidateContentPin: "pin-1",
-		Expected: Reference{Revision: "revision-0", StateVersion: 0},
+		Expected:            Reference{Revision: "revision-0", StateVersion: 0},
 		RequiredGuard: Guard{
 			Policy: "policy", Trust: "trust", Membership: "membership",
 			OwnershipEpoch: "owner-1", FenceEpoch: "fence-1", Generation: "generation-1",
 			BootID: "boot-1", ProcessIncarnation: "process-1",
 		},
-		Timing: Timing{TimeBase: "clock-1", DeadlineTick: 1000},
+		Timing:         Timing{TimeBase: "clock-1", DeadlineTick: 1000},
 		OriginalBudget: "budget-1",
 	}
 }
@@ -95,7 +95,7 @@ func TestValidationEveryCommandIDRequired(t *testing.T) {
 
 func TestValidationCommandScalars(t *testing.T) {
 	tests := []struct {
-		name string
+		name   string
 		change func(*Command)
 	}{
 		{"schema_missing", func(c *Command) { c.Schema = 0 }},
@@ -135,7 +135,7 @@ func TestValidationImmutableBinding(t *testing.T) {
 		t.Fatal("internal canonical field order changed")
 	}
 	changes := []struct {
-		name string
+		name   string
 		change func(*Command)
 	}{
 		{"realm", func(c *Command) { c.Scope.Realm = "other" }},
@@ -204,9 +204,12 @@ func validationOuterValue(t *testing.T, body string, field string, replacement s
 
 func TestValidationStrictDecodeRejectsAmbiguity(t *testing.T) {
 	valid := validationJSON(t)
-	tests := []struct { name string; body string }{
+	tests := []struct {
+		name string
+		body string
+	}{
 		{"empty", ""},
-		{"oversize", strings.Repeat(" ", maxRequestBytes + 1)},
+		{"oversize", strings.Repeat(" ", maxRequestBytes+1)},
 		{"invalid_utf8", string([]byte{0xff})},
 		{"null_request", "null"},
 		{"array_request", "[" + valid + "]"},

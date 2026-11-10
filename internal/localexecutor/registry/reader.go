@@ -8,9 +8,9 @@ import (
 // Reader owns no writer or recovery handle. Ports are trusted dependencies, not
 // caller-provided evidence booleans. Returned data is detached from port storage.
 type Reader struct {
-	port ReadPort
+	port       ReadPort
 	authorizer QueryAuthorizer
-	verifier Verifier
+	verifier   Verifier
 }
 
 func readNilPort(value any) bool {
@@ -39,12 +39,12 @@ func readUnknownActive(scope Scope) ActiveReference {
 
 func readUnknownResult(scope Scope) LookupResult {
 	return LookupResult{
-		Knowledge: Unknown,
-		Backend: BackendObservation{Knowledge: Unknown},
-		Current: readUnknownActive(scope),
-		Ledger: Projection{Knowledge: Unknown},
-		Report: Projection{Knowledge: Unknown},
-		Audit: Projection{Knowledge: Unknown},
+		Knowledge:          Unknown,
+		Backend:            BackendObservation{Knowledge: Unknown},
+		Current:            readUnknownActive(scope),
+		Ledger:             Projection{Knowledge: Unknown},
+		Report:             Projection{Knowledge: Unknown},
+		Audit:              Projection{Knowledge: Unknown},
 		ServiceApplication: ServiceApplicationOutsideScope,
 	}
 }
@@ -182,7 +182,7 @@ func (r *Reader) lookup(ctx context.Context, query LookupRequest, action QueryAc
 		return result, snapshot, false, err
 	}
 	for _, item := range []struct {
-		boundary Boundary
+		boundary   Boundary
 		projection Projection
 	}{
 		{ExecutorLedger, snapshot.Ledger},
@@ -242,7 +242,7 @@ func readValidateProjection(request Request, receipt *Receipt, boundary Boundary
 		return collision("projection.identity")
 	}
 	for _, item := range []struct {
-		id ID
+		id    ID
 		field string
 	}{
 		{record.ReceiptID, "projection.receipt"},

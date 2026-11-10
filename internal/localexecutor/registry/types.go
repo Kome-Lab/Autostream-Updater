@@ -12,56 +12,56 @@ type ID string
 type Binding string
 
 type Scope struct {
-	Realm ID
-	Host ID
+	Realm    ID
+	Host     ID
 	Resource ID
-	Backend ID
+	Backend  ID
 }
 
 type Execution struct {
-	RequestID ID
+	RequestID    ID
 	ExecutionKey ID
-	OperationID ID
-	AttemptID ID
-	StepID ID
+	OperationID  ID
+	AttemptID    ID
+	StepID       ID
 }
 
 type Reference struct {
-	Revision ID
+	Revision     ID
 	StateVersion uint64
 }
 
 type Guard struct {
-	Policy ID
-	Trust ID
-	Membership ID
-	OwnershipEpoch ID
-	FenceEpoch ID
-	Generation ID
-	BootID ID
+	Policy             ID
+	Trust              ID
+	Membership         ID
+	OwnershipEpoch     ID
+	FenceEpoch         ID
+	Generation         ID
+	BootID             ID
 	ProcessIncarnation ID
 }
 
 // Timing contains immutable authority-bound ticks; no wall clock or TTL is chosen.
 // Receipt validation compares a historical D1 decision, not time.Now().
 type Timing struct {
-	TimeBase ID
+	TimeBase     ID
 	DeadlineTick uint64
 }
 
 type Command struct {
-	Schema uint32
-	Operation string
-	Scope Scope
-	Execution Execution
+	Schema              uint32
+	Operation           string
+	Scope               Scope
+	Execution           Execution
 	RequestingPrincipal ID
 	AuthorizationIssuer ID
-	CandidateRevision ID
+	CandidateRevision   ID
 	CandidateContentPin ID
-	Expected Reference
-	RequiredGuard Guard
-	Timing Timing
-	OriginalBudget ID
+	Expected            Reference
+	RequiredGuard       Guard
+	Timing              Timing
+	OriginalBudget      ID
 }
 
 // Evidence acquired after acceptance is deliberately absent from Command/Binding.
@@ -71,18 +71,18 @@ type Request struct {
 }
 
 const (
-	CommandSchema uint32 = 1
-	ReferenceOnlyOperation = "registry.reference_only"
-	ReferenceCommittedNotServiceApplied = "REFERENCE_COMMITTED_NOT_SERVICE_APPLIED"
-	ServiceApplicationOutsideScope = "OUTSIDE_P_A_SCOPE"
+	CommandSchema                       uint32 = 1
+	ReferenceOnlyOperation                     = "registry.reference_only"
+	ReferenceCommittedNotServiceApplied        = "REFERENCE_COMMITTED_NOT_SERVICE_APPLIED"
+	ServiceApplicationOutsideScope             = "OUTSIDE_P_A_SCOPE"
 )
 
 type Knowledge string
 
 const (
-	Known Knowledge = "KNOWN"
-	Absent Knowledge = "ABSENT"
-	Unknown Knowledge = "UNKNOWN"
+	Known    Knowledge = "KNOWN"
+	Absent   Knowledge = "ABSENT"
+	Unknown  Knowledge = "UNKNOWN"
 	Conflict Knowledge = "CONFLICT"
 )
 
@@ -96,165 +96,165 @@ const (
 type NegativeReason string
 
 const (
-	GuardRejected NegativeReason = "GUARD_REJECTED"
+	GuardRejected        NegativeReason = "GUARD_REJECTED"
 	PreconditionMismatch NegativeReason = "PRECONDITION_MISMATCH"
-	NotChangedProposed NegativeReason = "NOT_CHANGED_PROPOSED"
+	NotChangedProposed   NegativeReason = "NOT_CHANGED_PROPOSED"
 )
 
 // Decision records either a historical D1 actuation decision or a qualified
 // no-actuation refusal. A refusal is not permission to activate a reference.
 // D1 commit visibility may occur later; there is no D2 completion deadline.
 type Decision struct {
-	Profile DecisionProfile
-	TimeBase ID
-	BootID ID
+	Profile   DecisionProfile
+	TimeBase  ID
+	BootID    ID
 	LowerTick uint64
 	UpperTick uint64
-	Proof ID
+	Proof     ID
 }
 
 type PositivePayload struct {
 	TransitionID ID
-	Before Reference
-	After Reference
-	Semantic string
+	Before       Reference
+	After        Reference
+	Semantic     string
 }
 
 type NegativePayload struct {
-	Reason NegativeReason
+	Reason                  NegativeReason
 	NoAdditionalEffectProof ID
 }
 
 // Receipt has exactly one payload matching Kind. Its proof is owner-verified.
 // Structural validation alone never authenticates a backend's durable commit.
 type Receipt struct {
-	ReceiptID ID
-	CommitID ID
+	ReceiptID       ID
+	CommitID        ID
 	ProducerBackend ID
-	Scope Scope
-	Execution Execution
-	Binding Binding
-	Kind ReceiptKind
-	Positive *PositivePayload
-	Negative *NegativePayload
-	Guard Guard
-	Decision Decision
-	Proof ID
+	Scope           Scope
+	Execution       Execution
+	Binding         Binding
+	Kind            ReceiptKind
+	Positive        *PositivePayload
+	Negative        *NegativePayload
+	Guard           Guard
+	Decision        Decision
+	Proof           ID
 }
 
 type BackendObservation struct {
 	Knowledge Knowledge
-	Receipt *Receipt
+	Receipt   *Receipt
 }
 
 // Evidence references are resolved by a trusted port, never accepted as booleans.
 type Evidence struct {
-	Issuer ID
+	Issuer             ID
 	ServingIncarnation ID
-	Generation ID
-	SnapshotID ID
-	FreshnessProof ID
-	ObservationProof ID
+	Generation         ID
+	SnapshotID         ID
+	FreshnessProof     ID
+	ObservationProof   ID
 }
 
 type ActiveReference struct {
 	Knowledge Knowledge
-	Scope Scope
+	Scope     Scope
 	Reference *Reference
-	Evidence Evidence
+	Evidence  Evidence
 }
 
 type Boundary string
 
 const (
 	ExecutorLedger Boundary = "executor_ledger"
-	CPReport Boundary = "cp_report"
-	CPAudit Boundary = "cp_audit"
+	CPReport       Boundary = "cp_report"
+	CPAudit        Boundary = "cp_audit"
 )
 
 type AckState string
 
 const (
 	AckConfirmed AckState = "CONFIRMED"
-	AckUnknown AckState = "UNKNOWN"
+	AckUnknown   AckState = "UNKNOWN"
 )
 
 // OutcomeRecord is a projection, not authority to repeat a registry operation.
 type OutcomeRecord struct {
-	Scope Scope
-	Execution Execution
-	Binding Binding
-	ReceiptID ID
-	ReceiptKind ReceiptKind
-	Boundary Boundary
-	RecordedBy ID
-	RecordAuthority ID
-	Evidence ID
-	Ack AckState
-	Recovered bool
+	Scope                     Scope
+	Execution                 Execution
+	Binding                   Binding
+	ReceiptID                 ID
+	ReceiptKind               ReceiptKind
+	Boundary                  Boundary
+	RecordedBy                ID
+	RecordAuthority           ID
+	Evidence                  ID
+	Ack                       AckState
+	Recovered                 bool
 	OriginalAuditAvailability Knowledge
 }
 
 type Projection struct {
 	Knowledge Knowledge
-	Record *OutcomeRecord
+	Record    *OutcomeRecord
 }
 
 type WitnessOutcome struct {
 	LiabilityID ID
-	Scope Scope
-	Execution Execution
-	Binding Binding
-	Receipt Receipt
-	Evidence ID
+	Scope       Scope
+	Execution   Execution
+	Binding     Binding
+	Receipt     Receipt
+	Evidence    ID
 }
 
 // ExecutionSnapshot must be a coherent, complete observation from a trusted port.
 // ABSENT is observation absence, never a NOT_STARTED or unconsumed-grant proof.
 type ExecutionSnapshot struct {
 	StoredRequest *Request
-	Backend BackendObservation
-	Current ActiveReference
-	Ledger Projection
-	Report Projection
-	Audit Projection
-	Witness *WitnessOutcome
-	Outstanding []ID
-	Evidence Evidence
+	Backend       BackendObservation
+	Current       ActiveReference
+	Ledger        Projection
+	Report        Projection
+	Audit         Projection
+	Witness       *WitnessOutcome
+	Outstanding   []ID
+	Evidence      Evidence
 }
 
 type Call struct {
-	Principal ID
-	Capability ID
+	Principal     ID
+	Capability    ID
 	CorrelationID ID
 }
 
 type QueryAction string
 
 const (
-	ReadReferenceAction QueryAction = "registry.read_active_reference"
-	LookupExecutionAction QueryAction = "registry.lookup_execution"
+	ReadReferenceAction      QueryAction = "registry.read_active_reference"
+	LookupExecutionAction    QueryAction = "registry.lookup_execution"
 	PlanReconciliationAction QueryAction = "registry.plan_reconciliation"
 )
 
 type ReadRequest struct {
-	Call Call
+	Call  Call
 	Scope Scope
 }
 
 type LookupRequest struct {
-	Call Call
+	Call    Call
 	Request Request
 }
 
 type LookupResult struct {
-	Knowledge Knowledge
-	Backend BackendObservation
-	Current ActiveReference
-	Ledger Projection
-	Report Projection
-	Audit Projection
-	Outstanding []ID
+	Knowledge          Knowledge
+	Backend            BackendObservation
+	Current            ActiveReference
+	Ledger             Projection
+	Report             Projection
+	Audit              Projection
+	Outstanding        []ID
 	ServiceApplication string
 }
 
@@ -281,21 +281,21 @@ type Verifier interface {
 }
 
 type TerminalRecord struct {
-	Boundary Boundary
-	Scope Scope
-	Execution Execution
-	Binding Binding
-	ReceiptID ID
+	Boundary    Boundary
+	Scope       Scope
+	Execution   Execution
+	Binding     Binding
+	ReceiptID   ID
 	ReceiptKind ReceiptKind
-	Result string
+	Result      string
 }
 
 type RecordAction string
 
 const (
-	RecordLedgerOutcome RecordAction = "record_ledger_outcome"
-	RecordCPOutcome RecordAction = "record_cp_outcome"
-	ResendCPOutcome RecordAction = "resend_cp_outcome"
+	RecordLedgerOutcome  RecordAction = "record_ledger_outcome"
+	RecordCPOutcome      RecordAction = "record_cp_outcome"
+	ResendCPOutcome      RecordAction = "resend_cp_outcome"
 	RecordRecoveredAudit RecordAction = "record_recovered_audit"
 )
 
@@ -303,18 +303,18 @@ type RequiredRecordCapability string
 
 const (
 	ExecutorRecordCapability RequiredRecordCapability = "executor.record_outcome"
-	CPReportCapability RequiredRecordCapability = "cp.report_outcome"
-	CPAuditCapability RequiredRecordCapability = "cp.record_recovered_audit"
+	CPReportCapability       RequiredRecordCapability = "cp.report_outcome"
+	CPAuditCapability        RequiredRecordCapability = "cp.record_recovered_audit"
 )
 
 type RepairStep struct {
-	Action RecordAction
-	Boundary Boundary
-	RequiredCapability RequiredRecordCapability
-	Expected Projection
-	Outcome TerminalRecord
-	SourceReceipt ID
-	SourceWitness ID
+	Action                    RecordAction
+	Boundary                  Boundary
+	RequiredCapability        RequiredRecordCapability
+	Expected                  Projection
+	Outcome                   TerminalRecord
+	SourceReceipt             ID
+	SourceWitness             ID
 	OriginalAuditAvailability Knowledge
 }
 
@@ -322,9 +322,9 @@ type RepairStep struct {
 // change a reference, reopen admission, or release an UNKNOWN reservation.
 // A future writer must freshly authorize each step and revalidate expected state.
 type ReconciliationPlan struct {
-	Knowledge Knowledge
-	Result LookupResult
-	Steps []RepairStep
-	Outstanding []ID
+	Knowledge                  Knowledge
+	Result                     LookupResult
+	Steps                      []RepairStep
+	Outstanding                []ID
 	OriginalMutationAuthorized bool
 }
