@@ -1,0 +1,41 @@
+name: C10 scoped cloud preparation
+on:
+  push:
+    branches: [codex/c10-registry-read-contracts-20261110]
+permissions:
+  contents: read
+env:
+  GOTOOLCHAIN: local
+  GOWORK: 'off'
+  GOFLAGS: -mod=readonly
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          cache: false
+          check-latest: false
+      - name: Format only the new C10 package and preserve formatted source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = go1.26.5
+          gofmt -w internal/localexecutor/registry/*.go
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for p in sorted(Path('internal/localexecutor/registry').glob('*.go')):
+              print(json.dumps({'c10_formatted_source':str(p),'content':p.read_text()},ensure_ascii=True))
+          PY
+      - name: Run only new registry unit tests
+        run: go test -count=1 -v ./internal/localexecutor/registry
+      - name: Vet only new registry package
+        run: go vet ./internal/localexecutor/registry
+      - name: Check unchanged module files
+        run: git diff --exit-code -- go.mod go.sum
