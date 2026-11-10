@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    branches-ignore: [v3-dev]
+    tags: ['**']
   pull_request:
+    branches-ignore: [v3-dev]
   workflow_dispatch:
 
 permissions:
@@ -19,11 +22,13 @@ env:
 
 jobs:
   source-maintainability:
+    if: github.ref != 'refs/heads/v3-dev'
     uses: ./.github/workflows/bundle9-source-maintainability.yml
     with:
       workflow-sha: ${{ github.workflow_sha }}
 
   go:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Go, boundaries, and cross-build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -167,6 +172,7 @@ jobs:
           retention-days: 14
 
   application-probes:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Five-service fresh application identity probes
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -214,6 +220,7 @@ jobs:
           retention-days: 14
 
   cross-service-probes:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Fresh application probe / ${{ matrix.service }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -365,6 +372,7 @@ jobs:
           retention-days: 14
 
   application-probe-denominator:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Cross-service application identity probes 5/5
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -387,6 +395,7 @@ jobs:
           test "${actual}" = "${expected}"
 
   replacement-integration:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Post-removal integration / exact Control Panel and Updater
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -509,6 +518,7 @@ jobs:
           retention-days: 14
 
   rollback-package:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Exact-SHA Updater rollback candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -542,6 +552,7 @@ jobs:
           retention-days: 14
 
   privileged-linux:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Required root, socket, peer, upgrade, and rollback suite
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -648,6 +659,7 @@ jobs:
           retention-days: 14
 
   installers:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Installer, upgrade, uninstall, preservation, and sandbox fixtures
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -788,6 +800,7 @@ jobs:
           retention-days: 14
 
   docker-fixture:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Required Docker bootstrap, service-update, and rollback suite
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -865,6 +878,7 @@ jobs:
           retention-days: 14
 
   software-update-integration:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Software update with CP ${{ matrix.control_panel_sha }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -906,6 +920,7 @@ jobs:
           retention-days: 14
 
   replacement-gate:
+    if: github.ref != 'refs/heads/v3-dev'
     name: Post-removal final integration gate
     runs-on: ubuntu-24.04
     timeout-minutes: 5

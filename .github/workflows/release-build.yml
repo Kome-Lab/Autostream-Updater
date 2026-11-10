@@ -43,6 +43,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Reject release tags from v3-only development commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git merge-base --is-ancestor "${GITHUB_SHA}" refs/remotes/origin/main || {
+            printf '%s\n' 'Release source must be reachable from v2 main; v3-only development commits cannot publish.' >&2
+            exit 1
+          }
       - name: Require immutable stable tag and absent release
         shell: bash
         env:
