@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches-ignore: [v3-dev, codex/c10-registry-read-contracts-20261110]
+    branches-ignore: [v3-dev, codex/c10-registry-read-contracts-20261110, codex/c10-sqlite-read-20261111]
     tags: ['**']
   pull_request:
     branches-ignore: [v3-dev]

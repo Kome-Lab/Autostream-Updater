@@ -1,0 +1,40 @@
+name: C10 SQLite scoped preparation
+on:
+  push:
+    branches: [codex/c10-sqlite-read-20261111]
+permissions:
+  contents: read
+env:
+  GOTOOLCHAIN: local
+  GOWORK: 'off'
+  GOMAXPROCS: '2'
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          cache: false
+          check-latest: false
+      - name: Acquire exact selected driver dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = go1.26.5
+          go get modernc.org/sqlite@v1.62.0
+          go mod download
+      - name: Preserve module state only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ['go.mod','go.sum']:
+              print(json.dumps({'sqlite_prepared_file':name,'content':Path(name).read_text()}))
+          PY
+          go list -m modernc.org/sqlite modernc.org/libc golang.org/x/sys
