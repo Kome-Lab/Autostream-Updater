@@ -11,7 +11,7 @@ env:
 jobs:
   prepare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -21,20 +21,25 @@ jobs:
           go-version: '1.26.5'
           cache: false
           check-latest: false
-      - name: Acquire exact selected driver dependencies
+      - name: Tidy selected driver graph and format new source
         shell: bash
         run: |
           set -euo pipefail
           test "$(go env GOVERSION)" = go1.26.5
-          go get modernc.org/sqlite@v1.62.0
-          go mod download
-      - name: Preserve module state only
-        shell: bash
-        run: |
+          go mod tidy
+          gofmt -w internal/localexecutor/registry/sqlite*.go
           python3 - <<'PY'
           import json
           from pathlib import Path
-          for name in ['go.mod','go.sum']:
-              print(json.dumps({'sqlite_prepared_file':name,'content':Path(name).read_text()}))
+          paths=[Path('go.mod'),Path('go.sum')]+sorted(Path('internal/localexecutor/registry').glob('sqlite*.go'))
+          for p in paths:
+              print(json.dumps({'sqlite_prepared_file':str(p),'content':p.read_text()},ensure_ascii=True))
           PY
-          go list -m modernc.org/sqlite modernc.org/libc golang.org/x/sys
+          go list -m modernc.org/sqlite modernc.org/libc golang.org/x/sys golang.org/x/mod golang.org/x/sync
+      - name: Test only new SQLite read adapter without CGO
+        shell: bash
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go test -p 1 -count=1 -v -run '^TestSQLite' ./internal/localexecutor/registry
+      - name: Vet new registry package
+        run: CGO_ENABLED=0 go vet ./internal/localexecutor/registry

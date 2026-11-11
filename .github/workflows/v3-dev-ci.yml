@@ -61,5 +61,15 @@ jobs:
         run: go vet -p 1 ./...
       - name: Build existing Go entrypoints
         run: go build -p 1 ./cmd/autostream-updater-agent ./cmd/autostream-local-executor
+      - name: Test SQLite read adapter without CGO
+        run: CGO_ENABLED=0 go test -p 1 -count=1 -run '^TestSQLite' ./internal/localexecutor/registry
+      - name: Cross-build CGO-free Linux entrypoints and registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" go build -p 1 -trimpath ./cmd/autostream-updater-agent ./cmd/autostream-local-executor
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" go test -p 1 -c ./internal/localexecutor/registry -o "${RUNNER_TEMP}/registry-linux-${arch}.test"
+          done
       - name: Verify module files unchanged
         run: git diff --exit-code -- go.mod go.sum
