@@ -20,7 +20,7 @@ const RegistryDatabaseName = "registry.sqlite3"
 // SQLiteReadConfig is trusted installation configuration, never a request field.
 // There is no caller-supplied DSN, URI, SQL, PRAGMA, or arbitrary file basename.
 type SQLiteReadConfig struct {
-	Directory string
+	Directory    string
 	DatabaseName string
 }
 
@@ -35,16 +35,16 @@ var ErrSQLiteClosed = errors.New("registry_sqlite_closed")
 // The package lease catches duplicate adapters/hard links only; it does not prove
 // Host-wide actor exclusion or discover handles owned by other libraries.
 type SQLiteReadPort struct {
-	lifecycle sync.Mutex
+	lifecycle   sync.Mutex
 	activeReads sync.WaitGroup
-	header *os.File
-	lease *sqliteReadLease
-	db *sql.DB
-	path string
-	identity os.FileInfo
-	closed atomic.Bool
-	closeOnce sync.Once
-	closeErr error
+	header      *os.File
+	lease       *sqliteReadLease
+	db          *sql.DB
+	path        string
+	identity    os.FileInfo
+	closed      atomic.Bool
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 var _ ReadPort = (*SQLiteReadPort)(nil)
@@ -54,9 +54,9 @@ var _ ReadPort = (*SQLiteReadPort)(nil)
 // connection; Conn.Close waits for that release before our public call returns.
 type sqliteReadTx struct {
 	*sql.Tx
-	conn *sql.Conn
+	conn        *sql.Conn
 	releaseOnce sync.Once
-	releaseErr error
+	releaseErr  error
 }
 
 func (tx *sqliteReadTx) release() error {
@@ -158,10 +158,10 @@ func OpenSQLiteReadPort(ctx context.Context, config SQLiteReadConfig) (*SQLiteRe
 		return nil, err
 	}
 	parameters := url.Values{
-		"mode": {"ro"},
+		"mode":        {"ro"},
 		"_query_only": {"1"},
-		"_pragma": {"trusted_schema(0)"},
-		"_defensive": {"1"},
+		"_pragma":     {"trusted_schema(0)"},
+		"_defensive":  {"1"},
 	}
 	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String() + "?" + parameters.Encode()
 	connector, err := sqlite.NewConnector(uri)
@@ -462,9 +462,9 @@ func (p *SQLiteReadPort) ReadExecution(ctx context.Context, request Request) (Ex
 	result := ExecutionSnapshot{
 		Backend: BackendObservation{Knowledge: Unknown},
 		Current: readUnknownActive(request.Command.Scope),
-		Ledger: Projection{Knowledge: Unknown},
-		Report: Projection{Knowledge: Unknown},
-		Audit: Projection{Knowledge: Unknown},
+		Ledger:  Projection{Knowledge: Unknown},
+		Report:  Projection{Knowledge: Unknown},
+		Audit:   Projection{Knowledge: Unknown},
 	}
 	if err := p.admitRead(ctx); err != nil {
 		return result, err

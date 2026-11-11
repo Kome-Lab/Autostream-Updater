@@ -23,10 +23,10 @@ import (
 // is used. These helpers are not part of the product read-port interface.
 type sqliteTestFixture struct {
 	directory string
-	path string
-	writer *sql.DB
-	request Request
-	snapshot ExecutionSnapshot
+	path      string
+	writer    *sql.DB
+	request   Request
+	snapshot  ExecutionSnapshot
 }
 
 func sqliteTestJSON(t *testing.T, value any) string {
@@ -110,8 +110,8 @@ func sqliteTestProjection(t *testing.T, fixture sqliteTestFixture, boundary Boun
 }
 
 type sqliteTestFileState struct {
-	Digest [32]byte
-	Size int64
+	Digest   [32]byte
+	Size     int64
 	Modified time.Time
 }
 
@@ -140,7 +140,6 @@ func sqliteTestFiles(t *testing.T, directory string) map[string]sqliteTestFileSt
 	return files
 }
 
-
 type sqliteTestWriterEvent struct {
 	Event string
 	Count int
@@ -148,19 +147,19 @@ type sqliteTestWriterEvent struct {
 
 type sqliteTestWriter struct {
 	command *exec.Cmd
-	input io.WriteCloser
-	events chan sqliteTestWriterEvent
+	input   io.WriteCloser
+	events  chan sqliteTestWriterEvent
 	context context.Context
-	last sqliteTestWriterEvent
-	waited bool
-	stderr bytes.Buffer
+	last    sqliteTestWriterEvent
+	waited  bool
+	stderr  bytes.Buffer
 }
 
 func sqliteTestStartWriter(t *testing.T, ctx context.Context, path, action string) *sqliteTestWriter {
 	t.Helper()
 	child := &sqliteTestWriter{
 		command: exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSQLiteWriterProcess$", "-test.v"),
-		events: make(chan sqliteTestWriterEvent, 64),
+		events:  make(chan sqliteTestWriterEvent, 64),
 		context: ctx,
 	}
 	// Explicit synthetic values only; do not inherit CI credentials or env.
