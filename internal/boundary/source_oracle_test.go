@@ -31,6 +31,7 @@ func TestProductionSourceBoundary(t *testing.T) {
 
 	forbidden := []string{
 		`"database` + `/sql"`,
+		`"modernc.org/` + `sqlite"`,
 		`github.com/go-sql-driver` + `/mysql`,
 		`autostream-control-panel` + `/internal`,
 		`golang.org/x/crypto` + `/ssh`,
@@ -41,6 +42,17 @@ func TestProductionSourceBoundary(t *testing.T) {
 		`/bin/` + `sh`,
 		`/bin/` + `bash`,
 		`"sh", "` + `-c"`,
+	}
+	// SQL is restricted to the new registry adapter and its explicit schema helper.
+	// Commands, control-plane clients and host runtime remain DB-independent.
+	allowedMarkers := map[string]map[string]bool{
+		"\"database/sql\"": {
+			"internal/localexecutor/registry/sqlite_read.go":   true,
+			"internal/localexecutor/registry/sqlite_schema.go": true,
+		},
+		"\"modernc.org/sqlite\"": {
+			"internal/localexecutor/registry/sqlite_read.go": true,
+		},
 	}
 	callerCounts := map[string]int{
 		// Run, recover-update, and four closed software recovery/inspection entries.
@@ -70,8 +82,13 @@ func TestProductionSourceBoundary(t *testing.T) {
 			if err != nil {
 				return err
 			}
+			relative, err := filepath.Rel(repositoryRoot, path)
+			if err != nil {
+				return err
+			}
+			relative = filepath.ToSlash(relative)
 			for _, marker := range forbidden {
-				if bytes.Contains(data, []byte(marker)) {
+				if bytes.Contains(data, []byte(marker)) && !allowedMarkers[marker][relative] {
 					t.Errorf("forbidden production marker %q in %s", marker, path)
 				}
 			}

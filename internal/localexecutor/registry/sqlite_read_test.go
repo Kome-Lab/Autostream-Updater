@@ -880,6 +880,12 @@ func TestSQLiteReadTransactionPinsSnapshotUntilReaderFinishes(t *testing.T) {
 	if err := readTx.QueryRowContext(ctx, "SELECT evidence_json FROM resources").Scan(&rawEvidence); err != nil {
 		t.Fatal(err)
 	}
+	// Exercise a second successful pooled read while the first transaction is
+	// pinned. Any per-read raw descriptor Close would drop its POSIX lock.
+	active, err := port.ReadActiveReference(ctx, fixture.request.Command.Scope)
+	if err != nil || active.Knowledge != Known {
+		t.Fatalf("second pooled read failed: %#v %v", active, err)
+	}
 	child := sqliteTestStartWriter(t, ctx, fixture.path, "pin")
 	child.next(t, "ready")
 	child.send(t, "begin")
@@ -932,12 +938,6 @@ func TestSQLiteDuplicateAndHardlinkOpenCannotDropAnotherReadLock(t *testing.T) {
 			if err := readTx.QueryRowContext(ctx, "SELECT evidence_json FROM resources").Scan(&value); err != nil {
 				t.Fatal(err)
 			}
-			child := sqliteTestStartWriter(t, ctx, fixture.path, "pin")
-			child.next(t, "ready")
-			child.send(t, "begin")
-			child.next(t, "staged")
-			child.send(t, "try_commit")
-			child.next(t, "busy")
 			directory := fixture.directory
 			if alias {
 				directory = t.TempDir()
@@ -952,6 +952,12 @@ func TestSQLiteDuplicateAndHardlinkOpenCannotDropAnotherReadLock(t *testing.T) {
 			if err == nil {
 				t.Fatal("second owner of same database inode admitted")
 			}
+			// No child writer or journal exists until after this rejection, so
+			// only the ownership path can reject without dropping the first lock.
+			child := sqliteTestStartWriter(t, ctx, fixture.path, "pin")
+			child.next(t, "ready")
+			child.send(t, "begin")
+			child.next(t, "staged")
 			child.send(t, "try_commit")
 			child.next(t, "busy")
 			if err := readTx.Rollback(); err != nil {
