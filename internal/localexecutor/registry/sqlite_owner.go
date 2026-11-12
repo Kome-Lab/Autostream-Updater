@@ -83,17 +83,17 @@ type registryLifecycleOwner struct {
 	unresolvedConnections int64
 	roleTrackingInvalid   bool
 
-    // Both role pools belong solely to this owner. Writer is opt-in/lazy;
-    // it never gets another Header FD, inode lease or independent Close.
-    writerConfigured bool
-    writePool registryConnectionPool
-    writePoolCloseStarted bool
-    writePoolReleased bool
-    writeOperations int64
-    writeConnections int64
-    writeTransactions int64
-    writeUnresolvedConnections int64
-    writeUnknownOutcomes int64
+	// Both role pools belong solely to this owner. Writer is opt-in/lazy;
+	// it never gets another Header FD, inode lease or independent Close.
+	writerConfigured           bool
+	writePool                  registryConnectionPool
+	writePoolCloseStarted      bool
+	writePoolReleased          bool
+	writeOperations            int64
+	writeConnections           int64
+	writeTransactions          int64
+	writeUnresolvedConnections int64
+	writeUnknownOutcomes       int64
 }
 
 // registryOperation is a counted, role-bound borrow. Public Read borrows cover
@@ -121,14 +121,14 @@ func (owner *registryLifecycleOwner) acquire(ctx context.Context) (*registryOper
 // is never independently owned by an adapter. Uncertain releases retain their
 // association after the active borrow ends; Close must not drop the inode lease.
 type registryOperationRecord struct {
-	role       registryConnectionRole
-	kind       registryOperationKind
-	active     bool
-	conn       *sql.Conn
-	tx         *sql.Tx
-	releasing  bool
-	unresolved bool
-    outcomeUnknown bool
+	role           registryConnectionRole
+	kind           registryOperationKind
+	active         bool
+	conn           *sql.Conn
+	tx             *sql.Tx
+	releasing      bool
+	unresolved     bool
+	outcomeUnknown bool
 }
 
 // sqliteReadTx owns an independent operation borrow as well as its sql.Conn.
@@ -497,8 +497,8 @@ func (owner *registryLifecycleOwner) Close() error {
 		owner.drainFinished = true
 		if owner.roleTrackingInvalid || owner.readOperations != 0 || owner.readConnections != 0 ||
 			owner.readTransactions != 0 || owner.unresolvedConnections != 0 ||
-            owner.writeOperations != 0 || owner.writeConnections != 0 || owner.writeTransactions != 0 ||
-            owner.writeUnresolvedConnections != 0 || owner.writeUnknownOutcomes != 0 || len(owner.operations) != 0 ||
+			owner.writeOperations != 0 || owner.writeConnections != 0 || owner.writeTransactions != 0 ||
+			owner.writeUnresolvedConnections != 0 || owner.writeUnknownOutcomes != 0 || len(owner.operations) != 0 ||
 			len(owner.connectionOwners) != 0 || len(owner.transactionOwners) != 0 {
 			owner.uncertain.Store(true)
 		}
@@ -508,26 +508,26 @@ func (owner *registryLifecycleOwner) Close() error {
 			owner.recordCloseError(fault(CodeUnavailable, "sqlite.close_uncertain"))
 			return
 		}
-        if owner.writePool != nil {
-            owner.gate.Lock()
-            owner.writePoolCloseStarted = true
-            owner.observationVersion++
-            owner.gate.Unlock()
-            if err := owner.writePool.Close(); err != nil {
-                owner.markUncertain()
-                owner.recordCloseError(fault(CodeUnavailable, "sqlite.writer_pool_close"))
-                return
-            }
-            if owner.writePool.Stats().OpenConnections != 0 {
-                owner.markUncertain()
-                owner.recordCloseError(fault(CodeUnavailable, "sqlite.writer_pool_pending"))
-                return
-            }
-            owner.gate.Lock()
-            owner.writePoolReleased = true
-            owner.observationVersion++
-            owner.gate.Unlock()
-        }
+		if owner.writePool != nil {
+			owner.gate.Lock()
+			owner.writePoolCloseStarted = true
+			owner.observationVersion++
+			owner.gate.Unlock()
+			if err := owner.writePool.Close(); err != nil {
+				owner.markUncertain()
+				owner.recordCloseError(fault(CodeUnavailable, "sqlite.writer_pool_close"))
+				return
+			}
+			if owner.writePool.Stats().OpenConnections != 0 {
+				owner.markUncertain()
+				owner.recordCloseError(fault(CodeUnavailable, "sqlite.writer_pool_pending"))
+				return
+			}
+			owner.gate.Lock()
+			owner.writePoolReleased = true
+			owner.observationVersion++
+			owner.gate.Unlock()
+		}
 		if owner.pool != nil {
 			owner.gate.Lock()
 			owner.poolCloseStarted = true
@@ -575,105 +575,129 @@ func (owner *registryLifecycleOwner) Close() error {
 }
 
 func (owner *registryLifecycleOwner) attachReadConnection(operation *registryOperation, conn *sql.Conn) error {
-    return owner.attachConnection(operation, conn, registryReadRole)
+	return owner.attachConnection(operation, conn, registryReadRole)
 }
 
 func (owner *registryLifecycleOwner) attachReadTransaction(operation *registryOperation, conn *sql.Conn, tx *sql.Tx) error {
-    return owner.attachTransaction(operation, conn, tx, registryReadRole)
+	return owner.attachTransaction(operation, conn, tx, registryReadRole)
 }
 
 func (owner *registryLifecycleOwner) releaseReadConnection(operation *registryOperation, conn *sql.Conn) error {
-    return owner.releaseConnection(operation, conn, registryReadRole)
+	return owner.releaseConnection(operation, conn, registryReadRole)
 }
 
 func registryTransactionKind(role registryConnectionRole, kind registryOperationKind) bool {
-    return role == registryReadRole && kind == registryReadTransaction ||
-        role == registryWriteRole && kind == registryWriteTransaction
+	return role == registryReadRole && kind == registryReadTransaction ||
+		role == registryWriteRole && kind == registryWriteTransaction
 }
 
 func (owner *registryLifecycleOwner) attachConnection(operation *registryOperation, conn *sql.Conn, role registryConnectionRole) error {
-    owner.gate.Lock()
-    defer owner.gate.Unlock()
-    record, ok := owner.roleRecordLocked(operation)
-    if !ok || record.role != role || !registryTransactionKind(role, record.kind) || conn == nil || record.conn != nil {
-        owner.invalidateRoleTrackingLocked()
-        return fault(CodeUnavailable, "sqlite.connection_owner")
-    }
-    if _, attached := owner.connectionOwners[conn]; attached {
-        owner.invalidateRoleTrackingLocked()
-        return fault(CodeUnavailable, "sqlite.connection_owner")
-    }
-    if owner.connectionOwners == nil { owner.connectionOwners = make(map[*sql.Conn]*registryOperation) }
-    owner.connectionOwners[conn] = operation
-    record.conn = conn
-    owner.operations[operation] = record
-    if role == registryReadRole { owner.readConnections++ } else { owner.writeConnections++ }
-    owner.observationVersion++
-    return nil
+	owner.gate.Lock()
+	defer owner.gate.Unlock()
+	record, ok := owner.roleRecordLocked(operation)
+	if !ok || record.role != role || !registryTransactionKind(role, record.kind) || conn == nil || record.conn != nil {
+		owner.invalidateRoleTrackingLocked()
+		return fault(CodeUnavailable, "sqlite.connection_owner")
+	}
+	if _, attached := owner.connectionOwners[conn]; attached {
+		owner.invalidateRoleTrackingLocked()
+		return fault(CodeUnavailable, "sqlite.connection_owner")
+	}
+	if owner.connectionOwners == nil {
+		owner.connectionOwners = make(map[*sql.Conn]*registryOperation)
+	}
+	owner.connectionOwners[conn] = operation
+	record.conn = conn
+	owner.operations[operation] = record
+	if role == registryReadRole {
+		owner.readConnections++
+	} else {
+		owner.writeConnections++
+	}
+	owner.observationVersion++
+	return nil
 }
 
 func (owner *registryLifecycleOwner) attachTransaction(operation *registryOperation, conn *sql.Conn, tx *sql.Tx, role registryConnectionRole) error {
-    owner.gate.Lock()
-    defer owner.gate.Unlock()
-    record, ok := owner.roleRecordLocked(operation)
-    if !ok || record.role != role || !registryTransactionKind(role, record.kind) || conn == nil ||
-        record.conn != conn || owner.connectionOwners[conn] != operation ||
-        tx == nil || record.tx != nil || record.releasing || record.unresolved {
-        owner.invalidateRoleTrackingLocked()
-        return fault(CodeUnavailable, "sqlite.transaction_owner")
-    }
-    if _, attached := owner.transactionOwners[tx]; attached {
-        owner.invalidateRoleTrackingLocked()
-        return fault(CodeUnavailable, "sqlite.transaction_owner")
-    }
-    if owner.transactionOwners == nil { owner.transactionOwners = make(map[*sql.Tx]*registryOperation) }
-    owner.transactionOwners[tx] = operation
-    record.tx = tx
-    owner.operations[operation] = record
-    if role == registryReadRole { owner.readTransactions++ } else { owner.writeTransactions++ }
-    owner.observationVersion++
-    return nil
+	owner.gate.Lock()
+	defer owner.gate.Unlock()
+	record, ok := owner.roleRecordLocked(operation)
+	if !ok || record.role != role || !registryTransactionKind(role, record.kind) || conn == nil ||
+		record.conn != conn || owner.connectionOwners[conn] != operation ||
+		tx == nil || record.tx != nil || record.releasing || record.unresolved {
+		owner.invalidateRoleTrackingLocked()
+		return fault(CodeUnavailable, "sqlite.transaction_owner")
+	}
+	if _, attached := owner.transactionOwners[tx]; attached {
+		owner.invalidateRoleTrackingLocked()
+		return fault(CodeUnavailable, "sqlite.transaction_owner")
+	}
+	if owner.transactionOwners == nil {
+		owner.transactionOwners = make(map[*sql.Tx]*registryOperation)
+	}
+	owner.transactionOwners[tx] = operation
+	record.tx = tx
+	owner.operations[operation] = record
+	if role == registryReadRole {
+		owner.readTransactions++
+	} else {
+		owner.writeTransactions++
+	}
+	owner.observationVersion++
+	return nil
 }
 
 // A successful Conn.Close proves only managed handle return; an ambiguous
 // Writer transaction is retained without calling this reusable-pool boundary.
 func (owner *registryLifecycleOwner) releaseConnection(operation *registryOperation, conn *sql.Conn, role registryConnectionRole) error {
-    owner.gate.Lock()
-    record, ok := owner.roleRecordLocked(operation)
-    if !ok || record.role != role || conn == nil || record.conn != conn ||
-        owner.connectionOwners[conn] != operation || record.releasing || record.unresolved || record.outcomeUnknown {
-        owner.invalidateRoleTrackingLocked()
-        owner.gate.Unlock()
-        return fault(CodeUnavailable, "sqlite.connection_owner")
-    }
-    record.releasing = true
-    owner.operations[operation] = record
-    owner.observationVersion++
-    owner.gate.Unlock()
+	owner.gate.Lock()
+	record, ok := owner.roleRecordLocked(operation)
+	if !ok || record.role != role || conn == nil || record.conn != conn ||
+		owner.connectionOwners[conn] != operation || record.releasing || record.unresolved || record.outcomeUnknown {
+		owner.invalidateRoleTrackingLocked()
+		owner.gate.Unlock()
+		return fault(CodeUnavailable, "sqlite.connection_owner")
+	}
+	record.releasing = true
+	owner.operations[operation] = record
+	owner.observationVersion++
+	owner.gate.Unlock()
 
-    err := conn.Close()
+	err := conn.Close()
 
-    owner.gate.Lock()
-    record = owner.operations[operation]
-    record.releasing = false
-    if err != nil {
-        record.unresolved = true
-        if role == registryReadRole { owner.unresolvedConnections++ } else { owner.writeUnresolvedConnections++ }
-        owner.uncertain.Store(true)
-    } else {
-        delete(owner.connectionOwners, conn)
-        record.conn = nil
-        if role == registryReadRole { owner.readConnections-- } else { owner.writeConnections-- }
-        if record.tx != nil {
-            delete(owner.transactionOwners, record.tx)
-            record.tx = nil
-            if role == registryReadRole { owner.readTransactions-- } else { owner.writeTransactions-- }
-        }
-    }
-    owner.operations[operation] = record
-    owner.observationVersion++
-    owner.gate.Unlock()
-    return err
+	owner.gate.Lock()
+	record = owner.operations[operation]
+	record.releasing = false
+	if err != nil {
+		record.unresolved = true
+		if role == registryReadRole {
+			owner.unresolvedConnections++
+		} else {
+			owner.writeUnresolvedConnections++
+		}
+		owner.uncertain.Store(true)
+	} else {
+		delete(owner.connectionOwners, conn)
+		record.conn = nil
+		if role == registryReadRole {
+			owner.readConnections--
+		} else {
+			owner.writeConnections--
+		}
+		if record.tx != nil {
+			delete(owner.transactionOwners, record.tx)
+			record.tx = nil
+			if role == registryReadRole {
+				owner.readTransactions--
+			} else {
+				owner.writeTransactions--
+			}
+		}
+	}
+	owner.operations[operation] = record
+	owner.observationVersion++
+	owner.gate.Unlock()
+	return err
 }
 
 // Writer connection profile is internal-only. Public Read construction never
@@ -681,209 +705,245 @@ func (owner *registryLifecycleOwner) releaseConnection(operation *registryOperat
 type sqliteWriteOutcome string
 
 const (
-    sqliteWriteActive sqliteWriteOutcome = "ACTIVE"
-    sqliteWriteCommitted sqliteWriteOutcome = "COMMITTED"
-    sqliteWriteRolledBack sqliteWriteOutcome = "ROLLED_BACK"
-    sqliteWriteUnknown sqliteWriteOutcome = "UNKNOWN"
+	sqliteWriteActive     sqliteWriteOutcome = "ACTIVE"
+	sqliteWriteCommitted  sqliteWriteOutcome = "COMMITTED"
+	sqliteWriteRolledBack sqliteWriteOutcome = "ROLLED_BACK"
+	sqliteWriteUnknown    sqliteWriteOutcome = "UNKNOWN"
 )
 
 // The Tx is deliberately not embedded. Future product mutations must use closed
 // typed operations; only synthetic package tests access tx directly.
 type sqliteWriteTx struct {
-    tx *sql.Tx
-    conn *sql.Conn
-    operation *registryOperation
-    context context.Context
-    finishMu sync.Mutex
-    outcome sqliteWriteOutcome
-    terminalErr error
-    done chan struct{}
+	tx          *sql.Tx
+	conn        *sql.Conn
+	operation   *registryOperation
+	context     context.Context
+	finishMu    sync.Mutex
+	outcome     sqliteWriteOutcome
+	terminalErr error
+	done        chan struct{}
 }
 
 func (tx *sqliteWriteTx) State() sqliteWriteOutcome {
-    if tx == nil { return sqliteWriteUnknown }
-    tx.finishMu.Lock()
-    defer tx.finishMu.Unlock()
-    return tx.outcome
+	if tx == nil {
+		return sqliteWriteUnknown
+	}
+	tx.finishMu.Lock()
+	defer tx.finishMu.Unlock()
+	return tx.outcome
 }
 
 // Unknown is sticky. Returning a sql.Conn to its pool cannot establish the
 // outcome or cleanup of an ambiguous transaction, so keep its concrete handle
 // and ownership duty. No Commit retry or adapter rollback/repair is attempted.
 func (tx *sqliteWriteTx) unknownLocked() error {
-    tx.outcome = sqliteWriteUnknown
-    tx.terminalErr = fault(CodeUnavailable, "sqlite.write_outcome_unknown")
-    tx.operation.owner.noteWriteOutcomeUnknown(tx.operation)
-    tx.operation.release()
-    close(tx.done)
-    return tx.terminalErr
+	tx.outcome = sqliteWriteUnknown
+	tx.terminalErr = fault(CodeUnavailable, "sqlite.write_outcome_unknown")
+	tx.operation.owner.noteWriteOutcomeUnknown(tx.operation)
+	tx.operation.release()
+	close(tx.done)
+	return tx.terminalErr
 }
 
 func (tx *sqliteWriteTx) finishKnownLocked(outcome sqliteWriteOutcome) error {
-    tx.outcome = outcome
-    if err := tx.operation.owner.releaseConnection(tx.operation, tx.conn, registryWriteRole); err != nil {
-        // SQL outcome stays known even when physical ownership return is not.
-        tx.terminalErr = fault(CodeUnavailable, "sqlite.write_release_unknown")
-    }
-    tx.operation.release()
-    close(tx.done)
-    return tx.terminalErr
+	tx.outcome = outcome
+	if err := tx.operation.owner.releaseConnection(tx.operation, tx.conn, registryWriteRole); err != nil {
+		// SQL outcome stays known even when physical ownership return is not.
+		tx.terminalErr = fault(CodeUnavailable, "sqlite.write_release_unknown")
+	}
+	tx.operation.release()
+	close(tx.done)
+	return tx.terminalErr
 }
 
 func (tx *sqliteWriteTx) Commit() error {
-    if tx == nil { return fault(CodeUnavailable, "sqlite.write_transaction") }
-    tx.finishMu.Lock()
-    defer tx.finishMu.Unlock()
-    switch tx.outcome {
-    case sqliteWriteCommitted, sqliteWriteUnknown:
-        return tx.terminalErr
-    case sqliteWriteRolledBack:
-        return fault(CodeUnavailable, "sqlite.write_already_rolled_back")
-    }
-    if tx.context.Err() != nil { return tx.unknownLocked() }
-    if err := tx.tx.Commit(); err != nil { return tx.unknownLocked() }
-    return tx.finishKnownLocked(sqliteWriteCommitted)
+	if tx == nil {
+		return fault(CodeUnavailable, "sqlite.write_transaction")
+	}
+	tx.finishMu.Lock()
+	defer tx.finishMu.Unlock()
+	switch tx.outcome {
+	case sqliteWriteCommitted, sqliteWriteUnknown:
+		return tx.terminalErr
+	case sqliteWriteRolledBack:
+		return fault(CodeUnavailable, "sqlite.write_already_rolled_back")
+	}
+	if tx.context.Err() != nil {
+		return tx.unknownLocked()
+	}
+	if err := tx.tx.Commit(); err != nil {
+		return tx.unknownLocked()
+	}
+	return tx.finishKnownLocked(sqliteWriteCommitted)
 }
 
 func (tx *sqliteWriteTx) Rollback() error {
-    if tx == nil { return fault(CodeUnavailable, "sqlite.write_transaction") }
-    tx.finishMu.Lock()
-    defer tx.finishMu.Unlock()
-    switch tx.outcome {
-    case sqliteWriteRolledBack, sqliteWriteUnknown:
-        return tx.terminalErr
-    case sqliteWriteCommitted:
-        return fault(CodeUnavailable, "sqlite.write_already_committed")
-    }
-    if tx.context.Err() != nil { return tx.unknownLocked() }
-    if err := tx.tx.Rollback(); err != nil { return tx.unknownLocked() }
-    return tx.finishKnownLocked(sqliteWriteRolledBack)
+	if tx == nil {
+		return fault(CodeUnavailable, "sqlite.write_transaction")
+	}
+	tx.finishMu.Lock()
+	defer tx.finishMu.Unlock()
+	switch tx.outcome {
+	case sqliteWriteRolledBack, sqliteWriteUnknown:
+		return tx.terminalErr
+	case sqliteWriteCommitted:
+		return fault(CodeUnavailable, "sqlite.write_already_committed")
+	}
+	if tx.context.Err() != nil {
+		return tx.unknownLocked()
+	}
+	if err := tx.tx.Rollback(); err != nil {
+		return tx.unknownLocked()
+	}
+	return tx.finishKnownLocked(sqliteWriteRolledBack)
 }
 
 func (tx *sqliteWriteTx) watchContext() {
-    select {
-    case <-tx.done:
-        return
-    case <-tx.context.Done():
-        tx.finishMu.Lock()
-        if tx.outcome == sqliteWriteActive {
-            // database/sql has its own asynchronous rollback path. Its return
-            // and driver cleanup are not a result proof available here.
-            _ = tx.unknownLocked()
-        }
-        tx.finishMu.Unlock()
-    }
+	select {
+	case <-tx.done:
+		return
+	case <-tx.context.Done():
+		tx.finishMu.Lock()
+		if tx.outcome == sqliteWriteActive {
+			// database/sql has its own asynchronous rollback path. Its return
+			// and driver cleanup are not a result proof available here.
+			_ = tx.unknownLocked()
+		}
+		tx.finishMu.Unlock()
+	}
 }
 
 func (owner *registryLifecycleOwner) writerPoolFor(operation *registryOperation) (registryConnectionPool, error) {
-    owner.gate.Lock()
-    record, ok := owner.roleRecordLocked(operation)
-    if !ok || record.role != registryWriteRole || record.kind != registryWriteTransaction ||
-        !owner.writerConfigured || owner.uncertain.Load() {
-        owner.gate.Unlock()
-        return nil, fault(CodeUnavailable, "sqlite.write_profile")
-    }
-    pool := owner.writePool
-    owner.gate.Unlock()
-    if pool != nil { return pool, nil }
+	owner.gate.Lock()
+	record, ok := owner.roleRecordLocked(operation)
+	if !ok || record.role != registryWriteRole || record.kind != registryWriteTransaction ||
+		!owner.writerConfigured || owner.uncertain.Load() {
+		owner.gate.Unlock()
+		return nil, fault(CodeUnavailable, "sqlite.write_profile")
+	}
+	pool := owner.writePool
+	owner.gate.Unlock()
+	if pool != nil {
+		return pool, nil
+	}
 
-    // A fixed role connector is required: toggling a borrowed read-only
-    // connection would destroy the Read profile. Both pools have ONE lifecycle
-    // owner, retained Header FD and inode lease, and use the same package driver.
-    // mode=rw never creates a missing DB; journal mode is validated, not changed.
-    parameters := url.Values{
-        "mode": {"rw"},
-        "_query_only": {"0"},
-        "_pragma": {"trusted_schema(0)"},
-        "_defensive": {"1"},
-        "_txlock": {"immediate"},
-    }
-    uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(owner.path)}).String() + "?" + parameters.Encode()
-    connector, err := sqlite.NewConnector(uri)
-    if err != nil { return nil, fault(CodeUnavailable, "sqlite.write_connector") }
-    created := sql.OpenDB(connector)
-    created.SetMaxOpenConns(1)
-    created.SetMaxIdleConns(1)
-    // Only one admitted Writer can reach this point. No Reader or other actor
-    // owns this pool or its Close responsibility.
-    owner.gate.Lock()
-    owner.writePool = created
-    owner.observationVersion++
-    owner.gate.Unlock()
-    return created, nil
+	// A fixed role connector is required: toggling a borrowed read-only
+	// connection would destroy the Read profile. Both pools have ONE lifecycle
+	// owner, retained Header FD and inode lease, and use the same package driver.
+	// mode=rw never creates a missing DB; journal mode is validated, not changed.
+	parameters := url.Values{
+		"mode":        {"rw"},
+		"_query_only": {"0"},
+		"_pragma":     {"trusted_schema(0)"},
+		"_defensive":  {"1"},
+		"_txlock":     {"immediate"},
+	}
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(owner.path)}).String() + "?" + parameters.Encode()
+	connector, err := sqlite.NewConnector(uri)
+	if err != nil {
+		return nil, fault(CodeUnavailable, "sqlite.write_connector")
+	}
+	created := sql.OpenDB(connector)
+	created.SetMaxOpenConns(1)
+	created.SetMaxIdleConns(1)
+	// Only one admitted Writer can reach this point. No Reader or other actor
+	// owns this pool or its Close responsibility.
+	owner.gate.Lock()
+	owner.writePool = created
+	owner.observationVersion++
+	owner.gate.Unlock()
+	return created, nil
 }
 
 func (owner *registryLifecycleOwner) beginWrite(ctx context.Context) (*sqliteWriteTx, error) {
-    operation, err := owner.acquireRole(ctx, registryWriteRole, registryWriteTransaction)
-    if err != nil { return nil, err }
-    keepOperation := false
-    defer func() { if !keepOperation { operation.release() } }()
-    if err := owner.checkLocation(); err != nil { return nil, err }
-    pool, err := owner.writerPoolFor(operation)
-    if err != nil { return nil, err }
-    conn, err := pool.Conn(ctx)
-    if err != nil { return nil, owner.readError(ctx, err, "sqlite.write_connection") }
-    if err := owner.attachConnection(operation, conn, registryWriteRole); err != nil {
-        return nil, err // unknown/foreign ownership cannot authorize a Close
-    }
-    if err := ctx.Err(); err != nil {
-        _ = owner.releaseConnection(operation, conn, registryWriteRole)
-        return nil, err
-    }
-    if owner.uncertain.Load() {
-        _ = owner.releaseConnection(operation, conn, registryWriteRole)
-        return nil, fault(CodeUnavailable, "sqlite.lifecycle_uncertain")
-    }
-    transaction, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: false})
-    if err != nil {
-        var driverError *sqlite.Error
-        if errors.As(err, &driverError) && driverError.Code()&0xff == 5 {
-            // A failed BEGIN IMMEDIATE with SQLITE_BUSY is a qualified
-            // no-transaction rejection. There is no automatic admission retry.
-            _ = owner.releaseConnection(operation, conn, registryWriteRole)
-            return nil, fault(CodeUnavailable, "sqlite.write_busy")
-        }
-        // Other Begin failures may lack a complete start/cleanup proof. Keep
-        // the Conn even though database/sql supplied no Tx object.
-        owner.noteWriteOutcomeUnknown(operation)
-        return nil, owner.readError(ctx, err, "sqlite.write_begin_unknown")
-    }
-    if err := owner.attachTransaction(operation, conn, transaction, registryWriteRole); err != nil {
-        if rollbackErr := transaction.Rollback(); rollbackErr != nil {
-            owner.noteWriteOutcomeUnknown(operation)
-        } else {
-            _ = owner.releaseConnection(operation, conn, registryWriteRole)
-        }
-        return nil, err
-    }
-    tx := &sqliteWriteTx{
-        tx: transaction, conn: conn, operation: operation, context: ctx,
-        outcome: sqliteWriteActive, done: make(chan struct{}),
-    }
-    // From now on the concrete transaction owns the borrow even when profile
-    // or schema validation fails. Its terminal path preserves ambiguity.
-    keepOperation = true
-    valid := false
-    defer func() { if !valid { _ = tx.Rollback() } }()
-    var queryOnly, trustedSchema int
-    var journal string
-    if err := transaction.QueryRowContext(ctx, "PRAGMA query_only").Scan(&queryOnly); err != nil {
-        return nil, owner.readError(ctx, err, "sqlite.write_query_only")
-    }
-    if err := transaction.QueryRowContext(ctx, "PRAGMA trusted_schema").Scan(&trustedSchema); err != nil {
-        return nil, owner.readError(ctx, err, "sqlite.write_trusted_schema")
-    }
-    if err := transaction.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
-        return nil, owner.readError(ctx, err, "sqlite.write_journal")
-    }
-    if queryOnly != 0 || trustedSchema != 0 || strings.ToLower(journal) != "delete" {
-        return nil, invalid("sqlite.write_profile")
-    }
-    if err := validateSQLiteSchema(ctx, transaction); err != nil {
-        if ctx.Err() != nil { return nil, ctx.Err() }
-        return nil, err
-    }
-    valid = true
-    go tx.watchContext()
-    return tx, nil
+	operation, err := owner.acquireRole(ctx, registryWriteRole, registryWriteTransaction)
+	if err != nil {
+		return nil, err
+	}
+	keepOperation := false
+	defer func() {
+		if !keepOperation {
+			operation.release()
+		}
+	}()
+	if err := owner.checkLocation(); err != nil {
+		return nil, err
+	}
+	pool, err := owner.writerPoolFor(operation)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pool.Conn(ctx)
+	if err != nil {
+		return nil, owner.readError(ctx, err, "sqlite.write_connection")
+	}
+	if err := owner.attachConnection(operation, conn, registryWriteRole); err != nil {
+		return nil, err // unknown/foreign ownership cannot authorize a Close
+	}
+	if err := ctx.Err(); err != nil {
+		_ = owner.releaseConnection(operation, conn, registryWriteRole)
+		return nil, err
+	}
+	if owner.uncertain.Load() {
+		_ = owner.releaseConnection(operation, conn, registryWriteRole)
+		return nil, fault(CodeUnavailable, "sqlite.lifecycle_uncertain")
+	}
+	transaction, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	if err != nil {
+		var driverError *sqlite.Error
+		if errors.As(err, &driverError) && driverError.Code()&0xff == 5 {
+			// A failed BEGIN IMMEDIATE with SQLITE_BUSY is a qualified
+			// no-transaction rejection. There is no automatic admission retry.
+			_ = owner.releaseConnection(operation, conn, registryWriteRole)
+			return nil, fault(CodeUnavailable, "sqlite.write_busy")
+		}
+		// Other Begin failures may lack a complete start/cleanup proof. Keep
+		// the Conn even though database/sql supplied no Tx object.
+		owner.noteWriteOutcomeUnknown(operation)
+		return nil, owner.readError(ctx, err, "sqlite.write_begin_unknown")
+	}
+	if err := owner.attachTransaction(operation, conn, transaction, registryWriteRole); err != nil {
+		if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+			owner.noteWriteOutcomeUnknown(operation)
+		} else {
+			_ = owner.releaseConnection(operation, conn, registryWriteRole)
+		}
+		return nil, err
+	}
+	tx := &sqliteWriteTx{
+		tx: transaction, conn: conn, operation: operation, context: ctx,
+		outcome: sqliteWriteActive, done: make(chan struct{}),
+	}
+	// From now on the concrete transaction owns the borrow even when profile
+	// or schema validation fails. Its terminal path preserves ambiguity.
+	keepOperation = true
+	valid := false
+	defer func() {
+		if !valid {
+			_ = tx.Rollback()
+		}
+	}()
+	var queryOnly, trustedSchema int
+	var journal string
+	if err := transaction.QueryRowContext(ctx, "PRAGMA query_only").Scan(&queryOnly); err != nil {
+		return nil, owner.readError(ctx, err, "sqlite.write_query_only")
+	}
+	if err := transaction.QueryRowContext(ctx, "PRAGMA trusted_schema").Scan(&trustedSchema); err != nil {
+		return nil, owner.readError(ctx, err, "sqlite.write_trusted_schema")
+	}
+	if err := transaction.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
+		return nil, owner.readError(ctx, err, "sqlite.write_journal")
+	}
+	if queryOnly != 0 || trustedSchema != 0 || strings.ToLower(journal) != "delete" {
+		return nil, invalid("sqlite.write_profile")
+	}
+	if err := validateSQLiteSchema(ctx, transaction); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
+	valid = true
+	go tx.watchContext()
+	return tx, nil
 }

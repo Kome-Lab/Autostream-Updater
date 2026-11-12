@@ -494,3 +494,10 @@ releasing resources while that call is unresolved. Cancellation before Begin is
 separate from cancellation after an accepted transaction. The latter remains
 UNKNOWN until independently reconciled; no reconciliation or force-release API
 is supplied by this increment.
+
+The transaction context controls local SQL I/O/cancellation; it is not the
+adopted P-A D1 guard-decision deadline. No D1, Drain Proof, final Fence, business
+authorization, execution binding or durable Backend Receipt is implemented by
+beginWrite/Commit. A future typed conditional commit must keep those contracts
+separate; a context deadline is not proof that the D1 decision occurred and is
+not a substitute for D1's allowance for a later commit in the same transaction.
