@@ -79,6 +79,8 @@ type PreflightGuardObservation struct {
 	Drain             PreflightDrainState
 	DrainSeal         ID
 	Proof             ID
+	// SourceEvidence is internal post-transport data, never a selected wire/token format.
+	SourceEvidence    *GuardEvidenceBundle
 }
 
 type PreflightGuardReadPort interface {
@@ -274,6 +276,7 @@ func (p *ConditionalCommitPreflight) Check(ctx context.Context, query LookupRequ
 		result.Reason = "guard_unavailable"
 		return result, nil
 	}
+	observedGuard = clonePreflightGuardObservation(observedGuard)
 	status, reason = p.checkGuard(ctx, request, raw, observedGuard)
 	if status != PreflightEligible {
 		result.Status, result.Reason = status, reason
@@ -517,7 +520,7 @@ func (p *ConditionalCommitPreflight) checkGuard(ctx context.Context, request Req
 	if validateID(observed.Proof, "preflight.guard_proof") != nil {
 		return PreflightUnknown, "guard_proof_missing"
 	}
-	if p.verifier.VerifyPreflightGuard(ctx, request, clonePreflightSnapshot(raw), observed) != nil {
+	if p.verifier.VerifyPreflightGuard(ctx, request, clonePreflightSnapshot(raw), clonePreflightGuardObservation(observed)) != nil {
 		return PreflightUnknown, "guard_unverified"
 	}
 	conditions := []struct {
@@ -704,4 +707,12 @@ func clonePreflightContinuity(observed PreflightContinuityObservation) Preflight
 		result.Witness = &value
 	}
 	return result
+}
+
+func clonePreflightGuardObservation(observed PreflightGuardObservation) PreflightGuardObservation {
+	if observed.SourceEvidence != nil {
+		bundle := cloneGuardEvidenceBundle(*observed.SourceEvidence)
+		observed.SourceEvidence = &bundle
+	}
+	return observed
 }

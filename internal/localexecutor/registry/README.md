@@ -593,3 +593,117 @@ clocks and native ARM64 execution remain unproven. Product-wide acceptance is
 NOT_RUN; Phase 1 closure remains on hold; production migration is unauthorized;
 formal v2 return is NOT_CERTIFIED. Preservation, manual holds, old-authority
 nonreuse and UNKNOWN/HELD constraints remain unchanged.
+
+
+## Guard evidence connection boundary
+
+This increment adds a typed internal Guard evidence adapter and a fixed local OS
+identity reader. It does **not** establish a working v3 CP issuer, Agent delivery,
+key/trust implementation, evidence clock or real independent Continuity service.
+The adapter is unconnected by default and fails closed. Synthetic tests of the
+adapter are not evidence that an absent product producer has been implemented.
+
+### Source ownership findings (fixed source)
+
+The component labels C03/CP, C09/Agent and C10/Executor below follow the task's
+responsibility labels; they do not replace the F1 Component Register.
+
+| Evidence | Existing source and owner | v3 P-A availability |
+| --- | --- | --- |
+| CP Authorization | CP `65a601fc9d4f15c93083e9be4ab9e71586fdba69`, `internal/httpapi/system_update_v2_adapter.go:90` and `system_update_v2_grants.go:14/111`; Updater `internal/controlplane/client.go:42/121/156` | Existing v2 lease/grant only; no v3 P-A issuer/read route connected |
+| Policy | CP `internal/store/updater_policy.go:31`; Updater `internal/hostruntime/host_pull_panel.go:137`, `local_executor_policy.go:74` | Existing v2 source/projection/executor revisions; not current v3 Policy/Barrier proof |
+| Trust | Registry `Guard.Trust` | Internal contract and test doubles; issuer/effective trust reader unimplemented |
+| Domain Membership | Registry `Guard.Membership` | Internal contract and test doubles; closure/membership producer unimplemented |
+| Ownership/Fence | CP lease fence from job ownership epoch; Updater `local_executor_mutation.go:228` | Existing v2 typed mutation checks; not v3 P-A authority |
+| Boot | New fixed local identity reader | Raw Linux boot UUID observation only; no remote attestation or clock authority |
+| Process | Existing `host_agent_configure_live_adoption_linux.go:143` reads a supplied process's start ticks; new reader observes only self | Raw local PID/start ticks implemented; v3 incarnation association must be authenticated separately |
+| P-Admission | Registry Preflight contract | Producer/effective state reader unimplemented |
+| Drain READY/Seal | Registry Preflight contract | Producer and domain coverage proof unimplemented |
+| Candidate | Immutable request carries revision/content pin | Candidate existence/approval store and reader unimplemented |
+| Independent Continuity | Registry separate read-port contract | Not implemented by this adapter; Guard evidence cannot substitute |
+
+Contracts main `2235c0da353922f322d4b02d824a51e07400027a`,
+`pkg/contracts/types_updater_protocol.go:18-49`, has the closed v2 operation
+union (software update, bootstrap, port reconfigure, host self update), not P-A.
+The relevant CP/Contracts files have the same blobs as the existing integration
+pins. Updater source is fixed at the preceding head
+`1ed8a7ff0d3b54e701beaace6c215b2cb263320a`.
+No separate branch's implementation or live host state is implied by this survey.
+
+The existing UDS peer-credential checks authenticate a local peer, not CP business
+authorization. Existing grant issue/consume APIs cause effects and are not called
+by a Guard reader. Old grants, leases, tokens and v2 policy values are never
+converted, re-signed or imported as v3 Guard authority.
+
+### Adapter and verifier boundary
+
+`GuardEvidenceAdapter` implements the current `PreflightGuardReadPort` and
+`PreflightVerifier` boundaries. Its internal typed records are post-transport
+data, **not** a new Contracts wire schema, token format, signature selection or
+new CP authorization policy. Its source, authenticator, fixed Scope/Audience and
+per-facet issuers are trusted constructor dependencies; the Request cannot choose
+a URL, path, SQL statement, source or trust root.
+
+Every facet must be present exactly once, scoped to the same immutable
+Request/Execution/Binding/BackendReadFrame, with the configured issuer and
+audience. Kind-specific payloads reject extraneous fields. A proof reference,
+self-declared VALID flag, nonempty ID or time interval is never authentication.
+The authenticator must verify the **complete** detached bundle and snapshot,
+current Policy/Trust applicability, effective revision/revocation and authoritative
+validity. Missing source, authenticator, clock qualification or coverage remains
+UNKNOWN. No default authenticator, selected crypto, local proof cache or arbitrary
+HTTP endpoint is supplied.
+
+A second read compares the complete source bundle after authentication; it is a
+change-detection observation, not an automatic retry or a distributed lock.
+Local identity is observed and compared separately. Source/evidence changes,
+unknown identity or cancellation fail closed. The result still cannot authorize
+Mutation or replace a future Backend final Fence.
+
+The base Registry Verifier and independent Continuity verifier remain separate
+dependencies. Missing delegates reject verification. Guard evidence is never used
+as Witness, outstanding-liability coverage or restore freshness. The SourceEvidence
+attached to a Guard observation is defensively copied; changing a returned bundle
+cannot silently rewrite the detached evidence under verification.
+
+### Local OS reader and time limits
+
+`FixedLocalExecutorIdentitySource` accepts no caller PID or path. On Linux it
+reads only `/proc/sys/kernel/random/boot_id` and `/proc/self/stat`, using bounded
+reads and two consistent observations. Other platforms return UNKNOWN. Raw errors
+and file paths do not escape this boundary. Test seams are private, and tests use
+synthetic buffers/files instead of observing an actual product host.
+
+Boot UUID, PID and process start ticks are raw OS identity facts, not a selected
+v3 ProcessIncarnation encoding. The authenticated Process claim must associate
+its opaque incarnation with those exact local facts. The Request's expected
+incarnation is never copied into observed truth. Existing service/watchdog MainPID
+observations are not the current Executor identity.
+
+Evidence issuance, evidence expiry, D1 decision, Backend commit and context
+cancellation remain different concepts. The adapter checks interval structure
+only; the authenticator must qualify its actual authority/time base/Boot and
+freshness. No `time.Now`, default TTL/skew, D1 decision or Context-deadline
+substitution is introduced. A valid-looking interval without that implementation
+does not qualify a Guard.
+
+### Verification and remaining work
+
+New Guard/identity tests are synthetic adapter-contract tests. They exercise
+forgery/mismatch/absence, complete-payload authentication, changed evidence and
+separate Continuity, as well as local fixed-path/bounded parsing. They do not
+certify a real issuer, transport, key, clock or Continuity Store.
+Existing Registry/lifecycle/Writer/Preflight tests are retained.
+
+Next smallest product unit: define and implement the actual v3 CP authorization
+evidence producer/read contract in the owning CP/Contracts boundary, with
+issuer/audience and trust/validity inputs explicitly selected. Then connect the
+Agent delivery path and remaining domain/policy/drain/candidate owners. Do not
+reuse v2 authority or fill missing owners from Request/SQLite. Real connection
+cannot become eligible until all required sources and independent Continuity
+exist and authenticate.
+
+Reference Mutation, Receipt persistence, History append, GuardControl, service
+apply/reload/restart, Media/Provider actions and live-host operations remain absent.
+Product-wide acceptance remains NOT_RUN; Phase 1 closure is on hold; production
+migration is unauthorized; formal v2 return remains NOT_CERTIFIED.
