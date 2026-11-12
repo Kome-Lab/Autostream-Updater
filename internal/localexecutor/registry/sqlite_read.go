@@ -271,8 +271,13 @@ func (p *SQLiteReadPort) readError(ctx context.Context, err error, field string)
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err
+	// Discard driver wrapper text even when it wraps a standard context error.
+	// Canceled takes deterministic precedence if an error matches both.
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
 	}
 	if p == nil || p.db == nil || p.closed.Load() {
 		return ErrSQLiteClosed

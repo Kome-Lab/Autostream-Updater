@@ -940,6 +940,13 @@ func TestSQLiteContextCancellationAndPoolWait(t *testing.T) {
 		t.Fatalf("canceled open: %v", err)
 	}
 	port = sqliteTestOpen(t, fixture)
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		wrapped := fmt.Errorf("synthetic private path %s SELECT: %w", fixture.path, cause)
+		got := port.readError(context.Background(), wrapped, "sqlite.connection")
+		if !errors.Is(got, cause) || got.Error() != cause.Error() {
+			t.Fatal("wrapped context error leaked private driver details")
+		}
+	}
 	if _, err := port.ReadActiveReference(canceled, fixture.request.Command.Scope); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled read: %v", err)
 	}
