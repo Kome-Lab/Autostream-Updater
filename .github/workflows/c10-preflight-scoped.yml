@@ -39,15 +39,8 @@ jobs:
           for path in ["internal/localexecutor/registry/preflight.go", "internal/localexecutor/registry/sqlite_read.go", "internal/localexecutor/registry/sqlite_preflight_test.go"]:
               print("PREFLIGHT_FORMATTED_FILE=" + json.dumps({"path": path, "content": open(path).read()}, separators=(",", ":")))
           PY
-      - name: Retest failed Receipt link only
-        run: CGO_ENABLED=0 go test -p 1 -v -count=1 -run '^TestSQLitePreflightHistoryCoverageAndReceiptIntegrity$/^receipt-link ./internal/localexecutor/registry
-      - name: Vet Registry
-        run: go vet -p 1 ./internal/localexecutor/registry
-      - name: Test Source Boundary
-        run: go test -p 1 ./internal/boundary
-      - name: Verify dependency files
-        run: git diff --exit-code -- go.mod go.sum
- ./internal/localexecutor/registry
+      - name: Retest affected History cases only
+        run: CGO_ENABLED=0 go test -p 1 -v -count=1 -run '^TestSQLitePreflightHistoryCoverageAndReceiptIntegrity$/^(receipt-link|malformed-history-version)$' ./internal/localexecutor/registry
       - name: Vet Registry
         run: go vet -p 1 ./internal/localexecutor/registry
       - name: Test Source Boundary

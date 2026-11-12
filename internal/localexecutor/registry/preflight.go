@@ -408,7 +408,7 @@ func (p *ConditionalCommitPreflight) checkSnapshot(ctx context.Context, request 
 				}
 			}
 			if !matched {
-                if linked { return PreflightConflict, "scope_execution_history_conflict" }
+                if linked && raw.HistoryKnowledge == Known { return PreflightConflict, "scope_execution_history_conflict" }
 				return PreflightUnknown, "scope_execution_history_gap"
 			}
 		}

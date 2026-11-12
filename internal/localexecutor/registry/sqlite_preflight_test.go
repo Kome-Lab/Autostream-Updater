@@ -473,6 +473,10 @@ func TestSQLitePreflightHistoryCoverageAndReceiptIntegrity(t *testing.T) {
 		{"nonconsecutive-version", func(t *testing.T, f *sqlitePreflightFixture) {
 			sqliteTestExec(t, f.fixture.writer, "UPDATE reference_transitions SET after_state_version='00000000000000000009'")
 		}, PreflightConflict},
+		{"malformed-history-version", func(t *testing.T, f *sqlitePreflightFixture) {
+            sqliteTestExec(t, f.fixture.writer, "PRAGMA ignore_check_constraints=ON")
+            sqliteTestExec(t, f.fixture.writer, "UPDATE reference_transitions SET before_state_version='not-a-version'")
+        }, PreflightUnknown},
 		{"receipt-link", func(t *testing.T, f *sqlitePreflightFixture) {
 			sqliteTestExec(t, f.fixture.writer, "UPDATE reference_transitions SET receipt_id='receipt-wrong'")
 		}, PreflightConflict},
