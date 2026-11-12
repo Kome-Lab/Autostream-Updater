@@ -707,3 +707,18 @@ Reference Mutation, Receipt persistence, History append, GuardControl, service
 apply/reload/restart, Media/Provider actions and live-host operations remain absent.
 Product-wide acceptance remains NOT_RUN; Phase 1 closure is on hold; production
 migration is unauthorized; formal v2 return remains NOT_CERTIFIED.
+
+## Pending C03 / Contracts publication
+
+The next wire implementation proposal is kept UNAPPLIED under
+[testdata/c03-contracts-candidate](../../../testdata/c03-contracts-candidate/README.md).
+It includes typed canonical-envelope/strict-codec source, synthetic tests and a
+proposed C10 bridge. The required CI validates it only in a disposable source
+archive. This package and its production go.mod/go.sum do not import that proposed
+module or install the bridge.
+
+Automatic approval review blocked persistent branch creation in the separate
+Contracts repository as outside the explicit Updater repository scope. Contracts
+publication and actual producer/reader/key/clock connection remain pending
+authorization and implementation. Candidate CI success cannot certify those
+missing product boundaries, independent Continuity or Mutation readiness.

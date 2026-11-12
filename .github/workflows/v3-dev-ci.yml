@@ -75,5 +75,7 @@ jobs:
             go version -m "${RUNNER_TEMP}/registry-linux-${arch}.test"
             sha256sum "${RUNNER_TEMP}/registry-linux-${arch}.test"
           done
+      - name: Verify unapplied C03 Contracts evidence candidate
+        run: bash scripts/ci/verify-c03-evidence-candidate.sh
       - name: Verify module files unchanged
         run: git diff --exit-code -- go.mod go.sum
