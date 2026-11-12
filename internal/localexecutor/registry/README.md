@@ -323,3 +323,78 @@ Fixed primary references:
 This API is a diagnostic boundary only. It supplies no Writer, Mutation,
 GuardControl, force-release, retry, repair or recovery route. Existing read,
 Receipt, Continuity and lifecycle contracts remain unchanged.
+
+
+## Read connection-role ownership
+
+The current owner implements the Read role only. Each real public-read borrow
+and transaction borrow has an immutable private role/kind and a concrete owner
+association. A connection is attached to its transaction borrow immediately
+after pool acquisition, before BeginTx; the resulting SQL transaction is attached
+to that same borrow. Terminal cleanup releases that connection before ending the
+borrow. Unknown connection release retains its association and marks the owner
+UNCERTAIN before drain accounting can finish. It is never reported as released.
+
+The same mode=ro pool (maximum two connections), Header FD, inode lease and
+single Close procedure remain owned once. Concurrent Read transactions are
+allowed and continue to validate query_only=1, trusted_schema=0, DELETE journal
+mode and the versioned schema in their own snapshot. An operation waiting for a
+pool connection is already counted, so Close waits for its unwind too. Close
+closes admission first and drains counted work before pool/header/lease release.
+No second pool, Header FD or lease is pre-created for a future Writer.
+
+InspectLifecycle adds Roles to its safe projection. Read implementation and
+managed Read admission are separate facts. Operations counts both whole-read and
+inner transaction borrows; Transactions and Connections count associated handles,
+including retained handles whose physical release is unknown.
+UnresolvedConnections identifies those retained release obligations. These
+counts are distinct from Pool Stats and do not certify live SQL work or locks.
+The owner copies scalar role bookkeeping under its short gate; Inspection never
+scans/mutates the ownership map or borrows any resource. A torn frame or invalid
+role accounting remains UNKNOWN; Inspection never repairs it.
+
+WriteImplementation and MutationImplementation are NOT_IMPLEMENTED;
+WriterAdmission is NOT_PROVIDED. There are no fabricated Writer count=0 or
+healthy/available Writer states. Rejected Write/unknown-role requests do not open
+a connection or change owner state. This private role discrimination is not an
+implementation of Write admission, RW exclusion, P-A or GuardControl.
+
+A future writable role must join this same owner's identity/FD/lease/pool
+lifecycle and tracked operation/transaction cleanup. Its connection profile,
+conflict admission and enforced shared writer boundary must be implemented and
+verified before any Write borrow becomes available. P-A and GuardControl must
+participate in that same enforced boundary. A role enum/counter does not provide
+that exclusion, and current concurrent-Read/external-process lock tests do not
+establish shared-owner Read/Write coexistence. No unused Writer interface or
+speculative RW lock is provided here. Inspection remains diagnostic only, never
+a Writer/Mutation permission or Domain Drain READY proof.
+
+Tests use only synthetic temporary databases. Host-wide Actor exclusion,
+power-loss durability, independent Continuity, real clocks and native ARM64
+execution remain unproven. Product-wide acceptance remains NOT_RUN, production
+migration is unauthorized and formal v2 return is NOT_CERTIFIED.
+
+Current admission matrix: Read/Read is allowed within the existing pool limit;
+Read/Write and Write/Write cannot occur through this owner because every Write
+request is rejected before resource acquisition, even while idle. Close blocks
+all new Read borrows. No actual managed Read/Write concurrency is certified.
+
+The conservative contract for a future initial Writer integration is owner-wide
+exclusive admission against Read connection/transaction ownership and unresolved
+releases, plus serialized P-A/GuardControl writes through the same enforced
+boundary. Read admission must not overlap an active or uncertain write duty.
+No such writable admission, reservation or OS/SQL writer mechanism exists here;
+enabling it requires its own implementation and concurrent snapshot tests.
+Existing snapshot transactions still span every table read by one Read API.
+
+A connection returned after waiting in the pool is checked for actual owner
+uncertainty before BeginTx. Previously admitted Reads may still race a later
+uncertainty transition; they are drained rather than pretending SQL start and
+Owner state are one atomic operation. The gate is never held across SQL I/O.
+Drain COMPLETE means counted borrows ended and can coexist with UNCERTAIN and
+unresolved connection ownership; it is not confirmed resource release.
+
+Ownership associations are established by the private beginRead construction,
+not by introspecting arbitrary sql.Conn/sql.Tx handles. Uncoordinated
+package-internal/raw handles and external Actors are outside this cooperative
+boundary. Inspection neither certifies those Actors nor repairs their effects.

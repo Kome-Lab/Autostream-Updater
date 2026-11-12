@@ -77,6 +77,44 @@ type LifecycleCloseDiagnostic struct {
 	LeaseReleased  LifecycleFact
 }
 
+// LifecycleRoleImplementation describes implemented code, not execution authority.
+type LifecycleRoleImplementation string
+
+const (
+	LifecycleRoleImplemented    LifecycleRoleImplementation = "IMPLEMENTED"
+	LifecycleRoleNotImplemented LifecycleRoleImplementation = "NOT_IMPLEMENTED"
+	LifecycleRoleUnknown        LifecycleRoleImplementation = "UNKNOWN"
+)
+
+type LifecycleAdmissionStatus string
+
+const (
+	LifecycleAdmissionNotProvided LifecycleAdmissionStatus = "NOT_PROVIDED"
+	LifecycleAdmissionUnknown     LifecycleAdmissionStatus = "UNKNOWN"
+)
+
+// Counts describe owner-tracked borrows and associated handles. Connections and
+// Transactions include retained handles whose release is unknown; they are not
+// assertions that an SQL operation or OS lock is still physically active.
+type LifecycleReadRoleDiagnostic struct {
+	Implementation        LifecycleRoleImplementation
+	Admission             LifecycleFact
+	Operations            LifecycleCount
+	Transactions          LifecycleCount
+	Connections           LifecycleCount
+	UnresolvedConnections LifecycleCount
+}
+
+// There are deliberately no Writer connection/transaction counts: no Writer
+// pool, admission or Mutation implementation is supplied by this owner.
+type LifecycleRolesDiagnostic struct {
+	SharedOwner            LifecycleFact
+	Read                   LifecycleReadRoleDiagnostic
+	WriteImplementation    LifecycleRoleImplementation
+	WriterAdmission        LifecycleAdmissionStatus
+	MutationImplementation LifecycleRoleImplementation
+}
+
 // RegistryLifecycleDiagnostic is an explicit safe projection. It contains no
 // path, URI, SQL, raw error, credential, file identity, descriptor number or
 // resource pointer. OPEN/admission/drain are diagnostics, not execution grants.
@@ -92,6 +130,7 @@ type RegistryLifecycleDiagnostic struct {
 	Header              LifecycleHeaderDiagnostic
 	Lease               LifecycleLeaseDiagnostic
 	Close               LifecycleCloseDiagnostic
+	Roles               LifecycleRolesDiagnostic
 }
 
 // All fields are private, deliberately separate from the exported diagnostic.
@@ -99,6 +138,11 @@ type RegistryLifecycleDiagnostic struct {
 type registryLifecycleFrame struct {
 	version            uint64
 	active             int64
+	readOperations     int64
+	readTransactions   int64
+	readConnections    int64
+	unresolvedConnections int64
+	roleTrackingInvalid bool
 	ready              bool
 	closing            bool
 	uncertain          bool
@@ -143,6 +187,7 @@ func unknownRegistryLifecycleDiagnostic() RegistryLifecycleDiagnostic {
 	unknown := lifecycleUnknown()
 	return RegistryLifecycleDiagnostic{
 		State: LifecycleUnknown, Consistency: Unknown,
+		Roles: unknownLifecycleRolesDiagnostic(),
 		ActiveOperations:    LifecycleCount{Knowledge: Unknown},
 		AcceptingOperations: unknown, Drain: LifecycleDrainUnknown,
 		Pool: LifecyclePoolDiagnostic{Knowledge: Unknown},
@@ -158,11 +203,41 @@ func unknownRegistryLifecycleDiagnostic() RegistryLifecycleDiagnostic {
 	}
 }
 
+func unknownLifecycleRolesDiagnostic() LifecycleRolesDiagnostic {
+	return LifecycleRolesDiagnostic{
+		SharedOwner: lifecycleUnknown(),
+		Read: LifecycleReadRoleDiagnostic{
+			Implementation: LifecycleRoleUnknown, Admission: lifecycleUnknown(),
+			Operations: LifecycleCount{Knowledge: Unknown},
+			Transactions: LifecycleCount{Knowledge: Unknown},
+			Connections: LifecycleCount{Knowledge: Unknown},
+			UnresolvedConnections: LifecycleCount{Knowledge: Unknown},
+		},
+		WriteImplementation: LifecycleRoleUnknown,
+		WriterAdmission: LifecycleAdmissionUnknown,
+		MutationImplementation: LifecycleRoleUnknown,
+	}
+}
+
+// Role bookkeeping is copied as scalars under gate, never inferred from Pool
+// Stats or by scanning/altering the operation ownership map during Inspection.
+func (frame registryLifecycleFrame) validRoleCounts() bool {
+	return !frame.roleTrackingInvalid && frame.readOperations >= 0 &&
+		frame.readOperations == frame.active && frame.readTransactions >= 0 &&
+		frame.readConnections >= 0 && frame.unresolvedConnections >= 0 &&
+		frame.readTransactions <= frame.readConnections &&
+		frame.unresolvedConnections <= frame.readConnections &&
+		(frame.unresolvedConnections == 0 || frame.uncertain)
+}
+
 func (owner *registryLifecycleOwner) lifecycleFrame() registryLifecycleFrame {
 	owner.gate.Lock()
 	defer owner.gate.Unlock()
 	return registryLifecycleFrame{
 		version: owner.observationVersion, active: owner.activeOperations,
+		readOperations: owner.readOperations, readTransactions: owner.readTransactions,
+		readConnections: owner.readConnections, unresolvedConnections: owner.unresolvedConnections,
+		roleTrackingInvalid: owner.roleTrackingInvalid,
 		ready: owner.ready, closing: owner.closing.Load(), uncertain: owner.uncertain.Load(),
 		drainFinished: owner.drainFinished, closeFinished: owner.closeFinished,
 		closeError: owner.closeErr != nil, poolCloseStarted: owner.poolCloseStarted,
@@ -253,16 +328,36 @@ func lifecycleFalse(fact LifecycleFact) bool {
 // booleans. Private snapshot/resource details can never leak through this API.
 func (snapshot registryLifecycleSnapshot) safeDiagnostic() RegistryLifecycleDiagnostic {
 	result := unknownRegistryLifecycleDiagnostic()
-	if !snapshot.stable || snapshot.frame.active < 0 {
+	if !snapshot.stable {
 		return result
 	}
 	frame := snapshot.frame
+	// Static implementation availability is not a fabricated zero Writer count.
+	// Only a stable, initialized/closing/uncertain owner reaches this projection.
+	result.Roles.Read.Implementation = LifecycleRoleImplemented
+	result.Roles.WriteImplementation = LifecycleRoleNotImplemented
+	result.Roles.WriterAdmission = LifecycleAdmissionNotProvided
+	result.Roles.MutationImplementation = LifecycleRoleNotImplemented
+	if !frame.validRoleCounts() {
+		if frame.uncertain {
+			result.State = LifecycleUncertain
+		}
+		result.AcceptingOperations = lifecycleKnown(false)
+		result.Roles.Read.Admission = lifecycleKnown(false)
+		return result
+	}
+	result.Roles.SharedOwner = lifecycleKnown(true)
+	result.Roles.Read.Operations = LifecycleCount{Knowledge: Known, Value: frame.readOperations}
+	result.Roles.Read.Transactions = LifecycleCount{Knowledge: Known, Value: frame.readTransactions}
+	result.Roles.Read.Connections = LifecycleCount{Knowledge: Known, Value: frame.readConnections}
+	result.Roles.Read.UnresolvedConnections = LifecycleCount{Knowledge: Known, Value: frame.unresolvedConnections}
 	result.Consistency = Known
 	result.ActiveOperations = LifecycleCount{Knowledge: Known, Value: frame.active}
 	// This is the actual published owner's admission predicate, not read
 	// validation, business admission, Drain READY or P-A/Writer permission.
 	result.AcceptingOperations = lifecycleKnown(frame.ready && !frame.closing && !frame.uncertain &&
 		!readNilPort(frame.pool) && !readNilPort(frame.header))
+	result.Roles.Read.Admission = result.AcceptingOperations
 	switch {
 	case frame.closing && frame.drainFinished:
 		result.Drain = LifecycleDrainComplete
@@ -305,6 +400,8 @@ func (snapshot registryLifecycleSnapshot) safeDiagnostic() RegistryLifecycleDiag
 		result.State = LifecycleClosing
 	case frame.closing && frame.closeFinished && !frame.closeError &&
 		frame.drainFinished && frame.poolReleased && frame.headerReleased && frame.leaseReleased &&
+		frame.readOperations == 0 && frame.readTransactions == 0 &&
+		frame.readConnections == 0 && frame.unresolvedConnections == 0 &&
 		snapshot.pool.Knowledge == Known && snapshot.pool.OpenConnections == 0 &&
 		lifecycleTrue(snapshot.headerClosed) && lifecycleFalse(snapshot.leaseHeld) &&
 		lifecycleTrue(snapshot.leaseLinked):

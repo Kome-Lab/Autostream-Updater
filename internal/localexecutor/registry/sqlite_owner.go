@@ -70,12 +70,24 @@ type registryLifecycleOwner struct {
 	headerCloseStarted bool
 	headerReleased     bool
 	leaseReleased      bool
+
+	// Real Read-role ownership; all fields and records are guarded by gate.
+	operations map[*registryOperation]registryOperationRecord
+    connectionOwners map[*sql.Conn]*registryOperation
+    transactionOwners map[*sql.Tx]*registryOperation
+	readOperations int64
+	readTransactions int64
+	readConnections int64
+	unresolvedConnections int64
+	roleTrackingInvalid bool
 }
 
 // registryOperation is a counted borrow, released once after the whole public
 // read (including independent Continuity qualification) has finished.
 type registryOperation struct {
 	owner *registryLifecycleOwner
+	role registryConnectionRole
+	kind registryOperationKind
 	once  sync.Once
 }
 
@@ -83,42 +95,11 @@ func (operation *registryOperation) release() {
 	if operation == nil {
 		return
 	}
-	operation.once.Do(func() {
-		owner := operation.owner
-		owner.gate.Lock()
-		owner.activeOperations--
-		owner.observationVersion++
-		owner.activeOps.Done()
-		owner.gate.Unlock()
-	})
+	operation.once.Do(func() { operation.owner.releaseOperation(operation) })
 }
 
 func (owner *registryLifecycleOwner) acquire(ctx context.Context) (*registryOperation, error) {
-	if ctx == nil {
-		return nil, invalid("sqlite.context")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if owner == nil {
-		return nil, ErrSQLiteClosed
-	}
-	owner.gate.Lock()
-	defer owner.gate.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if owner.closing.Load() || owner.pool == nil || owner.header == nil {
-		return nil, ErrSQLiteClosed
-	}
-	if owner.uncertain.Load() {
-		return nil, fault(CodeUnavailable, "sqlite.lifecycle_uncertain")
-	}
-	// Add is under the same gate that closes admission before Close calls Wait.
-	owner.activeOps.Add(1)
-	owner.activeOperations++
-	owner.observationVersion++
-	return &registryOperation{owner: owner}, nil
+    return owner.acquireRole(ctx, registryReadRole, registryReadOperation)
 }
 
 // sqliteReadTx owns an independent operation borrow as well as its sql.Conn.
@@ -137,12 +118,7 @@ type sqliteReadTx struct {
 
 func (tx *sqliteReadTx) release() error {
 	tx.releaseOnce.Do(func() {
-		tx.releaseErr = tx.conn.Close()
-		if tx.releaseErr != nil {
-			// Record uncertainty BEFORE allowing Close's active-operation wait
-			// to finish. An error never proves descriptor/lock release.
-			tx.operation.owner.markUncertain()
-		}
+		tx.releaseErr = tx.operation.owner.releaseReadConnection(tx.operation, tx.conn)
 		tx.operation.release()
 	})
 	return tx.releaseErr
@@ -381,7 +357,7 @@ func (owner *registryLifecycleOwner) readError(ctx context.Context, err error, f
 }
 
 func (owner *registryLifecycleOwner) beginRead(ctx context.Context) (*sqliteReadTx, error) {
-	operation, err := owner.acquire(ctx)
+	operation, err := owner.acquireRole(ctx, registryReadRole, registryReadTransaction)
 	if err != nil {
 		return nil, err
 	}
@@ -398,14 +374,26 @@ func (owner *registryLifecycleOwner) beginRead(ctx context.Context) (*sqliteRead
 	if err != nil {
 		return nil, owner.readError(ctx, err, "sqlite.connection")
 	}
-	transaction, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err := owner.attachReadConnection(operation, conn); err != nil {
+        // Invalid ownership never authorizes closing a possibly foreign handle.
+        // Sticky uncertainty retains pool/header/lease for diagnosis.
+        return nil, err
+    }
+    if owner.uncertain.Load() {
+        _ = owner.releaseReadConnection(operation, conn)
+        return nil, fault(CodeUnavailable, "sqlite.lifecycle_uncertain")
+    }
+    transaction, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		if closeErr := conn.Close(); closeErr != nil {
-			owner.markUncertain()
-		}
+		_ = owner.releaseReadConnection(operation, conn)
 		return nil, owner.readError(ctx, err, "sqlite.begin")
 	}
-	tx := &sqliteReadTx{Tx: transaction, conn: conn, operation: operation}
+	if err := owner.attachReadTransaction(operation, conn, transaction); err != nil {
+        _ = transaction.Rollback()
+        _ = owner.releaseReadConnection(operation, conn)
+        return nil, err
+    }
+    tx := &sqliteReadTx{Tx: transaction, conn: conn, operation: operation}
 	// From this point the transaction owns the borrow. Any validation failure
 	// synchronously rolls back and releases its connection before returning.
 	keepOperation = true
@@ -478,6 +466,11 @@ func (owner *registryLifecycleOwner) Close() error {
 		owner.activeOps.Wait()
 		owner.gate.Lock()
 		owner.drainFinished = true
+        if owner.roleTrackingInvalid || owner.readOperations != 0 || owner.readConnections != 0 ||
+            owner.readTransactions != 0 || owner.unresolvedConnections != 0 || len(owner.operations) != 0 ||
+            len(owner.connectionOwners) != 0 || len(owner.transactionOwners) != 0 {
+            owner.uncertain.Store(true)
+        }
 		owner.observationVersion++
 		owner.gate.Unlock()
 		if owner.uncertain.Load() {
