@@ -22,11 +22,11 @@ import (
 // SQL is confined to synthetic test fixtures; no real DB, credential or provider
 // is used. These helpers are not part of the product read-port interface.
 type sqliteTestFixture struct {
-	directory string
-	path      string
-	writer    *sql.DB
-	request   Request
-	snapshot  ExecutionSnapshot
+	directory  string
+	path       string
+	writer     *sql.DB
+	request    Request
+	snapshot   ExecutionSnapshot
 	continuity *sqliteTestContinuity
 }
 
@@ -57,7 +57,7 @@ func sqliteTestExecution(request Request) []any {
 // sqliteTestContinuity is an independent in-memory test double. It is never
 // persisted in the registry and does not implement a production Witness store.
 type sqliteTestContinuity struct {
-	witness *WitnessOutcome
+	witness     *WitnessOutcome
 	outstanding []ID
 	onReference func(context.Context, Scope, BackendReadFrame, ActiveReference) (ContinuityReferenceObservation, error)
 	onExecution func(context.Context, Request, BackendReadFrame, ExecutionSnapshot) (ContinuityExecutionObservation, error)

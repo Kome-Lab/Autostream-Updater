@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
@@ -49,7 +49,7 @@ type SQLiteReadPort struct {
 	closed      atomic.Bool
 	closeOnce   sync.Once
 	closeErr    error
-	continuity ContinuityReadPort
+	continuity  ContinuityReadPort
 }
 
 var _ ReadPort = (*SQLiteReadPort)(nil)
