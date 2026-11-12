@@ -665,7 +665,7 @@ func TestSQLiteWriterInspectionIsReadOnlyAndNoSQLSurface(t *testing.T) {
 	if !reflect.DeepEqual(before, sqliteInspectionStamp(port.owner)) || !reflect.DeepEqual(records, sqliteRolesRecords(port.owner)) {
 		t.Fatal("inspection changed Writer ownership or lifecycle state")
 	}
-	kind := reflect.TypeOf(*tx)
+	kind := reflect.TypeOf(tx).Elem()
 	for i := 0; i < kind.NumField(); i++ {
 		if kind.Field(i).Anonymous {
 			t.Fatal("Writer embeds an unrestricted SQL transaction")
