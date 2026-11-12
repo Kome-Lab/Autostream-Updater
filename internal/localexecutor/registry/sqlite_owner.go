@@ -103,6 +103,19 @@ func (owner *registryLifecycleOwner) acquire(ctx context.Context) (*registryOper
 	return owner.acquireRole(ctx, registryReadRole, registryReadOperation)
 }
 
+// All records are private and protected by owner.gate. A connection/transaction
+// is never independently owned by an adapter. Uncertain releases retain their
+// association after the active borrow ends; Close must not drop the inode lease.
+type registryOperationRecord struct {
+	role       registryConnectionRole
+	kind       registryOperationKind
+	active     bool
+	conn       *sql.Conn
+	tx         *sql.Tx
+	releasing  bool
+	unresolved bool
+}
+
 // sqliteReadTx owns an independent operation borrow as well as its sql.Conn.
 // Even a direct internal beginRead cannot escape drain accounting. In
 // particular, cancellation may mark Tx done before asynchronous rollback has
@@ -522,4 +535,93 @@ func (owner *registryLifecycleOwner) Close() error {
 		owner.gate.Unlock()
 	})
 	return owner.closeErr
+}
+
+func (owner *registryLifecycleOwner) attachReadConnection(operation *registryOperation, conn *sql.Conn) error {
+	owner.gate.Lock()
+	defer owner.gate.Unlock()
+	record, ok := owner.roleRecordLocked(operation)
+	if !ok || record.kind != registryReadTransaction || conn == nil || record.conn != nil {
+		owner.invalidateRoleTrackingLocked()
+		return fault(CodeUnavailable, "sqlite.connection_owner")
+	}
+	if _, attached := owner.connectionOwners[conn]; attached {
+		owner.invalidateRoleTrackingLocked()
+		return fault(CodeUnavailable, "sqlite.connection_owner")
+	}
+	if owner.connectionOwners == nil {
+		owner.connectionOwners = make(map[*sql.Conn]*registryOperation)
+	}
+	owner.connectionOwners[conn] = operation
+	record.conn = conn
+	owner.operations[operation] = record
+	owner.readConnections++
+	owner.observationVersion++
+	return nil
+}
+
+func (owner *registryLifecycleOwner) attachReadTransaction(operation *registryOperation, conn *sql.Conn, tx *sql.Tx) error {
+	owner.gate.Lock()
+	defer owner.gate.Unlock()
+	record, ok := owner.roleRecordLocked(operation)
+	if !ok || record.kind != registryReadTransaction || conn == nil || record.conn != conn ||
+		tx == nil || record.tx != nil || record.releasing || record.unresolved {
+		owner.invalidateRoleTrackingLocked()
+		return fault(CodeUnavailable, "sqlite.transaction_owner")
+	}
+	if _, attached := owner.transactionOwners[tx]; attached {
+		owner.invalidateRoleTrackingLocked()
+		return fault(CodeUnavailable, "sqlite.transaction_owner")
+	}
+	if owner.transactionOwners == nil {
+		owner.transactionOwners = make(map[*sql.Tx]*registryOperation)
+	}
+	owner.transactionOwners[tx] = operation
+	record.tx = tx
+	owner.operations[operation] = record
+	owner.readTransactions++
+	owner.observationVersion++
+	return nil
+}
+
+// releaseReadConnection is the sole managed connection-return boundary. Never
+// hold the owner gate while Conn.Close waits for cancellation/rollback cleanup.
+// A Close error preserves the unknown handle/transaction association, not a
+// fictitious zero count. Terminal Tx methods serialize this through releaseOnce.
+func (owner *registryLifecycleOwner) releaseReadConnection(operation *registryOperation, conn *sql.Conn) error {
+	owner.gate.Lock()
+	record, ok := owner.roleRecordLocked(operation)
+	if !ok || conn == nil || record.conn != conn || owner.connectionOwners[conn] != operation || record.releasing || record.unresolved {
+		owner.invalidateRoleTrackingLocked()
+		owner.gate.Unlock()
+		return fault(CodeUnavailable, "sqlite.connection_owner")
+	}
+	record.releasing = true
+	owner.operations[operation] = record
+	owner.observationVersion++
+	owner.gate.Unlock()
+
+	err := conn.Close()
+
+	owner.gate.Lock()
+	record = owner.operations[operation]
+	record.releasing = false
+	if err != nil {
+		record.unresolved = true
+		owner.unresolvedConnections++
+		owner.uncertain.Store(true) // before operation Done can unblock Close
+	} else {
+		delete(owner.connectionOwners, conn)
+		record.conn = nil
+		owner.readConnections--
+		if record.tx != nil {
+			delete(owner.transactionOwners, record.tx)
+			record.tx = nil
+			owner.readTransactions--
+		}
+	}
+	owner.operations[operation] = record
+	owner.observationVersion++
+	owner.gate.Unlock()
+	return err
 }
