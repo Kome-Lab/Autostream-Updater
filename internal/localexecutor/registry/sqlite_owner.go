@@ -48,6 +48,8 @@ type registryLifecycleOwner struct {
 	path           string
 	identity       os.FileInfo
 	lease          *registryInodeLease
+	headerDescriptor int
+	headerProbe func(int, os.FileInfo) registryHeaderProbeResult
 	gate           sync.Mutex
 	activeOps      sync.WaitGroup
 	closing        atomic.Bool
@@ -55,6 +57,19 @@ type registryLifecycleOwner struct {
 	closeOnce      sync.Once
 	closeErr       error
 	closingStarted chan struct{}
+
+	// Observational bookkeeping is changed only by actual lifecycle operations
+	// under gate. Inspection never advances this version or acquires a borrow.
+	observationVersion uint64
+	activeOperations   int64
+	ready              bool // constructor completion, never a Drain READY seal
+	drainFinished      bool
+	closeFinished      bool
+	poolCloseStarted   bool
+	poolReleased       bool
+	headerCloseStarted bool
+	headerReleased     bool
+	leaseReleased      bool
 }
 
 // registryOperation is a counted borrow, released once after the whole public
@@ -69,7 +84,12 @@ func (operation *registryOperation) release() {
 		return
 	}
 	operation.once.Do(func() {
-		operation.owner.activeOps.Done()
+		owner := operation.owner
+		owner.gate.Lock()
+		owner.activeOperations--
+		owner.observationVersion++
+		owner.activeOps.Done()
+		owner.gate.Unlock()
 	})
 }
 
@@ -96,6 +116,8 @@ func (owner *registryLifecycleOwner) acquire(ctx context.Context) (*registryOper
 	}
 	// Add is under the same gate that closes admission before Close calls Wait.
 	owner.activeOps.Add(1)
+	owner.activeOperations++
+	owner.observationVersion++
 	return &registryOperation{owner: owner}, nil
 }
 
@@ -119,7 +141,7 @@ func (tx *sqliteReadTx) release() error {
 		if tx.releaseErr != nil {
 			// Record uncertainty BEFORE allowing Close's active-operation wait
 			// to finish. An error never proves descriptor/lock release.
-			tx.operation.owner.uncertain.Store(true)
+			tx.operation.owner.markUncertain()
 		}
 		tx.operation.release()
 	})
@@ -198,20 +220,31 @@ func openRegistryLifecycleOwner(ctx context.Context, config SQLiteReadConfig) (*
 		return nil, err
 	}
 	owner := &registryLifecycleOwner{
-		path: path, identity: identity, closingStarted: make(chan struct{}),
+		path: path, identity: identity, closingStarted: make(chan struct{}), headerDescriptor: -1, headerProbe: registryProbeHeader,
 	}
 	// Acquire and strongly attach ownership BEFORE any raw database Open.
 	lease, err := registryAcquireInodeLease(identity, owner)
 	if err != nil {
 		return nil, err
 	}
+	owner.gate.Lock()
 	owner.lease = lease
+	owner.observationVersion++
+	owner.gate.Unlock()
 	header, err := os.Open(path)
 	if err != nil {
 		_ = owner.Close()
 		return nil, fault(CodeUnavailable, "sqlite.header")
 	}
+	// Capture once during Open, before SQLite or publication. Inspection never
+	// calls File.Fd/Stat: a Go File.Stat reference can defer physical Close
+	// beyond lease handoff. Direct fstat does not own a Go FD-close reference.
+	descriptor := int(header.Fd())
+	owner.gate.Lock()
 	owner.header = header
+	owner.headerDescriptor = descriptor
+	owner.observationVersion++
+	owner.gate.Unlock()
 	if err := owner.checkLocation(); err != nil {
 		_ = owner.Close()
 		return nil, err
@@ -231,7 +264,10 @@ func openRegistryLifecycleOwner(ctx context.Context, config SQLiteReadConfig) (*
 	pool := sql.OpenDB(connector)
 	pool.SetMaxOpenConns(2)
 	pool.SetMaxIdleConns(2)
+	owner.gate.Lock()
 	owner.pool = pool
+	owner.observationVersion++
+	owner.gate.Unlock()
 	tx, err := owner.beginRead(ctx)
 	if err != nil {
 		// beginRead synchronously ends its counted borrow before returning an
@@ -249,6 +285,10 @@ func openRegistryLifecycleOwner(ctx context.Context, config SQLiteReadConfig) (*
 		_ = owner.Close()
 		return nil, err
 	}
+	owner.gate.Lock()
+	owner.ready = true
+	owner.observationVersion++
+	owner.gate.Unlock()
 	return owner, nil
 }
 
@@ -361,7 +401,7 @@ func (owner *registryLifecycleOwner) beginRead(ctx context.Context) (*sqliteRead
 	transaction, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		if closeErr := conn.Close(); closeErr != nil {
-			owner.uncertain.Store(true)
+			owner.markUncertain()
 		}
 		return nil, owner.readError(ctx, err, "sqlite.begin")
 	}
@@ -399,6 +439,24 @@ func (owner *registryLifecycleOwner) beginRead(ctx context.Context) (*sqliteRead
 	return tx, nil
 }
 
+// markUncertain records a real lifecycle failure. It is never called by
+// Inspection, even if observing a resource fails.
+func (owner *registryLifecycleOwner) markUncertain() {
+	owner.gate.Lock()
+	if !owner.uncertain.Load() {
+		owner.uncertain.Store(true)
+		owner.observationVersion++
+	}
+	owner.gate.Unlock()
+}
+
+func (owner *registryLifecycleOwner) recordCloseError(err error) {
+	owner.gate.Lock()
+	owner.closeErr = err
+	owner.observationVersion++
+	owner.gate.Unlock()
+}
+
 func (owner *registryLifecycleOwner) Close() error {
 	if owner == nil {
 		return nil
@@ -406,37 +464,68 @@ func (owner *registryLifecycleOwner) Close() error {
 	owner.closeOnce.Do(func() {
 		owner.gate.Lock()
 		owner.closing.Store(true)
+		owner.observationVersion++
 		if owner.closingStarted != nil {
 			close(owner.closingStarted)
 		}
 		owner.gate.Unlock()
+		defer func() {
+			owner.gate.Lock()
+			owner.closeFinished = true
+			owner.observationVersion++
+			owner.gate.Unlock()
+		}()
 		owner.activeOps.Wait()
+		owner.gate.Lock()
+		owner.drainFinished = true
+		owner.observationVersion++
+		owner.gate.Unlock()
 		if owner.uncertain.Load() {
-			owner.closeErr = fault(CodeUnavailable, "sqlite.close_uncertain")
+			owner.recordCloseError(fault(CodeUnavailable, "sqlite.close_uncertain"))
 			return
 		}
 		if owner.pool != nil {
+			owner.gate.Lock()
+			owner.poolCloseStarted = true
+			owner.observationVersion++
+			owner.gate.Unlock()
 			if err := owner.pool.Close(); err != nil {
-				owner.uncertain.Store(true)
-				owner.closeErr = fault(CodeUnavailable, "sqlite.close")
+				owner.markUncertain()
+				owner.recordCloseError(fault(CodeUnavailable, "sqlite.close"))
 				return
 			}
-			// An outstanding or asynchronously closing connection is not
-			// released merely because DB.Close returned without an error.
+			// Stats is observational and outside the lifecycle gate. A zero
+			// count is used only AFTER this owner's actual pool.Close result.
 			if owner.pool.Stats().OpenConnections != 0 {
-				owner.uncertain.Store(true)
-				owner.closeErr = fault(CodeUnavailable, "sqlite.close_pending")
+				owner.markUncertain()
+				owner.recordCloseError(fault(CodeUnavailable, "sqlite.close_pending"))
 				return
 			}
+			owner.gate.Lock()
+			owner.poolReleased = true
+			owner.observationVersion++
+			owner.gate.Unlock()
 		}
 		if owner.header != nil {
+			owner.gate.Lock()
+			owner.headerCloseStarted = true
+			owner.observationVersion++
+			owner.gate.Unlock()
 			if err := owner.header.Close(); err != nil {
-				owner.uncertain.Store(true)
-				owner.closeErr = fault(CodeUnavailable, "sqlite.header_close")
+				owner.markUncertain()
+				owner.recordCloseError(fault(CodeUnavailable, "sqlite.header_close"))
 				return
 			}
+			owner.gate.Lock()
+			owner.headerReleased = true
+			owner.observationVersion++
+			owner.gate.Unlock()
 		}
 		registryReleaseInodeLease(owner.lease)
+		owner.gate.Lock()
+		owner.leaseReleased = true
+		owner.observationVersion++
+		owner.gate.Unlock()
 	})
 	return owner.closeErr
 }

@@ -264,3 +264,62 @@ connection-release waiting, inode replacement, failure retention and concurrent
 Close. Unit/race/build success does not certify power-loss durability, all-Actor
 exclusion, independent Continuity, a real clock, native ARM64 execution, production
 migration, Phase 1 closure or formal v2 return.
+
+## Read-only Lifecycle Inspection
+
+InspectLifecycle returns RegistryLifecycleDiagnostic. The private
+registryLifecycleSnapshot is separate from that safe projection. Only fixed
+enums, counts and qualified booleans are exposed; no path, DSN/URI, SQL, raw error,
+credential, internal layout, inode number, FD number or resource pointer escapes.
+
+OPEN means the initialized owner's tracked lifecycle and observed resources are
+compatible with admission. It does not mean DB health, business admission, Drain
+READY, freshness or P-A/Writer permission. CLOSING is the real Close procedure.
+CLOSED requires finished successful Close, confirmed pool/header/lease release,
+zero observed pool connections and absent lease. UNCERTAIN comes from a real
+owner lifecycle failure and is never cleared by Inspection. Unknown or torn
+observations remain UNKNOWN. Zero pool Stats or a closed FD alone is not CLOSED.
+
+ActiveOperations counts all owner borrows, including a public read and its
+internal SQL transaction separately. Drain describes these owned borrows only.
+AcceptingOperations reports the managed acquire predicate; resource validation
+can still fail. Confirmed-release flags describe the owner's Close procedure,
+not universal proof that no external Actor holds any handle.
+
+Inspection makes a single sampling pass: copy the owner frame under a short
+gate, observe Stats/descriptor/path/lease outside that gate, then check the frame
+version once. Any tracked transition yields a fully UNKNOWN result, without
+retry. Consistency describes the tracked owner frame, not one globally atomic
+snapshot across SQL, OS and lease state. File-system/Stats observations each keep
+their own knowledge. Inspection does not acquire an operation or connection,
+start a transaction, read SQL, change PRAGMAs, open/close a descriptor, acquire/
+release a lease, run Close, repair state or authorize any effect.
+
+Go1.26.5 File.Stat uses an internal descriptor reference. On blocking regular
+files, a concurrent Close can return before the last Stat reference drops; that
+last drop can perform the physical close after an inode-lease handoff. Inspection
+therefore never calls File.Stat or File.Fd. Owner Open captures the header FD once,
+before SQLite connections/publication. Linux inspection uses one direct Fstat
+syscall with that private number and the cached identity. It cannot schedule a
+later Go File.Close. The owner-frame check handles concurrent Close/FD reuse;
+after confirmed header release the cached descriptor is never probed. Other
+platforms return UNKNOWN for an unavailable live-descriptor guarantee.
+Neither probe nor Stats holds the owner gate or acquires a drain borrow. A slow
+probe introduces no Close-wait lock; Stats uses only its short database/sql mutex.
+
+The descriptor number and probe seam are private, never an external request or
+diagnostic field. Tests use only disposable synthetic resources to inject slow/
+failed probes. The production probe is a direct read-only metadata syscall.
+Bookkeeping is updated by actual acquire/release/Open/Close transitions; the
+inspection path never advances it. No real clock or TTL is selected.
+
+Fixed primary references:
+- https://github.com/golang/go/blob/go1.26.5/src/database/sql/sql.go
+- https://github.com/golang/go/blob/go1.26.5/src/os/stat_unix.go
+- https://github.com/golang/go/blob/go1.26.5/src/internal/poll/fd_unix.go
+- https://github.com/golang/go/blob/go1.26.5/src/internal/poll/fd_mutex.go
+- https://github.com/golang/go/blob/go1.26.5/src/os/file_unix.go
+
+This API is a diagnostic boundary only. It supplies no Writer, Mutation,
+GuardControl, force-release, retry, repair or recovery route. Existing read,
+Receipt, Continuity and lifecycle contracts remain unchanged.
