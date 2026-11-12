@@ -398,3 +398,99 @@ Ownership associations are established by the private beginRead construction,
 not by introspecting arbitrary sql.Conn/sql.Tx handles. Uncoordinated
 package-internal/raw handles and external Actors are outside this cooperative
 boundary. Inspection neither certifies those Actors nor repairs their effects.
+
+## Opt-in Writer Connection Profile and Admission
+
+This section refines the earlier Read-only baseline for explicitly configured
+owners. Opening SQLiteReadPort still installs only the Read role; neither the
+public Read APIs nor Inspection installs a Writer profile. An explicit private
+prepareWriterProfile operation is required before internal Writer admission.
+The earlier WriteImplementation/WriterAdmission diagnostic fields describe
+participation installed on this particular Owner, not support compiled into the
+binary: an unconfigured Read-only owner retains NOT_IMPLEMENTED/NOT_PROVIDED.
+The new Write.ProfileImplementation field reports compiled profile support,
+independently from the per-owner installation fields. Write.Profile separately
+states NOT_CONFIGURED or CONFIGURED. Neither means authorization for P-A.
+
+One lifecycle owner retains one identity, Header FD and inode lease. It owns
+both fixed connection-role pool lifecycles. The existing Read connector remains
+mode=ro/query_only=1/trusted_schema=0, max two connections. The Writer connector
+is created lazily by the same Owner after explicit admission, with mode=rw,
+query_only=0, trusted_schema=0, defensive mode and immediate transaction mode,
+max one connection. It never creates the database and never turns a borrowed
+Read connection writable. Separate fixed connectors are needed to preserve
+SQLite's native read-only open mode; they are not independent adapter ownership
+or independent Close responsibilities. No additional raw Header FD or lease is
+opened. Both actual pools must be confirmed closed/empty before Header/lease
+release. A profile can be configured without a physical Writer pool yet existing.
+
+Admission is deliberately conservative and fail-fast across the entire owned
+registry inode, stronger than a per-Resource conflict check. A Writer requires no
+active Read or Writer borrow; while a Writer borrow exists, new Read and Writer
+borrows are rejected. Multiple Reads remain allowed. The decision and counted
+borrow registration occur under the existing short Owner gate. There is no
+queued Writer, hidden retry, fairness guarantee or mutex held across SQL I/O.
+Rejecting contention avoids an outer-public-Read/inner-transaction/queued-Writer
+deadlock. Close first closes admission, then drains all accepted role borrows.
+
+Admission, connection acquisition, SQL transaction lifetime and terminal resource
+return are distinct. A pending acquisition is already an Owner drain duty.
+Connection and transaction associations use the same Owner's tracked maps.
+BEGIN IMMEDIATE reserves SQLite's writer position early; it does not exclude
+external readers or establish Host-wide Actor closure. External readers may
+still block COMMIT. Existing DELETE journal mode and role settings are validated;
+no runtime migration, journal-mode conversion, checkpoint, VACUUM or repair is
+performed. No caller supplies DSN, arbitrary path, PRAGMA or SQL.
+
+The private Writer transaction does not embed sql.Tx or expose a raw SQL API.
+Product code receives only the internal transaction-lifecycle foundation; tests
+can access private handles solely for temporary synthetic fixtures. Commit
+success concerns the SQL transaction only, never P-A reference activation,
+Receipt durability, service apply or business authorization. A nonnil Commit
+result remains UNKNOWN conservatively. The pinned driver may attempt rollback
+on Commit error without reporting that rollback's result; returning a connection
+to its pool cannot prove the ambiguous outcome. Unknown transaction/connection
+duties retain their handles, mark UNCERTAIN before counted work ends, and prevent
+resource release or automatic reuse/retry. Context cancellation does not promote
+uncertain cleanup to known rollback. Repeated terminal calls never replay SQL.
+
+InspectLifecycle remains one read-only sampling pass. Its short gate only copies
+scalar Writer bookkeeping and pool references; Writer Stats are observed outside
+the gate and the frame version is checked once. No SQL, transaction, connection
+borrow, FD/lease action, Close, retry, repair or configuration change occurs.
+Pool continues to describe the Read pool; Roles.Write.Pool describes the actual
+Writer pool if created. PoolCreated disambiguates an absent pool from one whose
+release is unconfirmed. Writer counts are asserted only on an explicitly
+configured owner and include retained handles with unknown release. They do not
+assert currently live SQL work or locks. UnknownOutcomes tracks unresolved
+transaction outcomes separately. Drain COMPLETE can coexist with UNCERTAIN;
+it means counted borrows ended, not that retained resources were released.
+
+Roles.WriterAdmission=PROVIDED means an internal admission path is installed.
+Roles.Write.Admission reports its current local conflict predicate. Neither
+means CP authorization, Drain READY, final Fence or P-A permission. Mutation,
+GuardControl and Independent Continuity remain NOT_IMPLEMENTED. Injecting a
+ContinuityReadPort test/read dependency does not implement an independent Store.
+
+Pinned implementation references:
+- https://github.com/modernc-org/sqlite/blob/v1.62.0/connector.go
+- https://github.com/modernc-org/sqlite/blob/v1.62.0/tx.go
+- https://github.com/modernc-org/sqlite/blob/v1.62.0/sqlite.go
+- https://github.com/golang/go/blob/go1.26.5/src/database/sql/sql.go
+
+Only temporary synthetic databases/processes may be used by these tests.
+P-A Mutation, GuardControl, independent Continuity/Witness storage, CP/UDS/real
+Verifier integration, service/media/provider actions and deployment are absent.
+Power-loss durability, Host-wide Actor exclusion, independent restore freshness,
+real clocks and native ARM64 execution remain unproven. Product-wide acceptance
+is NOT_RUN, Phase 1 closure is on hold, production migration is unauthorized and
+formal v2 return is NOT_CERTIFIED. Preservation/manual-hold/old-authority-nonreuse
+and UNKNOWN/HELD constraints remain unchanged.
+
+The installed Writer profile does not adopt a storage durability target, a clock,
+TTL or retry budget. Physical SQLite open may be non-cancellable once the pinned
+driver enters sqlite3_open_v2; the counted borrow still prevents Close from
+releasing resources while that call is unresolved. Cancellation before Begin is
+separate from cancellation after an accepted transaction. The latter remains
+UNKNOWN until independently reconciled; no reconciliation or force-release API
+is supplied by this increment.

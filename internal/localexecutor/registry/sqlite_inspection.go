@@ -77,7 +77,8 @@ type LifecycleCloseDiagnostic struct {
 	LeaseReleased  LifecycleFact
 }
 
-// LifecycleRoleImplementation describes implemented code, not execution authority.
+// LifecycleRoleImplementation describes participation installed on this owner,
+// not binary-wide support or execution authority.
 type LifecycleRoleImplementation string
 
 const (
@@ -90,6 +91,7 @@ type LifecycleAdmissionStatus string
 
 const (
 	LifecycleAdmissionNotProvided LifecycleAdmissionStatus = "NOT_PROVIDED"
+	LifecycleAdmissionProvided LifecycleAdmissionStatus = "PROVIDED"
 	LifecycleAdmissionUnknown     LifecycleAdmissionStatus = "UNKNOWN"
 )
 
@@ -105,14 +107,42 @@ type LifecycleReadRoleDiagnostic struct {
 	UnresolvedConnections LifecycleCount
 }
 
-// There are deliberately no Writer connection/transaction counts: no Writer
-// pool, admission or Mutation implementation is supplied by this owner.
+// A configured profile is an internal connection capability, not P-A authority.
+type LifecycleWriterProfileState string
+
+const (
+    LifecycleWriterProfileNotConfigured LifecycleWriterProfileState = "NOT_CONFIGURED"
+    LifecycleWriterProfileConfigured LifecycleWriterProfileState = "CONFIGURED"
+    LifecycleWriterProfileUnknown LifecycleWriterProfileState = "UNKNOWN"
+)
+
+type LifecycleWriteRoleDiagnostic struct {
+    // Compiled profile support is distinct from participation installed on this Owner.
+    ProfileImplementation LifecycleRoleImplementation
+    Profile LifecycleWriterProfileState
+    Admission LifecycleFact
+    Operations LifecycleCount
+    Transactions LifecycleCount
+    Connections LifecycleCount
+    UnresolvedConnections LifecycleCount
+    UnknownOutcomes LifecycleCount
+    Pool LifecyclePoolDiagnostic
+    PoolCreated LifecycleFact
+    PoolCloseStarted LifecycleFact
+    PoolReleased LifecycleFact
+}
+
+// Read-only owners have no installed Writer profile. Writer counts are only
+// asserted after explicit internal installation; Mutation remains unavailable.
 type LifecycleRolesDiagnostic struct {
-	SharedOwner            LifecycleFact
-	Read                   LifecycleReadRoleDiagnostic
-	WriteImplementation    LifecycleRoleImplementation
-	WriterAdmission        LifecycleAdmissionStatus
-	MutationImplementation LifecycleRoleImplementation
+    SharedOwner LifecycleFact
+    Read LifecycleReadRoleDiagnostic
+    Write LifecycleWriteRoleDiagnostic
+    WriteImplementation LifecycleRoleImplementation
+    WriterAdmission LifecycleAdmissionStatus
+    MutationImplementation LifecycleRoleImplementation
+    GuardControlImplementation LifecycleRoleImplementation
+    ContinuityImplementation LifecycleRoleImplementation
 }
 
 // RegistryLifecycleDiagnostic is an explicit safe projection. It contains no
@@ -143,6 +173,15 @@ type registryLifecycleFrame struct {
 	readConnections       int64
 	unresolvedConnections int64
 	roleTrackingInvalid   bool
+	writerConfigured bool
+	writeOperations int64
+	writeTransactions int64
+	writeConnections int64
+	writeUnresolvedConnections int64
+	writeUnknownOutcomes int64
+	writePool registryConnectionPool
+	writePoolCloseStarted bool
+	writePoolReleased bool
 	ready                 bool
 	closing               bool
 	uncertain             bool
@@ -167,6 +206,7 @@ type registryLifecycleSnapshot struct {
 	frame           registryLifecycleFrame
 	stable          bool
 	pool            LifecyclePoolDiagnostic
+	writePool       LifecyclePoolDiagnostic
 	headerReference LifecycleFact
 	headerValid     LifecycleFact
 	headerClosed    LifecycleFact
@@ -213,21 +253,53 @@ func unknownLifecycleRolesDiagnostic() LifecycleRolesDiagnostic {
 			Connections:           LifecycleCount{Knowledge: Unknown},
 			UnresolvedConnections: LifecycleCount{Knowledge: Unknown},
 		},
+		Write: unknownLifecycleWriteRoleDiagnostic(),
 		WriteImplementation:    LifecycleRoleUnknown,
 		WriterAdmission:        LifecycleAdmissionUnknown,
 		MutationImplementation: LifecycleRoleUnknown,
+		GuardControlImplementation: LifecycleRoleUnknown,
+		ContinuityImplementation: LifecycleRoleUnknown,
 	}
+}
+
+func unknownLifecycleWriteRoleDiagnostic() LifecycleWriteRoleDiagnostic {
+    return LifecycleWriteRoleDiagnostic{
+        ProfileImplementation: LifecycleRoleUnknown,
+        Profile: LifecycleWriterProfileUnknown, Admission: lifecycleUnknown(),
+        Operations: LifecycleCount{Knowledge: Unknown},
+        Transactions: LifecycleCount{Knowledge: Unknown},
+        Connections: LifecycleCount{Knowledge: Unknown},
+        UnresolvedConnections: LifecycleCount{Knowledge: Unknown},
+        UnknownOutcomes: LifecycleCount{Knowledge: Unknown},
+        Pool: LifecyclePoolDiagnostic{Knowledge: Unknown},
+        PoolCreated: lifecycleUnknown(), PoolCloseStarted: lifecycleUnknown(),
+        PoolReleased: lifecycleUnknown(),
+    }
 }
 
 // Role bookkeeping is copied as scalars under gate, never inferred from Pool
 // Stats or by scanning/altering the operation ownership map during Inspection.
 func (frame registryLifecycleFrame) validRoleCounts() bool {
-	return !frame.roleTrackingInvalid && frame.readOperations >= 0 &&
-		frame.readOperations == frame.active && frame.readTransactions >= 0 &&
-		frame.readConnections >= 0 && frame.unresolvedConnections >= 0 &&
-		frame.readTransactions <= frame.readConnections &&
-		frame.unresolvedConnections <= frame.readConnections &&
-		(frame.unresolvedConnections == 0 || frame.uncertain)
+    return !frame.roleTrackingInvalid && frame.active >= 0 && frame.readOperations >= 0 &&
+        frame.writeOperations >= 0 && frame.writeOperations <= 1 &&
+        frame.readOperations + frame.writeOperations == frame.active &&
+        (frame.writeOperations == 0 || frame.readOperations == 0) &&
+        frame.readTransactions >= 0 && frame.readConnections >= 0 &&
+        frame.unresolvedConnections >= 0 &&
+        frame.readTransactions <= frame.readConnections &&
+        frame.unresolvedConnections <= frame.readConnections &&
+        (frame.unresolvedConnections == 0 || frame.uncertain) &&
+        frame.writeTransactions >= 0 && frame.writeConnections >= 0 &&
+        frame.writeUnresolvedConnections >= 0 && frame.writeUnknownOutcomes >= 0 &&
+        frame.writeTransactions <= frame.writeConnections &&
+        frame.writeUnresolvedConnections <= frame.writeConnections &&
+        frame.writeUnknownOutcomes <= frame.writeConnections &&
+        (frame.writeUnresolvedConnections == 0 || frame.uncertain) &&
+        (frame.writeUnknownOutcomes == 0 || frame.uncertain) &&
+        (frame.writerConfigured || (frame.writeOperations == 0 &&
+            frame.writeTransactions == 0 && frame.writeConnections == 0 &&
+            frame.writeUnresolvedConnections == 0 && frame.writeUnknownOutcomes == 0 &&
+            readNilPort(frame.writePool)))
 }
 
 func (owner *registryLifecycleOwner) lifecycleFrame() registryLifecycleFrame {
@@ -238,6 +310,12 @@ func (owner *registryLifecycleOwner) lifecycleFrame() registryLifecycleFrame {
 		readOperations: owner.readOperations, readTransactions: owner.readTransactions,
 		readConnections: owner.readConnections, unresolvedConnections: owner.unresolvedConnections,
 		roleTrackingInvalid: owner.roleTrackingInvalid,
+		writerConfigured: owner.writerConfigured,
+		writeOperations: owner.writeOperations, writeTransactions: owner.writeTransactions,
+		writeConnections: owner.writeConnections, writeUnresolvedConnections: owner.writeUnresolvedConnections,
+		writeUnknownOutcomes: owner.writeUnknownOutcomes,
+		writePool: owner.writePool, writePoolCloseStarted: owner.writePoolCloseStarted,
+		writePoolReleased: owner.writePoolReleased,
 		ready:               owner.ready, closing: owner.closing.Load(), uncertain: owner.uncertain.Load(),
 		drainFinished: owner.drainFinished, closeFinished: owner.closeFinished,
 		closeError: owner.closeErr != nil, poolCloseStarted: owner.poolCloseStarted,
@@ -256,6 +334,7 @@ func (owner *registryLifecycleOwner) lifecycleFrame() registryLifecycleFrame {
 func (owner *registryLifecycleOwner) snapshotLifecycle() registryLifecycleSnapshot {
 	snapshot := registryLifecycleSnapshot{
 		pool:            LifecyclePoolDiagnostic{Knowledge: Unknown},
+		writePool:       LifecyclePoolDiagnostic{Knowledge: Unknown},
 		headerReference: lifecycleUnknown(), headerValid: lifecycleUnknown(),
 		headerClosed: lifecycleUnknown(), pathValid: lifecycleUnknown(),
 		leaseHeld: lifecycleUnknown(), leaseLinked: lifecycleUnknown(),
@@ -280,6 +359,16 @@ func (owner *registryLifecycleOwner) snapshotLifecycle() registryLifecycleSnapsh
 			}
 		}
 	}
+    if !readNilPort(frame.writePool) {
+        stats := frame.writePool.Stats()
+        if stats.OpenConnections >= 0 && stats.InUse >= 0 && stats.Idle >= 0 &&
+            stats.OpenConnections == stats.InUse + stats.Idle {
+            snapshot.writePool = LifecyclePoolDiagnostic{
+                Knowledge: Known, OpenConnections: stats.OpenConnections,
+                InUse: stats.InUse, Idle: stats.Idle,
+            }
+        }
+    }
 	snapshot.headerReference = lifecycleKnown(headerPresent)
 	if frame.headerReleased {
 		// Managed Close confirmed release. Never probe a cached descriptor
@@ -338,12 +427,23 @@ func (snapshot registryLifecycleSnapshot) safeDiagnostic() RegistryLifecycleDiag
 	result.Roles.WriteImplementation = LifecycleRoleNotImplemented
 	result.Roles.WriterAdmission = LifecycleAdmissionNotProvided
 	result.Roles.MutationImplementation = LifecycleRoleNotImplemented
+	result.Roles.GuardControlImplementation = LifecycleRoleNotImplemented
+	result.Roles.ContinuityImplementation = LifecycleRoleNotImplemented
+	result.Roles.Write.ProfileImplementation = LifecycleRoleImplemented
+	result.Roles.Write.Profile = LifecycleWriterProfileNotConfigured
+	result.Roles.Write.Admission = lifecycleKnown(false)
+	if frame.writerConfigured {
+		result.Roles.Write.Profile = LifecycleWriterProfileConfigured
+		result.Roles.WriteImplementation = LifecycleRoleImplemented
+		result.Roles.WriterAdmission = LifecycleAdmissionProvided
+	}
 	if !frame.validRoleCounts() {
 		if frame.uncertain {
 			result.State = LifecycleUncertain
 		}
 		result.AcceptingOperations = lifecycleKnown(false)
 		result.Roles.Read.Admission = lifecycleKnown(false)
+		result.Roles.Write.Admission = lifecycleKnown(false)
 		return result
 	}
 	result.Roles.SharedOwner = lifecycleKnown(true)
@@ -351,13 +451,26 @@ func (snapshot registryLifecycleSnapshot) safeDiagnostic() RegistryLifecycleDiag
 	result.Roles.Read.Transactions = LifecycleCount{Knowledge: Known, Value: frame.readTransactions}
 	result.Roles.Read.Connections = LifecycleCount{Knowledge: Known, Value: frame.readConnections}
 	result.Roles.Read.UnresolvedConnections = LifecycleCount{Knowledge: Known, Value: frame.unresolvedConnections}
+	if frame.writerConfigured {
+		result.Roles.Write.Operations = LifecycleCount{Knowledge: Known, Value: frame.writeOperations}
+		result.Roles.Write.Transactions = LifecycleCount{Knowledge: Known, Value: frame.writeTransactions}
+		result.Roles.Write.Connections = LifecycleCount{Knowledge: Known, Value: frame.writeConnections}
+		result.Roles.Write.UnresolvedConnections = LifecycleCount{Knowledge: Known, Value: frame.writeUnresolvedConnections}
+		result.Roles.Write.UnknownOutcomes = LifecycleCount{Knowledge: Known, Value: frame.writeUnknownOutcomes}
+	}
+	result.Roles.Write.Pool = snapshot.writePool
+	result.Roles.Write.PoolCreated = lifecycleKnown(!readNilPort(frame.writePool))
+	result.Roles.Write.PoolCloseStarted = lifecycleKnown(frame.writePoolCloseStarted)
+	result.Roles.Write.PoolReleased = lifecycleKnown(frame.writePoolReleased)
 	result.Consistency = Known
 	result.ActiveOperations = LifecycleCount{Knowledge: Known, Value: frame.active}
 	// This is the actual published owner's admission predicate, not read
 	// validation, business admission, Drain READY or P-A/Writer permission.
 	result.AcceptingOperations = lifecycleKnown(frame.ready && !frame.closing && !frame.uncertain &&
-		!readNilPort(frame.pool) && !readNilPort(frame.header))
+		!readNilPort(frame.pool) && !readNilPort(frame.header) && frame.writeOperations == 0)
 	result.Roles.Read.Admission = result.AcceptingOperations
+	result.Roles.Write.Admission = lifecycleKnown(frame.writerConfigured &&
+		lifecycleTrue(result.AcceptingOperations) && frame.readOperations == 0 && frame.writeOperations == 0)
 	switch {
 	case frame.closing && frame.drainFinished:
 		result.Drain = LifecycleDrainComplete
@@ -383,12 +496,13 @@ func (snapshot registryLifecycleSnapshot) safeDiagnostic() RegistryLifecycleDiag
 		Result: LifecycleCloseNotStarted, PoolReleased: lifecycleKnown(frame.poolReleased),
 		HeaderReleased: lifecycleKnown(frame.headerReleased), LeaseReleased: lifecycleKnown(frame.leaseReleased),
 	}
+	writerReleased := readNilPort(frame.writePool) || frame.writePoolReleased
 	switch {
 	case frame.closing && !frame.closeFinished:
 		result.Close.Result = LifecycleClosePending
 	case frame.closing && frame.closeFinished && (frame.uncertain || frame.closeError):
 		result.Close.Result = LifecycleCloseUnknown
-	case frame.closing && frame.closeFinished && frame.poolReleased && frame.headerReleased && frame.leaseReleased:
+	case frame.closing && frame.closeFinished && frame.poolReleased && frame.headerReleased && frame.leaseReleased && writerReleased:
 		result.Close.Result = LifecycleCloseSucceeded
 	case frame.closing:
 		result.Close.Result = LifecycleCloseUnknown
@@ -399,9 +513,12 @@ func (snapshot registryLifecycleSnapshot) safeDiagnostic() RegistryLifecycleDiag
 	case frame.closing && !frame.closeFinished:
 		result.State = LifecycleClosing
 	case frame.closing && frame.closeFinished && !frame.closeError &&
-		frame.drainFinished && frame.poolReleased && frame.headerReleased && frame.leaseReleased &&
+		frame.drainFinished && frame.poolReleased && frame.headerReleased && frame.leaseReleased && writerReleased &&
 		frame.readOperations == 0 && frame.readTransactions == 0 &&
 		frame.readConnections == 0 && frame.unresolvedConnections == 0 &&
+		frame.writeOperations == 0 && frame.writeTransactions == 0 && frame.writeConnections == 0 &&
+		frame.writeUnresolvedConnections == 0 && frame.writeUnknownOutcomes == 0 &&
+		(readNilPort(frame.writePool) || (snapshot.writePool.Knowledge == Known && snapshot.writePool.OpenConnections == 0)) &&
 		snapshot.pool.Knowledge == Known && snapshot.pool.OpenConnections == 0 &&
 		lifecycleTrue(snapshot.headerClosed) && lifecycleFalse(snapshot.leaseHeld) &&
 		lifecycleTrue(snapshot.leaseLinked):
@@ -409,7 +526,8 @@ func (snapshot registryLifecycleSnapshot) safeDiagnostic() RegistryLifecycleDiag
 	case frame.ready && !frame.closing && !frame.closeFinished &&
 		lifecycleTrue(snapshot.headerValid) && lifecycleFalse(snapshot.headerClosed) &&
 		lifecycleTrue(snapshot.pathValid) && lifecycleTrue(snapshot.leaseHeld) &&
-		lifecycleTrue(snapshot.leaseLinked) && snapshot.pool.Knowledge == Known:
+		lifecycleTrue(snapshot.leaseLinked) && snapshot.pool.Knowledge == Known &&
+		(readNilPort(frame.writePool) || snapshot.writePool.Knowledge == Known):
 		result.State = LifecycleOpen
 	}
 	return result
