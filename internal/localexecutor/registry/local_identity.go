@@ -5,9 +5,9 @@ import "context"
 // LocalExecutorIdentity contains raw, read-only OS facts. PID/start ticks are not
 // a v3 incarnation, clock, authority, Drain proof or independent restore witness.
 type LocalExecutorIdentity struct {
-	Knowledge Knowledge
-	BootID ID
-	ProcessID uint64
+	Knowledge  Knowledge
+	BootID     ID
+	ProcessID  uint64
 	StartTicks uint64
 }
 

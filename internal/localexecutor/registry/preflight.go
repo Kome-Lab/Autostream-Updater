@@ -80,7 +80,7 @@ type PreflightGuardObservation struct {
 	DrainSeal         ID
 	Proof             ID
 	// SourceEvidence is internal post-transport data, never a selected wire/token format.
-	SourceEvidence    *GuardEvidenceBundle
+	SourceEvidence *GuardEvidenceBundle
 }
 
 type PreflightGuardReadPort interface {
