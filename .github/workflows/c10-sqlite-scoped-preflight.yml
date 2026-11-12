@@ -1,0 +1,43 @@
+name: C10 SQLite scoped preflight
+on:
+  push:
+    branches: [codex/c10-sqlite-read-20261111]
+permissions:
+  contents: read
+env:
+  GOMAXPROCS: '2'
+  GOTOOLCHAIN: local
+  GOWORK: 'off'
+  GOFLAGS: -mod=readonly
+jobs:
+  sqlite-scoped-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.5'
+          check-latest: false
+          cache: false
+      - name: Format scoped Go sources
+        run: gofmt -w internal/localexecutor/registry/sqlite_read.go internal/localexecutor/registry/sqlite_continuity.go internal/localexecutor/registry/sqlite_schema.go internal/localexecutor/registry/sqlite_read_test.go internal/localexecutor/registry/sqlite_additional_test.go internal/localexecutor/registry/types.go
+      - name: Capture formatted source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          names=['sqlite_read.go','sqlite_continuity.go','sqlite_schema.go','sqlite_read_test.go','sqlite_additional_test.go','types.go']
+          for name in names:
+              path='internal/localexecutor/registry/'+name
+              print('REGISTRY_FORMATTED_FILE='+json.dumps({'path':path,'content':Path(path).read_text()},ensure_ascii=True))
+          PY
+      - name: Run synthetic SQLite tests without CGO
+        run: CGO_ENABLED=0 go test -p 1 -count=1 -v -run '^TestSQLite' ./internal/localexecutor/registry
+      - name: Vet registry
+        run: go vet -p 1 ./internal/localexecutor/registry

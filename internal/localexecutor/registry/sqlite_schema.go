@@ -2,21 +2,40 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	_ "embed"
+	"encoding/hex"
 	"strings"
 )
 
 const (
-	RegistrySchemaVersion = 1
-	RegistryApplicationID = 0x41535633
+	RegistrySchemaVersion    = 2
+	RegistryMigrationVersion = 2
+	RegistryApplicationID    = 0x41535633
 )
 
 // registryInitialMigration has no runtime call site. It is applied only by the
 // explicit administration/test operation below, never while opening a ReadPort.
 //
-//go:embed sqlite_migrations/0001_initial.sql
+//go:embed sqlite_migrations/0002_initial_read.sql
 var registryInitialMigration string
+
+const registryMigrationLedgerDDL = `CREATE TABLE registry_migrations (
+    version INTEGER NOT NULL PRIMARY KEY CHECK (version = 2),
+    checksum TEXT NOT NULL CHECK (
+        length(checksum) = 64 AND checksum NOT GLOB '*[^0-9a-f]*'
+    ),
+    dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
+    target_schema_version INTEGER NOT NULL CHECK (target_schema_version = 2)
+) STRICT`
+
+// RegistryMigrationChecksum binds the exact embedded v2 migration bytes and its
+// durable migration-ledger definition. It is not a data or Continuity proof.
+func RegistryMigrationChecksum() string {
+	sum := sha256.Sum256([]byte(registryMigrationLedgerDDL + "\n" + registryInitialMigration))
+	return hex.EncodeToString(sum[:])
+}
 
 type sqliteQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -45,7 +64,7 @@ func sqliteNormalizeDDL(statement string) string {
 }
 
 func sqliteExpectedTables() map[string]string {
-	expected := make(map[string]string)
+	expected := map[string]string{"registry_migrations": sqliteNormalizeDDL(registryMigrationLedgerDDL)}
 	for _, statement := range sqliteMigrationStatements() {
 		words := strings.Fields(statement)
 		if len(words) >= 3 && words[0] == "CREATE" && words[1] == "TABLE" {
@@ -56,7 +75,7 @@ func sqliteExpectedTables() map[string]string {
 }
 
 // validateSQLiteSchema executes only metadata SELECTs and read PRAGMAs. Matching
-// a version integer is insufficient: the complete fixed v1 schema is checked.
+// a version integer is insufficient: the complete fixed v2 schema is checked.
 // This is not a sandbox for malicious SQLite files or privileged host actors.
 func validateSQLiteSchema(ctx context.Context, query sqliteQueryer) error {
 	if ctx == nil || query == nil {
@@ -119,8 +138,8 @@ func validateSQLiteSchema(ctx context.Context, query sqliteQueryer) error {
 		return invalid("sqlite.schema_missing")
 	}
 	// Each fixed composite PK/UNIQUE must have its expected SQLite autoindex.
-	// registry_meta uses INTEGER PRIMARY KEY and has no autoindex.
-	counts := map[string]int{"resources": 1, "executions": 3, "projections": 1, "witnesses": 1, "liabilities": 1}
+	// registry_meta and registry_migrations use INTEGER PRIMARY KEY without autoindexes.
+	counts := map[string]int{"resources": 1, "executions": 3, "projections": 1, "reference_transitions": 4}
 	for table, count := range counts {
 		for index := 1; index <= count; index++ {
 			// index values are a small internal constant, never caller SQL.
@@ -130,7 +149,7 @@ func validateSQLiteSchema(ctx context.Context, query sqliteQueryer) error {
 			}
 		}
 	}
-	if len(autoindexes) != 7 {
+	if len(autoindexes) != 9 {
 		return invalid("sqlite.schema_index_count")
 	}
 	meta, err := query.QueryContext(ctx, "SELECT singleton, schema_version, schema_name, journal_profile, codec FROM registry_meta")
@@ -147,7 +166,7 @@ func validateSQLiteSchema(ctx context.Context, query sqliteQueryer) error {
 		}
 		count++
 		if singleton != 1 || schemaVersion != RegistrySchemaVersion ||
-			name != "autostream-v3-registry" || profile != "delete" || codec != "internal-json-v1" {
+			name != "autostream-v3-registry" || profile != "delete" || codec != "internal-json-v2" {
 			meta.Close()
 			return invalid("sqlite.metadata")
 		}
@@ -162,14 +181,56 @@ func validateSQLiteSchema(ctx context.Context, query sqliteQueryer) error {
 	if count != 1 {
 		return invalid("sqlite.metadata_count")
 	}
+	return sqliteValidateMigration(ctx, query, 0)
+}
+
+// sqliteValidateMigration rejects missing, repeated, dirty or differently bound
+// records. Absence is not treated as an unattempted or recoverable migration.
+func sqliteValidateMigration(ctx context.Context, query sqliteQueryer, expectedDirty int64) error {
+	rows, err := query.QueryContext(ctx, "SELECT version, checksum, dirty, target_schema_version FROM registry_migrations")
+	if err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_record_read")
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var version, dirty, target int64
+		var checksum string
+		if err := rows.Scan(&version, &checksum, &dirty, &target); err != nil {
+			return sqliteSchemaFailure(ctx, "sqlite.migration_record_scan")
+		}
+		count++
+		if version != RegistryMigrationVersion || target != RegistrySchemaVersion {
+			return invalid("sqlite.migration_record_version")
+		}
+		if checksum != RegistryMigrationChecksum() {
+			return invalid("sqlite.migration_checksum")
+		}
+		if dirty != expectedDirty {
+			return invalid("sqlite.migration_dirty")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_record_iteration")
+	}
+	if err := rows.Close(); err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_record_close")
+	}
+	if count != 1 {
+		return invalid("sqlite.migration_record_count")
+	}
 	return nil
 }
 
-// MigrateRegistrySchemaV1ForAdministration is an explicit management/test-only
-// write operation. ReadPort opening never calls it. It accepts only an empty
-// delete-journal database or the exact existing v1 schema. There is no repair,
-// destructive migration, VACUUM, checkpoint, automatic retry or schema downgrade.
-func MigrateRegistrySchemaV1ForAdministration(ctx context.Context, database *sql.DB) error {
+// MigrateRegistrySchemaV2ForAdministration is an explicit, offline administration/
+// test operation, never a ReadPort dependency. Fresh v2 baselines only: prior v1,
+// nonempty, dirty and mismatched databases are preserved and rejected. No upgrade,
+// repair, destructive cleanup, retry, VACUUM or checkpoint is implemented.
+//
+// First commit a dirty ledger on the empty database. Then apply the v2 schema and
+// mark clean together in a second transaction. Failure after the first commit
+// intentionally leaves durable dirty evidence; it must not be retried implicitly.
+func MigrateRegistrySchemaV2ForAdministration(ctx context.Context, database *sql.DB) error {
 	if ctx == nil || database == nil {
 		return invalid("sqlite.migration_context")
 	}
@@ -211,12 +272,69 @@ func MigrateRegistrySchemaV1ForAdministration(ctx context.Context, database *sql
 		return sqliteSchemaFailure(ctx, "sqlite.migration_existing_schema")
 	}
 	if objects != 0 {
-		return invalid("sqlite.migration_nonempty")
+		return invalid("sqlite.migration_nonempty_or_dirty")
+	}
+	if _, err := tx.ExecContext(ctx, registryMigrationLedgerDDL); err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_ledger_create")
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO registry_migrations(version, checksum, dirty, target_schema_version) VALUES(?, ?, 1, ?)", RegistryMigrationVersion, RegistryMigrationChecksum(), RegistrySchemaVersion); err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_ledger_record")
+	}
+	if err := tx.Commit(); err != nil {
+		// Commit uncertainty is not permission to start a second migration.
+		return sqliteSchemaFailure(ctx, "sqlite.migration_dirty_commit")
+	}
+	return sqliteApplyFreshV2(ctx, database)
+}
+
+// sqliteApplyFreshV2 has no public resume entry. The only caller has just created
+// the dirty ledger; all baseline conditions are checked again in this transaction.
+func sqliteApplyFreshV2(ctx context.Context, database *sql.DB) error {
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_apply_begin")
+	}
+	defer tx.Rollback()
+	var applicationID, version, objects int64
+	var profile, definition string
+	for _, item := range []struct {
+		query string
+		value *int64
+	}{
+		{"PRAGMA application_id", &applicationID},
+		{"PRAGMA user_version", &version},
+		{"SELECT count(*) FROM sqlite_schema", &objects},
+	} {
+		if err := tx.QueryRowContext(ctx, item.query).Scan(item.value); err != nil {
+			return sqliteSchemaFailure(ctx, "sqlite.migration_apply_baseline")
+		}
+	}
+	if err := tx.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&profile); err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_apply_profile")
+	}
+	if applicationID != 0 || version != 0 || objects != 1 || profile != "delete" {
+		return invalid("sqlite.migration_apply_baseline")
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT sql FROM sqlite_schema WHERE type='table' AND name='registry_migrations'").Scan(&definition); err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_apply_manifest")
+	}
+	if sqliteNormalizeDDL(definition) != sqliteNormalizeDDL(registryMigrationLedgerDDL) {
+		return invalid("sqlite.migration_apply_manifest")
+	}
+	if err := sqliteValidateMigration(ctx, tx, 1); err != nil {
+		return err
 	}
 	for _, statement := range sqliteMigrationStatements() {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return sqliteSchemaFailure(ctx, "sqlite.migration_statement")
 		}
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE registry_migrations SET dirty=0 WHERE version=? AND checksum=? AND dirty=1 AND target_schema_version=?", RegistryMigrationVersion, RegistryMigrationChecksum(), RegistrySchemaVersion)
+	if err != nil {
+		return sqliteSchemaFailure(ctx, "sqlite.migration_clean_record")
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		return invalid("sqlite.migration_clean_record")
 	}
 	if err := validateSQLiteSchema(ctx, tx); err != nil {
 		return err

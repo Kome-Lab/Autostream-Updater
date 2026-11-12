@@ -81,83 +81,151 @@ migration, Phase 1 completion, or formal v2 return.
 
 ## SQLite driver selection
 
+Reviewed on 2026-11-12 JST. Selection is for this C10 Read Adapter only;
+it does not adopt a production Writer, storage/lock profile or PoC configuration.
+
 | Property | modernc.org/sqlite v1.62.0 | mattn/go-sqlite3 v1.14.53 |
 | --- | --- | --- |
+| Fixed source commit | d04d243c4dfdb9f9fb19bd1c0c8c37d3923f0589 | 93c7e0a2ec6762a38ab371755d49a2b3f4a12e67 |
 | Engine | SQLite 3.54.1 | SQLite 3.54.1 |
 | Go module minimum | Go 1.26.0 | Go 1.21 |
-| Linux amd64/arm64 | CGo-free generated Go core | Requires CGO and target C compiler |
-| Current CGO_ENABLED=0 release | Selected; libc pinned v1.80.1 | !cgo Open is an error stub |
-| Read-only | Internally constructed file: URI mode=ro | Also supports mode=ro with CGO |
-| Maintenance cost | Additional exact generated/libc dependencies | C ABI/compiler/cross-toolchain dependencies |
+| Linux amd64/arm64 | CGo-free generated Go core | CGO and target C toolchain required |
+| Existing CGO_ENABLED=0 release | Selected; libc pinned v1.80.1 | !cgo Open is an error stub |
+| Native read-only | Internally constructed file: URI mode=ro | Also supports mode=ro with CGO |
+| query_only | Connector-local supplementary protection | Same SQLite connection-local constraint |
+| Read transaction/snapshot | All queries on one explicit Tx/connection | Same SQLite isolation requirement |
+| Busy/locked | No automatic retry; safe unavailable/context error | Same underlying SQLite locking model |
+| Cancellation | v1.61.1 lock-wait Commit/Rows fix included | Binding also requires context/lock qualification |
+| Maintenance | Latest release only; generated/libc version coupling | Current 1.14.x, additional C toolchain/ABI coupling |
+| Driver license | BSD-3-Clause | MIT |
+| Bundled engine | SQLite public domain; third-party notices also apply | SQLite public domain; third-party notices also apply |
+| Reproduction inputs | Go, checksummed modules, target, flags, generated source | Also CC/CFLAGS/linker/libc/bundled-vs-system SQLite |
 
-This selection is for the Read Adapter, not a global Storage/Lock/Writer policy.
-The libc version must match the selected driver's go.mod. Necessary x/sys,
-x/mod and x/sync versions follow Go's selected dependency graph.
-The current release script builds both existing cmds with CGO_ENABLED=0 on
-linux/amd64 and linux/arm64. CI also compiles the registry test binary on both
-architectures, because existing cmds do not yet import this package. ARM64
-cross-compilation is not native ARM64 test execution.
+The selection follows the actual CGO-free release requirement, not a blanket
+claim that generated Go is safer. modernc adds dependencies and generated-source
+maintenance; mattn requires a C compiler for each target and fails at runtime
+with CGO disabled. Existing cmds do not yet import this package; CI therefore
+also compiles the registry test binary for both architectures. ARM64 compilation
+is not native ARM64 execution.
+
+Source/binary tracing uses go.mod/go.sum, fixed source commits, Go 1.26.5,
+GOOS/GOARCH/CGO, build metadata, runtime sqlite_version/sqlite_source_id and test
+binary hashes in CI. The exact SQLite source ID is asserted by tests:
+2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76.
+A C amalgamation hash, a transpiled Go module hash and a product binary digest
+are different evidence. Independent clean-build byte reproducibility and
+modernc signed-provenance verification are not demonstrated by these tests.
+
+Security review coverage is PARTIAL: official SQLite CVE/release information,
+driver security policies and licenses were read. modernc supports the latest
+release only. The mattn repository reports no published repository advisories,
+which is not an all-dependency security clearance. modernc's advisory page and
+direct GoVuln module endpoints were unavailable; official vulndb import-path
+search results are not a complete advisory scan. Dependency-wide reachability
+analysis is NOT_RUN. No claim of "no vulnerabilities" is made.
 
 Primary sources:
 - https://github.com/modernc-org/sqlite/blob/v1.62.0/go.mod
 - https://github.com/modernc-org/sqlite/blob/v1.62.0/CHANGELOG.md
 - https://github.com/modernc-org/sqlite/blob/v1.62.0/driver.go
 - https://github.com/modernc-org/sqlite/blob/v1.62.0/connector.go
+- https://github.com/modernc-org/sqlite/blob/v1.62.0/SECURITY.md
+- https://github.com/modernc-org/sqlite/blob/v1.62.0/VERIFYING.md
+- https://github.com/modernc-org/sqlite/blob/v1.62.0/SBOM.md
+- https://github.com/modernc-org/sqlite/blob/v1.62.0/LICENSE
 - https://github.com/mattn/go-sqlite3/blob/v1.14.53/static_mock.go
+- https://github.com/mattn/go-sqlite3/releases/tag/v1.14.53
+- https://github.com/mattn/go-sqlite3/blob/v1.14.53/LICENSE
+- https://www.sqlite.org/releaselog/3_54_1.html
+- https://www.sqlite.org/cves.html
+- https://www.sqlite.org/uri.html
+- https://www.sqlite.org/pragma.html#pragma_query_only
 - https://www.sqlite.org/isolation.html
 - https://www.sqlite.org/wal.html#read_only_databases
 
-## Schema and runtime boundary
+## Schema v2 and explicit migration
 
-Schema v1 uses Application ID 0x41535633, PRAGMA user_version, registry_meta and
-the exact six-table manifest: resources, executions, projections, witnesses,
-liabilities and registry_meta. Composite PK/UNIQUE/FK definitions are checked.
-The embedded sqlite_migrations/0001_initial.sql is applied only by
-MigrateRegistrySchemaV1ForAdministration to an empty database, in one transaction.
-An already compatible v1 is validated; unknown/nonempty versions are rejected.
-This v1 is the initial read/projection format, not a complete future Writer schema.
+Schema v2 is a fresh, unreleased read/projection baseline, with six STRICT tables:
+registry_migrations, registry_meta, resources, executions, projections and
+reference_transitions. Application ID, user_version, metadata, exact DDL and nine
+autoindexes must match. The migration checksum binds the embedded v2 SQL bytes
+and migration-ledger definition. Dirty or mismatched ledgers are rejected.
 
-All ReadExecution queries share one explicit read transaction: current reference,
-immutable execution/receipt, Ledger/CP/Audit projections, Witness projection and
-outstanding liabilities. Missing, malformed and conflicting records are distinct;
-absence is never a NOT_STARTED or unused-grant proof. JSON decoding is bounded,
-exact-field and duplicate-aware. Current evidence references are copied from the
-stored observation frame, never minted by the adapter. Local CP/Ledger/Witness
-rows are projections; collocation does not implement independent Continuity or
-authenticate an outcome. Existing Reader authorization and Verifier remain required.
+MigrateRegistrySchemaV2ForAdministration is an explicit OFFLINE administration/
+test operation. It accepts only an empty DELETE-profile database or validates
+an exact clean v2. It first commits a dirty ledger, then commits DDL/metadata and
+clean state together. Failure preserves dirty evidence and does not authorize
+automatic resume/repair. Runtime Open/Read never migrates, repairs, VACUUMs,
+checkpoints, consumes authority or writes state.
+
+The earlier unmerged 0001_initial.sql remains unchanged as historical source.
+It is not embedded or applied. Existing v1 or other nonempty DBs are rejected
+unmodified; no destructive v1-to-v2 transformation or data deletion is supplied.
+
+The current reference has separately checked revision/state-version columns and
+strict typed JSON. Versions use canonical 20-digit decimal uint64 TEXT, avoiding
+signed SQLite integer truncation. Positive receipts require one correlated
+history row; negative receipts require none. History has per-scope unique
+execution/receipt/after-version identities. Receipt validation enforces +1 and
+correlation; current reference checks reject rollback behind known history.
+A later or ABA reference remains distinct from the historical receipt.
+These read checks do not implement a future Writer's CAS/atomic-commit protocol.
+
+## SQLite facts and independent Continuity
+
+ReadExecution reads current reference, immutable execution/receipt, transition
+and Ledger/CP/Audit projections inside one explicit SQL read transaction.
+Rows absent, malformed or in conflict do not imply NOT_STARTED or unused grants.
+JSON decoding is bounded, exact-field and duplicate-aware. BackendReadFrame
+contains local observation correlation only; it has no FreshnessProof.
+
+There are no Witness, Outstanding Liability or independent Freshness records
+in schema v2. No SQLite-backed Continuity implementation exists here.
+A trusted optional ContinuityReadPort receives a deep copy of the entire SQL
+observation AFTER the SQL Tx/connection is released. Its Known answer must
+qualify that exact frame/payload with complete Witness/Outstanding coverage.
+It cannot replace SQL facts, promote malformed SQL, manufacture an old authority
+or certify mere generation-string equality. Returned pointers/slices are copied.
+The existing Reader/Verifier must still authenticate full payloads, issuer,
+scope, audience, trust and restore freshness.
+
+Without independent Continuity, with partial coverage, frame mismatch or an
+unavailable/invalid answer, Current is UNKNOWN and no Witness, Outstanding set
+or Freshness is asserted. A historical SQL Backend Receipt may remain known,
+but aggregate lookup/reconciliation stays UNKNOWN and never yields mutation
+permission. Empty Outstanding is only qualified by independent complete coverage.
+Test doubles model this seam only; real independent storage and freshness are
+NOT_IMPLEMENTED.
+
+## Read-only path, locking and Close qualification
 
 Open accepts trusted installation Directory plus the fixed registry.sqlite3 name.
-No request-supplied arbitrary path/URI/DSN/SQL/PRAGMA is exposed. It rejects
-noncanonical paths, symlinks, changed inode identities, nonregular/missing files
-and journal/WAL/SHM files. URI mode=ro is the native read-only constraint;
-connection-local query_only=1, trusted_schema=0 and defensive mode add checks.
-A plain filename with ?mode=ro is deliberately not used, nor immutable/nolock.
+No external SQL/URI/DSN/path/PRAGMA is exposed. It rejects noncanonical paths,
+symlinks, changed inode identities, missing/nonregular files and journal/WAL/SHM
+sidecars. Internally generated mode=ro is the native file constraint; per-
+connection query_only=1, trusted_schema=0 and defensive mode add checks.
+No immutable/nolock/shared-cache shortcut is used.
 
-The initial adapter supports only a stable DELETE/rollback-journal profile.
-This avoids WAL index/shared-memory creation and hot-journal recovery. Even an
-active legitimate DELETE writer journal may conservatively block a new read;
-retry is not automatic. The managed directory, path identity and profile must
-not be adversarially renamed or changed while open. This is not a hostile-file
-sandbox or protection against Host root.
+The initial Read Adapter supports a stable DELETE profile. Even a legitimate
+active journal can conservatively block a new read. Busy/Locked/Corrupt errors
+become fixed safe error codes; no SQL text, private path or driver error escapes.
+There is no automatic retry. Context cancellation is preserved in queries,
+pool waits and pre-open checks. sqlite3_open_v2 has no mid-open cancellation
+hook; instant interruption of that native open is not promised.
 
-## File-descriptor and Close qualification
+On POSIX, closing an unmanaged descriptor may release process SQLite locks.
+Header inspection therefore retains its descriptor throughout the owned pool
+lifetime. A process inode lease rejects duplicate adapters/hardlink aliases
+before raw Open. Public reads drain before SQL connections, then the header,
+are closed. Uncertain closure retains ownership rather than requalifying UNKNOWN.
+The trusted process must exclude other uncoordinated SQLite/raw users of this
+inode. A future same-process Writer must share this owner lifecycle or prove a
+separate design. Cross-process SQLite writers are tested with actual subprocesses.
+This is not a hostile-file sandbox or enforcement against Host root.
 
-On POSIX, closing any unmanaged descriptor for the database can release the
-process's SQLite locks. Header inspection therefore retains its descriptor
-throughout the owned SQL pool lifetime, instead of opening/closing it per read.
-A process-wide inode lease rejects another Adapter (including hardlink aliases)
-before opening any raw descriptor. Public reads are drained before closing SQL
-connections, then the header descriptor and ownership lease. Uncertain cleanup
-keeps ownership held rather than requalifying an UNKNOWN resource.
-
-This initial Read Adapter requires exclusive process ownership of the database
-inode: no separate SQLite/raw-file users may bypass the owner. External-process
-SQLite writers can participate through normal SQLite locking; tests use a
-separate process. A future same-process Writer must share a coordinated owner
-lifecycle or introduce a separately verified design. Unknown third-party handles,
-Host-root bypasses and real deployment closure are not certified by unit tests.
-
-Context cancellation is retained during queries/pool waits and pre-open checks.
-The driver's sqlite3_open_v2 call itself has no mid-open cancellation hook;
-instant interruption of that native open is not promised. Close is idempotent
-and prevents new reads. No migration/maintenance is hidden in Close.
+Tests use only temporary synthetic DBs/processes. The existing twelve assertion
+tests are retained and adapted to independent Continuity, with extra tests for
+migration checksum/dirty state, schema v1 preservation, uint64/history/ABA,
+busy/corrupt failures and Continuity absence/coverage/copying. Unit/race/build
+success does not certify power-loss durability, all-Actor exclusion, independent
+Continuity, a real clock, production migration, Phase 1 closure or formal v2 return.

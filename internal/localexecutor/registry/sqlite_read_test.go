@@ -27,6 +27,7 @@ type sqliteTestFixture struct {
 	writer    *sql.DB
 	request   Request
 	snapshot  ExecutionSnapshot
+	continuity *sqliteTestContinuity
 }
 
 func sqliteTestJSON(t *testing.T, value any) string {
@@ -53,6 +54,80 @@ func sqliteTestExecution(request Request) []any {
 	return append(sqliteTestScope(request.Command.Scope), string(request.Command.Execution.ExecutionKey))
 }
 
+// sqliteTestContinuity is an independent in-memory test double. It is never
+// persisted in the registry and does not implement a production Witness store.
+type sqliteTestContinuity struct {
+	witness *WitnessOutcome
+	outstanding []ID
+	onReference func(context.Context, Scope, BackendReadFrame, ActiveReference) (ContinuityReferenceObservation, error)
+	onExecution func(context.Context, Request, BackendReadFrame, ExecutionSnapshot) (ContinuityExecutionObservation, error)
+}
+
+func sqliteTestFrame(e Evidence) BackendReadFrame {
+	return BackendReadFrame{Issuer: e.Issuer, ServingIncarnation: e.ServingIncarnation, Generation: e.Generation, SnapshotID: e.SnapshotID, ObservationProof: e.ObservationProof}
+}
+
+func sqliteTestEvidence(frame BackendReadFrame) Evidence {
+	return Evidence{Issuer: frame.Issuer, ServingIncarnation: frame.ServingIncarnation, Generation: frame.Generation, SnapshotID: frame.SnapshotID, ObservationProof: frame.ObservationProof, FreshnessProof: "independent-freshness-proof"}
+}
+
+func (p *sqliteTestContinuity) QualifyReference(ctx context.Context, scope Scope, frame BackendReadFrame, active ActiveReference) (ContinuityReferenceObservation, error) {
+	if p.onReference != nil {
+		return p.onReference(ctx, scope, frame, active)
+	}
+	if err := ctx.Err(); err != nil {
+		return ContinuityReferenceObservation{}, err
+	}
+	return ContinuityReferenceObservation{Knowledge: Known, Frame: frame, Evidence: sqliteTestEvidence(frame)}, nil
+}
+
+func (p *sqliteTestContinuity) QualifyExecution(ctx context.Context, request Request, frame BackendReadFrame, snapshot ExecutionSnapshot) (ContinuityExecutionObservation, error) {
+	if p.onExecution != nil {
+		return p.onExecution(ctx, request, frame, snapshot)
+	}
+	if err := ctx.Err(); err != nil {
+		return ContinuityExecutionObservation{}, err
+	}
+	observation := ContinuityExecutionObservation{Knowledge: Known, Frame: frame, Evidence: sqliteTestEvidence(frame)}
+	if p.witness != nil && p.witness.Scope == request.Command.Scope && p.witness.Execution == request.Command.Execution && p.witness.Binding == request.Binding {
+		witness := *p.witness
+		witness.Receipt = readCloneReceipt(witness.Receipt)
+		observation.Witness = &witness
+		observation.Outstanding = append([]ID(nil), p.outstanding...)
+	} else if p.witness != nil && p.witness.Scope == (Scope{}) {
+		// Deliberately malformed independent data for the fail-closed test.
+		observation.Witness = p.witness
+	}
+	return observation, nil
+}
+
+func sqliteTestResource(t *testing.T, db *sql.DB, scope Scope, knowledge Knowledge, reference *Reference, evidence Evidence) {
+	t.Helper()
+	var revision, stateVersion, rawReference any
+	if reference != nil {
+		revision, stateVersion, rawReference = string(reference.Revision), fmt.Sprintf("%020d", reference.StateVersion), sqliteTestJSON(t, reference)
+	}
+	args := append(sqliteTestScope(scope), string(knowledge), revision, stateVersion, rawReference, sqliteTestJSON(t, sqliteTestFrame(evidence)))
+	sqliteTestExec(t, db, "INSERT INTO resources(realm,host,resource,backend,active_knowledge,reference_revision,reference_state_version,reference_json,backend_frame_json) VALUES(?,?,?,?,?,?,?,?,?)", args...)
+}
+
+func sqliteTestInsertExecution(t *testing.T, db *sql.DB, request Request, receipt *Receipt) {
+	t.Helper()
+	execution := request.Command.Execution
+	var kind, payload any
+	knowledge := Absent
+	if receipt != nil {
+		knowledge, kind, payload = Known, string(receipt.Kind), sqliteTestJSON(t, receipt)
+	}
+	args := append(sqliteTestExecution(request), string(execution.RequestID), string(execution.OperationID), string(execution.AttemptID), string(execution.StepID), sqliteTestJSON(t, request), string(knowledge), kind, payload)
+	sqliteTestExec(t, db, "INSERT INTO executions(realm,host,resource,backend,execution_key,request_id,operation_id,attempt_id,step_id,request_json,backend_knowledge,receipt_kind,receipt_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", args...)
+	if receipt != nil && receipt.Kind == Positive {
+		transition := receipt.Positive
+		args = append(sqliteTestScope(request.Command.Scope), string(transition.TransitionID), string(execution.ExecutionKey), string(receipt.ReceiptID), string(transition.Before.Revision), fmt.Sprintf("%020d", transition.Before.StateVersion), string(transition.After.Revision), fmt.Sprintf("%020d", transition.After.StateVersion))
+		sqliteTestExec(t, db, "INSERT INTO reference_transitions(realm,host,resource,backend,transition_id,execution_key,receipt_id,before_revision,before_state_version,after_revision,after_state_version) VALUES(?,?,?,?,?,?,?,?,?,?,?)", args...)
+	}
+}
+
 func sqliteTestNew(t *testing.T, kind ReceiptKind) sqliteTestFixture {
 	t.Helper()
 	directory := t.TempDir()
@@ -63,27 +138,15 @@ func sqliteTestNew(t *testing.T, kind ReceiptKind) sqliteTestFixture {
 	}
 	writer.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = writer.Close() })
-	if err := MigrateRegistrySchemaV1ForAdministration(context.Background(), writer); err != nil {
+	if err := MigrateRegistrySchemaV2ForAdministration(context.Background(), writer); err != nil {
 		t.Fatal(err)
 	}
 	request, snapshot := readTestSnapshot(t, kind)
 	snapshot.Current.Reference = &Reference{Revision: "revision-later", StateVersion: 99}
-	var reference any
-	if snapshot.Current.Reference != nil {
-		reference = sqliteTestJSON(t, snapshot.Current.Reference)
-	}
-	args := append(sqliteTestScope(request.Command.Scope), string(snapshot.Current.Knowledge), reference, sqliteTestJSON(t, snapshot.Evidence))
-	sqliteTestExec(t, writer, "INSERT INTO resources(realm,host,resource,backend,active_knowledge,reference_json,evidence_json) VALUES(?,?,?,?,?,?,?)", args...)
-	execution := request.Command.Execution
-	args = append(sqliteTestExecution(request), string(execution.RequestID), string(execution.OperationID), string(execution.AttemptID), string(execution.StepID), sqliteTestJSON(t, request), string(Known), sqliteTestJSON(t, snapshot.Backend.Receipt))
-	sqliteTestExec(t, writer, "INSERT INTO executions(realm,host,resource,backend,execution_key,request_id,operation_id,attempt_id,step_id,request_json,backend_knowledge,receipt_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", args...)
-	args = append(sqliteTestExecution(request), sqliteTestJSON(t, snapshot.Witness))
-	sqliteTestExec(t, writer, "INSERT INTO witnesses(realm,host,resource,backend,execution_key,outcome_json) VALUES(?,?,?,?,?,?)", args...)
-	for _, liability := range snapshot.Outstanding {
-		args = append(sqliteTestExecution(request), string(liability))
-		sqliteTestExec(t, writer, "INSERT INTO liabilities(realm,host,resource,backend,execution_key,liability_id) VALUES(?,?,?,?,?,?)", args...)
-	}
-	return sqliteTestFixture{directory: directory, path: path, writer: writer, request: request, snapshot: snapshot}
+	sqliteTestResource(t, writer, request.Command.Scope, snapshot.Current.Knowledge, snapshot.Current.Reference, snapshot.Evidence)
+	sqliteTestInsertExecution(t, writer, request, snapshot.Backend.Receipt)
+	continuity := &sqliteTestContinuity{witness: snapshot.Witness, outstanding: append([]ID(nil), snapshot.Outstanding...)}
+	return sqliteTestFixture{directory: directory, path: path, writer: writer, request: request, snapshot: snapshot, continuity: continuity}
 }
 
 func sqliteTestOpen(t *testing.T, fixture sqliteTestFixture) *SQLiteReadPort {
@@ -91,7 +154,7 @@ func sqliteTestOpen(t *testing.T, fixture sqliteTestFixture) *SQLiteReadPort {
 	if err := fixture.writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	port, err := OpenSQLiteReadPort(context.Background(), SQLiteReadConfig{Directory: fixture.directory, DatabaseName: RegistryDatabaseName})
+	port, err := OpenSQLiteReadPort(context.Background(), SQLiteReadConfig{Directory: fixture.directory, DatabaseName: RegistryDatabaseName, Continuity: fixture.continuity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +323,7 @@ func TestSQLiteWriterProcess(t *testing.T) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path ||
 		filepath.Base(path) != RegistryDatabaseName ||
 		!strings.Contains(filepath.Dir(path), string(filepath.Separator)+"TestSQLite") ||
-		action != "stress" && action != "pin" {
+		action != "stress" && action != "pin" && action != "lock" {
 		t.Fatal("invalid synthetic-only helper target")
 	}
 	db, err := sql.Open("sqlite", path)
@@ -283,13 +346,13 @@ func TestSQLiteWriterProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rawEvidence, rawRecord string
-	if err := conn.QueryRowContext(context.Background(), "SELECT evidence_json FROM resources").Scan(&rawEvidence); err != nil {
+	if err := conn.QueryRowContext(context.Background(), "SELECT backend_frame_json FROM resources").Scan(&rawEvidence); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.QueryRowContext(context.Background(), "SELECT record_json FROM projections WHERE boundary='executor_ledger'").Scan(&rawRecord); err != nil {
 		t.Fatal(err)
 	}
-	var evidence Evidence
+	var evidence BackendReadFrame
 	var record OutcomeRecord
 	if json.Unmarshal([]byte(rawEvidence), &evidence) != nil || json.Unmarshal([]byte(rawRecord), &record) != nil {
 		t.Fatal("invalid synthetic fixture")
@@ -303,7 +366,7 @@ func TestSQLiteWriterProcess(t *testing.T) {
 		if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := conn.ExecContext(context.Background(), "UPDATE resources SET evidence_json=?", sqliteTestJSON(t, evidence)); err != nil {
+		if _, err := conn.ExecContext(context.Background(), "UPDATE resources SET backend_frame_json=?", sqliteTestJSON(t, evidence)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := conn.ExecContext(context.Background(), "UPDATE projections SET record_json=? WHERE boundary='executor_ledger'", sqliteTestJSON(t, record)); err != nil {
@@ -314,6 +377,23 @@ func TestSQLiteWriterProcess(t *testing.T) {
 		command := commands.Text()
 		if command == "stop" {
 			return
+		}
+		if action == "lock" {
+			switch command {
+			case "begin":
+				if _, err := conn.ExecContext(context.Background(), "BEGIN EXCLUSIVE"); err != nil {
+					t.Fatal(err)
+				}
+				sqliteTestChildEvent(t, "locked", 0)
+			case "release":
+				if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+					t.Fatal(err)
+				}
+				sqliteTestChildEvent(t, "released", 0)
+			default:
+				t.Fatal("invalid lock command")
+			}
+			continue
 		}
 		if action == "pin" {
 			switch command {
@@ -369,7 +449,7 @@ func TestSQLiteWriterProcess(t *testing.T) {
 func TestSQLiteEngineAndExplicitVersionedMigration(t *testing.T) {
 	fixture := sqliteTestNew(t, Positive)
 	before := sqliteTestFiles(t, fixture.directory)
-	if err := MigrateRegistrySchemaV1ForAdministration(context.Background(), fixture.writer); err != nil {
+	if err := MigrateRegistrySchemaV2ForAdministration(context.Background(), fixture.writer); err != nil {
 		t.Fatalf("compatible explicit administration recheck failed: %v", err)
 	}
 	if !reflect.DeepEqual(before, sqliteTestFiles(t, fixture.directory)) {
@@ -382,7 +462,7 @@ func TestSQLiteEngineAndExplicitVersionedMigration(t *testing.T) {
 	}
 	t.Log("SQLITE_ENGINE_VERSION=" + version)
 	t.Log("SQLITE_SOURCE_ID=" + sourceID)
-	if version != "3.54.1" || sourceID == "" {
+	if version != "3.54.1" || sourceID != "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76" {
 		t.Fatal("unverified SQLite engine")
 	}
 	var schemaVersion, applicationID int
@@ -395,10 +475,18 @@ func TestSQLiteEngineAndExplicitVersionedMigration(t *testing.T) {
 	if schemaVersion != RegistrySchemaVersion || applicationID != RegistryApplicationID {
 		t.Fatal("schema identity mismatch")
 	}
+	var migrationVersion, targetVersion, dirty int
+	var checksum string
+	if err := port.db.QueryRow("SELECT version,checksum,dirty,target_schema_version FROM registry_migrations").Scan(&migrationVersion, &checksum, &dirty, &targetVersion); err != nil {
+		t.Fatal(err)
+	}
+	if migrationVersion != RegistryMigrationVersion || targetVersion != RegistrySchemaVersion || dirty != 0 || checksum != RegistryMigrationChecksum() {
+		t.Fatal("fresh migration did not record an exact clean checksum")
+	}
 }
 
 func TestSQLiteSchemaRejectionDoesNotAutoMigrateOrRepair(t *testing.T) {
-	for _, name := range []string{"future_version", "wrong_application", "wrong_metadata", "unexpected_trigger", "weakened_duplicate_table"} {
+	for _, name := range []string{"future_version", "wrong_application", "wrong_metadata", "checksum", "dirty", "unexpected_trigger", "weakened_duplicate_table"} {
 		t.Run(name, func(t *testing.T) {
 			fixture := sqliteTestNew(t, Positive)
 			switch name {
@@ -408,14 +496,23 @@ func TestSQLiteSchemaRejectionDoesNotAutoMigrateOrRepair(t *testing.T) {
 				sqliteTestExec(t, fixture.writer, "PRAGMA application_id=1")
 			case "wrong_metadata":
 				sqliteTestExec(t, fixture.writer, "UPDATE registry_meta SET codec='unknown-codec'")
+			case "checksum":
+				sqliteTestExec(t, fixture.writer, "UPDATE registry_migrations SET checksum=?", strings.Repeat("0", 64))
+			case "dirty":
+				sqliteTestExec(t, fixture.writer, "UPDATE registry_migrations SET dirty=1")
 			case "unexpected_trigger":
 				sqliteTestExec(t, fixture.writer, "CREATE TRIGGER unexpected AFTER UPDATE ON resources BEGIN SELECT 1; END")
 			case "weakened_duplicate_table":
 				sqliteTestExec(t, fixture.writer, "PRAGMA foreign_keys=OFF")
 				sqliteTestExec(t, fixture.writer, "DROP TABLE resources")
-				sqliteTestExec(t, fixture.writer, "CREATE TABLE resources(realm TEXT,host TEXT,resource TEXT,backend TEXT,active_knowledge TEXT,reference_json TEXT,evidence_json TEXT)")
+				sqliteTestExec(t, fixture.writer, "CREATE TABLE resources(realm TEXT,host TEXT,resource TEXT,backend TEXT,active_knowledge TEXT,reference_revision TEXT,reference_state_version TEXT,reference_json TEXT,backend_frame_json TEXT)")
 				for i := 0; i < 2; i++ {
-					sqliteTestExec(t, fixture.writer, "INSERT INTO resources VALUES('realm-a','host-a','config-a','backend-a','UNKNOWN',NULL,'{}')")
+					sqliteTestExec(t, fixture.writer, "INSERT INTO resources VALUES('realm-a','host-a','config-a','backend-a','UNKNOWN',NULL,NULL,NULL,'{}')")
+				}
+			}
+			if name == "checksum" || name == "dirty" {
+				if err := MigrateRegistrySchemaV2ForAdministration(context.Background(), fixture.writer); err == nil {
+					t.Fatal("explicit administration repaired or accepted invalid migration evidence")
 				}
 			}
 			if err := fixture.writer.Close(); err != nil {
@@ -623,16 +720,18 @@ func TestSQLiteKnownAbsentUnknownConflictAndMissingRows(t *testing.T) {
 	for _, state := range []Knowledge{Known, Absent, Unknown, Conflict} {
 		t.Run(string(state), func(t *testing.T) {
 			fixture := sqliteTestNew(t, Positive)
-			var reference any
+			var reference, revision, stateVersion, receipt, kind any
 			if state == Known {
 				reference = sqliteTestJSON(t, fixture.snapshot.Current.Reference)
-			}
-			sqliteTestExec(t, fixture.writer, "UPDATE resources SET active_knowledge=?,reference_json=?", string(state), reference)
-			var receipt any
-			if state == Known {
+				revision = string(fixture.snapshot.Current.Reference.Revision)
+				stateVersion = fmt.Sprintf("%020d", fixture.snapshot.Current.Reference.StateVersion)
 				receipt = sqliteTestJSON(t, fixture.snapshot.Backend.Receipt)
+				kind = string(fixture.snapshot.Backend.Receipt.Kind)
+			} else {
+				sqliteTestExec(t, fixture.writer, "DELETE FROM reference_transitions")
 			}
-			sqliteTestExec(t, fixture.writer, "UPDATE executions SET backend_knowledge=?,receipt_json=?", string(state), receipt)
+			sqliteTestExec(t, fixture.writer, "UPDATE resources SET active_knowledge=?,reference_revision=?,reference_state_version=?,reference_json=?", string(state), revision, stateVersion, reference)
+			sqliteTestExec(t, fixture.writer, "UPDATE executions SET backend_knowledge=?,receipt_kind=?,receipt_json=?", string(state), kind, receipt)
 			port := sqliteTestOpen(t, fixture)
 			active, err := port.ReadActiveReference(context.Background(), fixture.request.Command.Scope)
 			if err != nil || active.Knowledge != state {
@@ -680,7 +779,7 @@ func TestSQLiteKnownAbsentUnknownConflictAndMissingRows(t *testing.T) {
 }
 
 func TestSQLiteCorruptDataCannotBecomeKnownTerminalOrSelectFirst(t *testing.T) {
-	for _, name := range []string{"receipt_json", "receipt_duplicate_field", "receipt_unknown_field", "receipt_wrong_binding", "request_json", "indexed_request", "projection_json", "projection_binding", "witness_json", "orphan_projection"} {
+	for _, name := range []string{"receipt_json", "receipt_duplicate_field", "receipt_unknown_field", "receipt_wrong_binding", "request_json", "indexed_request", "projection_json", "projection_binding", "witness_independent", "orphan_projection"} {
 		t.Run(name, func(t *testing.T) {
 			fixture := sqliteTestNew(t, Positive)
 			projection := readTestRecord(fixture.request, *fixture.snapshot.Backend.Receipt, ExecutorLedger)
@@ -707,8 +806,8 @@ func TestSQLiteCorruptDataCannotBecomeKnownTerminalOrSelectFirst(t *testing.T) {
 			case "projection_binding":
 				projection.Record.Binding = "other-binding"
 				sqliteTestExec(t, fixture.writer, "UPDATE projections SET record_json=?", sqliteTestJSON(t, projection.Record))
-			case "witness_json":
-				sqliteTestExec(t, fixture.writer, "UPDATE witnesses SET outcome_json='{}'")
+			case "witness_independent":
+				fixture.continuity.witness = &WitnessOutcome{}
 			case "orphan_projection":
 				sqliteTestExec(t, fixture.writer, "PRAGMA foreign_keys=OFF")
 				sqliteTestExec(t, fixture.writer, "DELETE FROM executions")
@@ -727,7 +826,7 @@ func TestSQLiteCorruptDataCannotBecomeKnownTerminalOrSelectFirst(t *testing.T) {
 				if snapshot.Backend.Knowledge != Known || snapshot.Ledger.Knowledge != Conflict {
 					t.Fatal("projection identity mismatch became known")
 				}
-			case "witness_json":
+			case "witness_independent":
 				if snapshot.Backend.Knowledge != Known || snapshot.Witness != nil {
 					t.Fatal("malformed witness became qualified")
 				}
@@ -779,7 +878,7 @@ func TestSQLiteExecutionSnapshotDoesNotMixConcurrentWriterGenerations(t *testing
 	projection := readTestRecord(fixture.request, *fixture.snapshot.Backend.Receipt, ExecutorLedger)
 	projection.Record.RecordedBy = "generation-0"
 	fixture.snapshot.Evidence.Generation = "generation-0"
-	sqliteTestExec(t, fixture.writer, "UPDATE resources SET evidence_json=?", sqliteTestJSON(t, fixture.snapshot.Evidence))
+	sqliteTestExec(t, fixture.writer, "UPDATE resources SET backend_frame_json=?", sqliteTestJSON(t, sqliteTestFrame(fixture.snapshot.Evidence)))
 	sqliteTestProjection(t, fixture, ExecutorLedger, projection)
 	port := sqliteTestOpen(t, fixture)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -866,7 +965,7 @@ func TestSQLiteReadTransactionPinsSnapshotUntilReaderFinishes(t *testing.T) {
 	oldEvidence.Generation = "generation-old"
 	projection := readTestRecord(fixture.request, *fixture.snapshot.Backend.Receipt, ExecutorLedger)
 	projection.Record.RecordedBy = oldEvidence.Generation
-	sqliteTestExec(t, fixture.writer, "UPDATE resources SET evidence_json=?", sqliteTestJSON(t, oldEvidence))
+	sqliteTestExec(t, fixture.writer, "UPDATE resources SET backend_frame_json=?", sqliteTestJSON(t, sqliteTestFrame(oldEvidence)))
 	sqliteTestProjection(t, fixture, ExecutorLedger, projection)
 	port := sqliteTestOpen(t, fixture)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -877,7 +976,7 @@ func TestSQLiteReadTransactionPinsSnapshotUntilReaderFinishes(t *testing.T) {
 	}
 	defer readTx.Rollback()
 	var rawEvidence string
-	if err := readTx.QueryRowContext(ctx, "SELECT evidence_json FROM resources").Scan(&rawEvidence); err != nil {
+	if err := readTx.QueryRowContext(ctx, "SELECT backend_frame_json FROM resources").Scan(&rawEvidence); err != nil {
 		t.Fatal(err)
 	}
 	// Exercise a second successful pooled read while the first transaction is
@@ -896,7 +995,7 @@ func TestSQLiteReadTransactionPinsSnapshotUntilReaderFinishes(t *testing.T) {
 	if err := readTx.QueryRowContext(ctx, "SELECT record_json FROM projections").Scan(&rawRecord); err != nil {
 		t.Fatal(err)
 	}
-	var before Evidence
+	var before BackendReadFrame
 	var observed OutcomeRecord
 	if err := json.Unmarshal([]byte(rawEvidence), &before); err != nil {
 		t.Fatal(err)
@@ -935,7 +1034,7 @@ func TestSQLiteDuplicateAndHardlinkOpenCannotDropAnotherReadLock(t *testing.T) {
 			}
 			defer readTx.Rollback()
 			var value string
-			if err := readTx.QueryRowContext(ctx, "SELECT evidence_json FROM resources").Scan(&value); err != nil {
+			if err := readTx.QueryRowContext(ctx, "SELECT backend_frame_json FROM resources").Scan(&value); err != nil {
 				t.Fatal(err)
 			}
 			directory := fixture.directory
