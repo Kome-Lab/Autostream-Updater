@@ -501,3 +501,95 @@ authorization, execution binding or durable Backend Receipt is implemented by
 beginWrite/Commit. A future typed conditional commit must keep those contracts
 separate; a context deadline is not proof that the D1 decision occurred and is
 not a substitute for D1's allowance for a later commit in the same transaction.
+
+
+## Conditional Commit Preflight (observation only)
+
+NewConditionalCommitPreflight supplies Check and CheckEncoded over immutable
+Request data. CheckEncoded reuses the existing strict bounded decoder; unknown,
+duplicate, null, missing and malformed fields are not accepted. CanonicalBinding
+is recomputed from Command, never rewritten when later evidence arrives.
+The current read QueryAuthorizer is independent from observed CP business
+authorization. Guard/Continuity dependencies are installed by trusted code;
+callers cannot provide evidence booleans in a Request.
+
+Preflight takes a whole-call Owner Read borrow. Its SQL tables, all managed
+registry identity aliases, current Reference, projections and scoped history
+are read in one coherent managed read-only transaction. SQL connections finish
+before external Guard/Continuity checks. The outer Read borrow keeps Close aware
+of the accepted work and prevents a same-Owner Writer from entering during
+validation; it does not consume Writer admission or become a future Reservation.
+No Owner mutex is held during SQL or external dependency calls. CLOSING refuses
+new calls, and final cancellation/CLOSING/UNCERTAIN overrides eligibility.
+
+The Preflight-specific identity scan covers the whole managed registry for the
+same execution_key, request_id or Operation/Attempt/Step tuple, including other
+Scopes. That scope of uniqueness is not a Fleet-wide ID registry. The same snapshot also observes every execution in the affected Scope: a known
+local pending/UNKNOWN execution blocks a new key even if external outstanding
+coverage incorrectly claims an empty set. Known terminal outcomes are separately
+verified, and positive receipts require matching history. Existing
+ReadPort lookup semantics and Schema remain unchanged. Existing exact pending
+executions are not treated as known unstarted; terminal receipts are verified
+history, not permission to execute again. NOT_FOUND/ABSENT never proves an unused
+grant or NOT_STARTED.
+
+Current Revision and State Version must both match Expected. The complete
+observed history set is checked for canonical uint64 representation, before+1
+without overflow, revision transitions, receipt/request correlation and chain
+continuity. Independent Continuity must authenticate its baseline and complete
+coverage through Current. A gap, missing baseline or stale/mixed frame cannot
+become ELIGIBLE. ABA cannot pass merely because a Revision string returned to
+its earlier value. This does not retroactively repair partial v2/history data.
+
+Guard conditions are independent: CP authorization, effective Policy/Trust,
+Membership, ownership/Fence epochs, generation, Boot/incarnation, P admission,
+Candidate existence/approval/content pin and Drain READY Seal. Each is correlated
+with Scope, Execution, immutable Binding and Backend observation frame and
+authenticated by the injected PreflightVerifier. A nonempty proof string is not
+authentication. B=OPEN/CLOSED is observed separately from P and D; B=CLOSED does
+not prevent an otherwise qualified P-A candidate, and no gate/hold/Cover setting
+is changed. HELD or incomplete Drain is never READY. The verifier must establish
+current applicability, expiry and trust; no clock, TTL or final D1 is selected
+or implemented by Preflight.
+
+The additional ContinuityPreflightReadPort profile extends the SAME independent
+ContinuityReadPort dependency. It explicitly requires scope/resource-wide
+Witness, Outstanding Liability, identity, history and restore-freshness coverage,
+including other execution keys. A legacy qualifier, a nil/empty outstanding
+slice, a Witness presence or SQLite metadata alone does not provide that proof.
+The PreflightVerifier authenticates the entire detached payload/frame and
+coverage, with historical Receipt/Witness verification as appropriate. Any
+unresolved affected-scope liability blocks a new key too. No independent Store,
+real Guard verifier or external Authority connection is implemented here;
+missing dependencies or incomplete coverage remain UNKNOWN.
+
+After external verification, a second coherent read-only observation must match
+the first complete SQL payload. A changed snapshot/frame becomes UNKNOWN without
+automatic retry. This does not make distributed state atomic or prevent changes
+after the observation; a future Writer MUST repeat current conditions at the
+actual guarded commit boundary under the required enforcement, Proofs and Fence.
+
+Result meanings:
+- ELIGIBLE: conditions were observed under this contract; no execution right.
+- REJECTED: the request or observed prerequisite cannot be used as a new start.
+- UNKNOWN: missing/unverified evidence, incomplete coverage, unavailable owner
+  or observation change; never success, absence, unused authority or recovery.
+- CONFLICT: contradictory Scope/identity/binding/receipt/history correlation.
+
+PreflightResult has no token, Lease, Seal, Reservation or Consume operation.
+AuthorizesMutation and ReusableForCommit are always false, even for ELIGIBLE or
+a caller-forged result. The API accepts only a fresh immutable Request, never a
+previous result; Writer Commit accepts no PreflightResult. An old ELIGIBLE value
+remains historical report data and cannot be promoted into a Commit guarantee.
+A same-Revision candidate is blocked without adopting a durable NOT_CHANGED
+negative-receipt policy. No negative Receipt is produced by rejection.
+
+No Reference update, Receipt persistence, History append, migration, Writer
+profile installation, Grant/Lease use, GuardControl, Continuity Store, CP/UDS/
+real Verifier, service/media/provider effect or deployment is added. Unit tests
+use only temporary synthetic data and explicitly trusted test doubles.
+Power-loss durability, Host-wide Actor exclusion, independent Continuity, real
+clocks and native ARM64 execution remain unproven. Product-wide acceptance is
+NOT_RUN; Phase 1 closure remains on hold; production migration is unauthorized;
+formal v2 return is NOT_CERTIFIED. Preservation, manual holds, old-authority
+nonreuse and UNKNOWN/HELD constraints remain unchanged.
