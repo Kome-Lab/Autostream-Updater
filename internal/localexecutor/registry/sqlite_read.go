@@ -5,16 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"unicode/utf8"
-
-	"modernc.org/sqlite"
 )
 
 const RegistryDatabaseName = "registry.sqlite3"
@@ -30,370 +21,59 @@ type SQLiteReadConfig struct {
 
 var ErrSQLiteClosed = errors.New("registry_sqlite_closed")
 
-// SQLiteReadPort owns a bounded read-only pool. All mapping queries in one call
-// share one explicit read transaction. Close never performs schema maintenance.
-//
-// Qualification requires exclusive process ownership of this inode: no unrelated
-// SQLite or raw descriptors may be opened/closed outside this lifecycle. The
-// directory, identity and DELETE profile must not be adversarially replaced.
-// The package lease catches duplicate adapters/hard links only; it does not prove
-// Host-wide actor exclusion or discover handles owned by other libraries.
+// SQLiteReadPort maps registry facts and qualifies independent Continuity. The
+// single lifecycle owner holds all file/lease/pool/transaction/Close resources.
+// No Writer, writable profile, service apply or recovery authority is supplied.
 type SQLiteReadPort struct {
-	lifecycle   sync.Mutex
-	activeReads sync.WaitGroup
-	header      *os.File
-	lease       *sqliteReadLease
-	db          *sql.DB
-	path        string
-	identity    os.FileInfo
-	closed      atomic.Bool
-	closeOnce   sync.Once
-	closeErr    error
-	continuity  ContinuityReadPort
+	owner      *registryLifecycleOwner
+	continuity ContinuityReadPort
 }
 
 var _ ReadPort = (*SQLiteReadPort)(nil)
 
-// sqliteReadTx owns the sql.Conn lease as well as the transaction. In particular,
-// cancellation can mark Tx done before its asynchronous rollback releases the
-// connection; Conn.Close waits for that release before our public call returns.
-type sqliteReadTx struct {
-	*sql.Tx
-	conn        *sql.Conn
-	releaseOnce sync.Once
-	releaseErr  error
-}
-
-func (tx *sqliteReadTx) release() error {
-	tx.releaseOnce.Do(func() {
-		tx.releaseErr = tx.conn.Close()
-	})
-	return tx.releaseErr
-}
-
-func (tx *sqliteReadTx) Commit() error {
-	err := tx.Tx.Commit()
-	releaseErr := tx.release()
-	if err != nil {
-		return err
-	}
-	return releaseErr
-}
-
-func (tx *sqliteReadTx) Rollback() error {
-	err := tx.Tx.Rollback()
-	releaseErr := tx.release()
-	if err != nil {
-		return err
-	}
-	return releaseErr
-}
-
-// sqliteReadLeases prevents duplicate adapters (including hard-link aliases)
-// inside this package. It cannot discover unrelated SQLite/raw file handles:
-// trusted bootstrap must provide exclusive process ownership of this inode.
-type sqliteReadLease struct {
-	identity os.FileInfo
-	// A failed cleanup retains the owner and descriptor strongly: a later file
-	// finalizer must not close an unmanaged descriptor and drop surviving locks.
-	owner *SQLiteReadPort
-}
-
-var sqliteReadLeases struct {
-	sync.Mutex
-	owners map[*sqliteReadLease]struct{}
-}
-
-func sqliteAcquireReadLease(identity os.FileInfo) (*sqliteReadLease, error) {
-	sqliteReadLeases.Lock()
-	defer sqliteReadLeases.Unlock()
-	for owner := range sqliteReadLeases.owners {
-		if os.SameFile(owner.identity, identity) {
-			return nil, collision("sqlite.process_inode_owner")
-		}
-	}
-	lease := &sqliteReadLease{identity: identity}
-	if sqliteReadLeases.owners == nil {
-		sqliteReadLeases.owners = make(map[*sqliteReadLease]struct{})
-	}
-	sqliteReadLeases.owners[lease] = struct{}{}
-	return lease, nil
-}
-
-func sqliteReleaseReadLease(lease *sqliteReadLease) {
-	if lease == nil {
-		return
-	}
-	sqliteReadLeases.Lock()
-	delete(sqliteReadLeases.owners, lease)
-	sqliteReadLeases.Unlock()
-}
-
 func OpenSQLiteReadPort(ctx context.Context, config SQLiteReadConfig) (*SQLiteReadPort, error) {
+	owner, err := openRegistryLifecycleOwner(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLiteReadPort{owner: owner, continuity: config.Continuity}, nil
+}
+
+func (p *SQLiteReadPort) beginOperation(ctx context.Context) (*registryOperation, error) {
 	if ctx == nil {
 		return nil, invalid("sqlite.context")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	path, identity, err := sqliteReadLocation(config)
-	if err != nil {
-		return nil, err
+	if p == nil || p.owner == nil {
+		return nil, ErrSQLiteClosed
 	}
-	// Lease precedes every raw open. Bootstrap must exclude all other same-process
-	// SQLite/raw handles to this inode, not merely other adapters in this map.
-	lease, err := sqliteAcquireReadLease(identity)
-	if err != nil {
-		return nil, err
-	}
-	header, err := os.Open(path)
-	if err != nil {
-		sqliteReleaseReadLease(lease)
-		return nil, fault(CodeUnavailable, "sqlite.header")
-	}
-	port := &SQLiteReadPort{path: path, identity: identity, header: header, lease: lease, continuity: config.Continuity}
-	sqliteReadLeases.Lock()
-	lease.owner = port
-	sqliteReadLeases.Unlock()
-	// The retained descriptor is opened before our SQLite pool and is not closed
-	// until all its connections are drained. Per-read raw open/close would strip
-	// traditional POSIX locks held by the same process.
-	if err := port.checkLocation(); err != nil {
-		_ = port.Close()
-		return nil, err
-	}
-	parameters := url.Values{
-		"mode":        {"ro"},
-		"_query_only": {"1"},
-		"_pragma":     {"trusted_schema(0)"},
-		"_defensive":  {"1"},
-	}
-	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String() + "?" + parameters.Encode()
-	connector, err := sqlite.NewConnector(uri)
-	if err != nil {
-		_ = port.Close()
-		return nil, fault(CodeUnavailable, "sqlite.connector")
-	}
-	db := sql.OpenDB(connector)
-	db.SetMaxOpenConns(2)
-	db.SetMaxIdleConns(2)
-	port.db = db
-	tx, err := port.beginRead(ctx)
-	if err != nil {
-		_ = port.Close()
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		_ = tx.Rollback()
-		result := port.readError(ctx, err, "sqlite.open")
-		_ = port.Close()
-		return nil, result
-	}
-	if err := port.checkLocation(); err != nil {
-		_ = port.Close()
-		return nil, err
-	}
-	return port, nil
+	return p.owner.acquire(ctx)
 }
 
-func sqliteReadLocation(config SQLiteReadConfig) (string, os.FileInfo, error) {
-	if config.DatabaseName != RegistryDatabaseName || config.Directory == "" ||
-		!utf8.ValidString(config.Directory) || !filepath.IsAbs(config.Directory) ||
-		filepath.Clean(config.Directory) != config.Directory ||
-		strings.ContainsAny(config.Directory, "?#%\\:\x00") {
-		return "", nil, invalid("sqlite.location")
+// beginRead is a tracked owner borrow, including internal callers. A returned
+// transaction owns its SQL connection and operation until terminal cleanup.
+func (p *SQLiteReadPort) beginRead(ctx context.Context) (*sqliteReadTx, error) {
+	if p == nil || p.owner == nil {
+		return nil, ErrSQLiteClosed
 	}
-	for _, r := range config.Directory {
-		if r < 32 || r == 127 {
-			return "", nil, invalid("sqlite.location")
-		}
-	}
-	// Every component is checked; no EvalSymlinks normalization silently expands
-	// the trusted root into a different location.
-	directory := config.Directory
-	for {
-		info, err := os.Lstat(directory)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return "", nil, invalid("sqlite.directory")
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			break
-		}
-		directory = parent
-	}
-	path := filepath.Join(config.Directory, RegistryDatabaseName)
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", nil, invalid("sqlite.database_file")
-	}
-	if err := sqliteCheckMetadata(path, info); err != nil {
-		return "", nil, err
-	}
-	return path, info, nil
-}
-
-// sqliteCheckMetadata never opens or closes the database inode.
-func sqliteCheckMetadata(path string, identity os.FileInfo) error {
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() ||
-		identity == nil || !os.SameFile(info, identity) {
-		return invalid("sqlite.file_identity")
-	}
-	for _, suffix := range []string{"-journal", "-wal", "-shm"} {
-		if _, err := os.Lstat(path + suffix); err == nil || !errors.Is(err, os.ErrNotExist) {
-			return fault(CodeUnavailable, "sqlite.recovery_or_wal")
-		}
-	}
-	return nil
-}
-
-func (p *SQLiteReadPort) checkLocation() error {
-	if p == nil || p.header == nil || p.closed.Load() {
-		return ErrSQLiteClosed
-	}
-	if err := sqliteCheckMetadata(p.path, p.identity); err != nil {
-		return err
-	}
-	opened, err := p.header.Stat()
-	if err != nil || !os.SameFile(opened, p.identity) {
-		return invalid("sqlite.file_identity")
-	}
-	var header [100]byte
-	if _, err := p.header.ReadAt(header[:], 0); err != nil ||
-		string(header[:16]) != "SQLite format 3\x00" || header[18] != 1 || header[19] != 1 {
-		return invalid("sqlite.rollback_profile")
-	}
-	return nil
+	return p.owner.beginRead(ctx)
 }
 
 func (p *SQLiteReadPort) readError(ctx context.Context, err error, field string) error {
-	if ctx != nil && ctx.Err() != nil {
-		return ctx.Err()
-	}
-	// Discard driver wrapper text even when it wraps a standard context error.
-	// Canceled takes deterministic precedence if an error matches both.
-	if errors.Is(err, context.Canceled) {
-		return context.Canceled
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return context.DeadlineExceeded
-	}
-	if p == nil || p.db == nil || p.closed.Load() {
-		return ErrSQLiteClosed
-	}
-	return fault(CodeUnavailable, field)
-}
-
-func (p *SQLiteReadPort) beginRead(ctx context.Context) (*sqliteReadTx, error) {
-	if ctx == nil {
-		return nil, invalid("sqlite.context")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := p.checkLocation(); err != nil {
-		return nil, err
-	}
-	conn, err := p.db.Conn(ctx)
-	if err != nil {
-		return nil, p.readError(ctx, err, "sqlite.connection")
-	}
-	transaction, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		_ = conn.Close()
-		return nil, p.readError(ctx, err, "sqlite.begin")
-	}
-	tx := &sqliteReadTx{Tx: transaction, conn: conn}
-	ok := false
-	defer func() {
-		if !ok {
-			_ = tx.Rollback()
-		}
-	}()
-	var queryOnly, trustedSchema int
-	var journal string
-	if err := tx.QueryRowContext(ctx, "PRAGMA query_only").Scan(&queryOnly); err != nil {
-		return nil, p.readError(ctx, err, "sqlite.read_only")
-	}
-	if err := tx.QueryRowContext(ctx, "PRAGMA trusted_schema").Scan(&trustedSchema); err != nil {
-		return nil, p.readError(ctx, err, "sqlite.trusted_schema")
-	}
-	if err := tx.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
-		return nil, p.readError(ctx, err, "sqlite.journal_profile")
-	}
-	if queryOnly != 1 || trustedSchema != 0 || strings.ToLower(journal) != "delete" {
-		return nil, invalid("sqlite.connection_profile")
-	}
-	if err := validateSQLiteSchema(ctx, tx); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, err
-	}
-	ok = true
-	return tx, nil
-}
-
-// admitRead shares a short gate with Close. No mutex is held while waiting
-// for an existing read or SQL operation, so a newly canceled caller is not
-// queued behind a long closing transaction.
-func (p *SQLiteReadPort) admitRead(ctx context.Context) error {
-	if ctx == nil {
-		return invalid("sqlite.context")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	if p == nil {
-		return ErrSQLiteClosed
+		var owner *registryLifecycleOwner
+		return owner.readError(ctx, err, field)
 	}
-	p.lifecycle.Lock()
-	defer p.lifecycle.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if p.closed.Load() || p.db == nil || p.header == nil {
-		return ErrSQLiteClosed
-	}
-	p.activeReads.Add(1)
-	return nil
+	return p.owner.readError(ctx, err, field)
 }
 
 func (p *SQLiteReadPort) Close() error {
 	if p == nil {
 		return nil
 	}
-	p.closeOnce.Do(func() {
-		// Close admission before waiting. Add and Wait cannot race: additions
-		// occur only under the same gate while closed is false.
-		p.lifecycle.Lock()
-		p.closed.Store(true)
-		p.lifecycle.Unlock()
-		p.activeReads.Wait()
-		if p.db != nil {
-			if err := p.db.Close(); err != nil {
-				// Unknown connection closure must not drop their possible locks:
-				// retain the header and lease rather than falsely transfer owner.
-				p.closeErr = fault(CodeUnavailable, "sqlite.close")
-				return
-			}
-			// DB.Close may return while cancellation cleanup still owns a
-			// connection. Never close the raw header in that uncertain state.
-			if p.db.Stats().OpenConnections != 0 {
-				p.closeErr = fault(CodeUnavailable, "sqlite.close_pending")
-				return
-			}
-		}
-		if p.header != nil {
-			if err := p.header.Close(); err != nil {
-				p.closeErr = fault(CodeUnavailable, "sqlite.header_close")
-				return
-			}
-		}
-		sqliteReleaseReadLease(p.lease)
-	})
-	return p.closeErr
+	return p.owner.Close()
 }
 
 func sqliteScopeArgs(scope Scope) []any {
@@ -406,10 +86,11 @@ func sqliteExecutionArgs(request Request) []any {
 
 func (p *SQLiteReadPort) ReadActiveReference(ctx context.Context, scope Scope) (ActiveReference, error) {
 	result := readUnknownActive(scope)
-	if err := p.admitRead(ctx); err != nil {
+	operation, err := p.beginOperation(ctx)
+	if err != nil {
 		return result, err
 	}
-	defer p.activeReads.Done()
+	defer operation.release()
 	if err := ValidateScope(scope); err != nil {
 		return result, err
 	}
@@ -528,10 +209,11 @@ func (p *SQLiteReadPort) ReadExecution(ctx context.Context, request Request) (Ex
 		Report:  Projection{Knowledge: Unknown},
 		Audit:   Projection{Knowledge: Unknown},
 	}
-	if err := p.admitRead(ctx); err != nil {
+	operation, err := p.beginOperation(ctx)
+	if err != nil {
 		return result, err
 	}
-	defer p.activeReads.Done()
+	defer operation.release()
 	if err := ValidateRequest(request); err != nil {
 		return result, err
 	}

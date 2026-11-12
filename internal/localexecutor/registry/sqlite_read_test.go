@@ -162,6 +162,12 @@ func sqliteTestOpen(t *testing.T, fixture sqliteTestFixture) *SQLiteReadPort {
 	return port
 }
 
+// sqliteOwnerDB unwraps the real pool only for synthetic fixture assertions.
+// It is not a product API and does not add another pool or file descriptor.
+func sqliteOwnerDB(port *SQLiteReadPort) *sql.DB {
+	return port.owner.pool.(*sql.DB)
+}
+
 func sqliteTestProjection(t *testing.T, fixture sqliteTestFixture, boundary Boundary, projection Projection) {
 	t.Helper()
 	var record any
@@ -457,7 +463,7 @@ func TestSQLiteEngineAndExplicitVersionedMigration(t *testing.T) {
 	}
 	port := sqliteTestOpen(t, fixture)
 	var version, sourceID string
-	if err := port.db.QueryRowContext(context.Background(), "SELECT sqlite_version(),sqlite_source_id()").Scan(&version, &sourceID); err != nil {
+	if err := sqliteOwnerDB(port).QueryRowContext(context.Background(), "SELECT sqlite_version(),sqlite_source_id()").Scan(&version, &sourceID); err != nil {
 		t.Fatal(err)
 	}
 	t.Log("SQLITE_ENGINE_VERSION=" + version)
@@ -466,10 +472,10 @@ func TestSQLiteEngineAndExplicitVersionedMigration(t *testing.T) {
 		t.Fatal("unverified SQLite engine")
 	}
 	var schemaVersion, applicationID int
-	if err := port.db.QueryRow("PRAGMA user_version").Scan(&schemaVersion); err != nil {
+	if err := sqliteOwnerDB(port).QueryRow("PRAGMA user_version").Scan(&schemaVersion); err != nil {
 		t.Fatal(err)
 	}
-	if err := port.db.QueryRow("PRAGMA application_id").Scan(&applicationID); err != nil {
+	if err := sqliteOwnerDB(port).QueryRow("PRAGMA application_id").Scan(&applicationID); err != nil {
 		t.Fatal(err)
 	}
 	if schemaVersion != RegistrySchemaVersion || applicationID != RegistryApplicationID {
@@ -477,7 +483,7 @@ func TestSQLiteEngineAndExplicitVersionedMigration(t *testing.T) {
 	}
 	var migrationVersion, targetVersion, dirty int
 	var checksum string
-	if err := port.db.QueryRow("SELECT version,checksum,dirty,target_schema_version FROM registry_migrations").Scan(&migrationVersion, &checksum, &dirty, &targetVersion); err != nil {
+	if err := sqliteOwnerDB(port).QueryRow("SELECT version,checksum,dirty,target_schema_version FROM registry_migrations").Scan(&migrationVersion, &checksum, &dirty, &targetVersion); err != nil {
 		t.Fatal(err)
 	}
 	if migrationVersion != RegistryMigrationVersion || targetVersion != RegistrySchemaVersion || dirty != 0 || checksum != RegistryMigrationChecksum() {
@@ -551,29 +557,29 @@ func TestSQLiteSchemaRejectionDoesNotAutoMigrateOrRepair(t *testing.T) {
 func TestSQLiteReadOnlyConnectionAndClose(t *testing.T) {
 	fixture := sqliteTestNew(t, Positive)
 	port := sqliteTestOpen(t, fixture)
-	header := port.header
-	database := port.db
-	port.db.SetMaxOpenConns(1)
+	header := port.owner.header
+	database := sqliteOwnerDB(port)
+	sqliteOwnerDB(port).SetMaxOpenConns(1)
 	var queryOnly, trustedSchema int
-	if err := port.db.QueryRow("PRAGMA query_only").Scan(&queryOnly); err != nil {
+	if err := sqliteOwnerDB(port).QueryRow("PRAGMA query_only").Scan(&queryOnly); err != nil {
 		t.Fatal(err)
 	}
-	if err := port.db.QueryRow("PRAGMA trusted_schema").Scan(&trustedSchema); err != nil {
+	if err := sqliteOwnerDB(port).QueryRow("PRAGMA trusted_schema").Scan(&trustedSchema); err != nil {
 		t.Fatal(err)
 	}
 	if queryOnly != 1 || trustedSchema != 0 {
 		t.Fatal("connection hardening not effective")
 	}
-	if _, err := port.db.Exec("UPDATE registry_meta SET schema_name=schema_name"); err == nil {
+	if _, err := sqliteOwnerDB(port).Exec("UPDATE registry_meta SET schema_name=schema_name"); err == nil {
 		t.Fatal("query-only connection accepted a write")
 	}
-	if _, err := port.db.Exec("PRAGMA query_only=OFF"); err != nil {
+	if _, err := sqliteOwnerDB(port).Exec("PRAGMA query_only=OFF"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := port.db.Exec("UPDATE registry_meta SET schema_name=schema_name"); err == nil {
+	if _, err := sqliteOwnerDB(port).Exec("UPDATE registry_meta SET schema_name=schema_name"); err == nil {
 		t.Fatal("file URI mode=ro was replaced by a togglable pragma")
 	}
-	if _, err := port.db.Exec("PRAGMA user_version=2"); err == nil {
+	if _, err := sqliteOwnerDB(port).Exec("PRAGMA user_version=2"); err == nil {
 		t.Fatal("readonly file accepted persistent pragma")
 	}
 	if err := port.Close(); err != nil {
@@ -953,8 +959,8 @@ func TestSQLiteContextCancellationAndPoolWait(t *testing.T) {
 	if _, err := port.ReadExecution(canceled, fixture.request); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled execution read: %v", err)
 	}
-	port.db.SetMaxOpenConns(1)
-	held, err := port.db.Conn(context.Background())
+	sqliteOwnerDB(port).SetMaxOpenConns(1)
+	held, err := sqliteOwnerDB(port).Conn(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

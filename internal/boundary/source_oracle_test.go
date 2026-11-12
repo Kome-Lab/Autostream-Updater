@@ -49,9 +49,10 @@ func TestProductionSourceBoundary(t *testing.T) {
 		"\"database/sql\"": {
 			"internal/localexecutor/registry/sqlite_read.go":   true,
 			"internal/localexecutor/registry/sqlite_schema.go": true,
+			"internal/localexecutor/registry/sqlite_owner.go": true,
 		},
 		"\"modernc.org/sqlite\"": {
-			"internal/localexecutor/registry/sqlite_read.go": true,
+			"internal/localexecutor/registry/sqlite_owner.go": true,
 		},
 	}
 	callerCounts := map[string]int{

@@ -196,7 +196,7 @@ func TestSQLiteContinuityReadsDetachedFactsAfterTransactionEnds(t *testing.T) {
 	var sharedWitness WitnessOutcome
 	sharedOutstanding := []ID{"liability-a"}
 	fixture.continuity.onReference = func(_ context.Context, scope Scope, frame BackendReadFrame, active ActiveReference) (ContinuityReferenceObservation, error) {
-		if port.db.Stats().InUse != 0 || active.Scope != scope || active.Reference == nil || active.Evidence.FreshnessProof != "" {
+		if port.owner.pool.Stats().InUse != 0 || active.Scope != scope || active.Reference == nil || active.Evidence.FreshnessProof != "" {
 			t.Fatal("Continuity reference read held SQL Tx or received invented freshness")
 		}
 		active.Reference.Revision = "mutated-by-continuity"
@@ -207,7 +207,7 @@ func TestSQLiteContinuityReadsDetachedFactsAfterTransactionEnds(t *testing.T) {
 		t.Fatal("Continuity mutated SQL reference input")
 	}
 	fixture.continuity.onExecution = func(_ context.Context, request Request, frame BackendReadFrame, snapshot ExecutionSnapshot) (ContinuityExecutionObservation, error) {
-		if port.db.Stats().InUse != 0 || snapshot.StoredRequest == nil || *snapshot.StoredRequest != request ||
+		if port.owner.pool.Stats().InUse != 0 || snapshot.StoredRequest == nil || *snapshot.StoredRequest != request ||
 			snapshot.Backend.Receipt == nil || snapshot.Ledger.Record == nil ||
 			snapshot.Witness != nil || snapshot.Outstanding != nil || snapshot.Evidence.FreshnessProof != "" {
 			t.Fatal("Continuity did not receive detached complete SQL facts")

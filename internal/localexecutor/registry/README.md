@@ -213,19 +213,54 @@ There is no automatic retry. Context cancellation is preserved in queries,
 pool waits and pre-open checks. sqlite3_open_v2 has no mid-open cancellation
 hook; instant interruption of that native open is not promised.
 
-On POSIX, closing an unmanaged descriptor may release process SQLite locks.
-Header inspection therefore retains its descriptor throughout the owned pool
-lifetime. A process inode lease rejects duplicate adapters/hardlink aliases
-before raw Open. Public reads drain before SQL connections, then the header,
-are closed. Uncertain closure retains ownership rather than requalifying UNKNOWN.
-The trusted process must exclude other uncoordinated SQLite/raw users of this
-inode. A future same-process Writer must share this owner lifecycle or prove a
-separate design. Cross-process SQLite writers are tested with actual subprocesses.
-This is not a hostile-file sandbox or enforcement against Host root.
+## Registry lifecycle ownership
 
-Tests use only temporary synthetic DBs/processes. The existing twelve assertion
-tests are retained and adapted to independent Continuity, with extra tests for
-migration checksum/dirty state, schema v1 preservation, uint64/history/ABA,
-busy/corrupt failures and Continuity absence/coverage/copying. Unit/race/build
-success does not certify power-loss durability, all-Actor exclusion, independent
-Continuity, a real clock, production migration, Phase 1 closure or formal v2 return.
+SQLiteReadPort owns fact mapping and independent Continuity qualification.
+Its private registryLifecycleOwner owns the database path/identity, retained
+Header FD, process inode lease, read-only connection pool and Close/drain.
+A private operation token tracks each public read through Continuity completion.
+The owner's beginRead also obtains its own token: an internal transaction cannot
+escape drain merely because it did not enter through a public ReadPort method.
+
+sqliteReadTx owns its sql.Conn and operation token. Commit/Rollback complete the
+SQL transaction, synchronously release the connection, then release the token
+exactly once. A connection-release failure marks owner uncertainty before drain
+can finish. Cancellation does not turn an unfinished connection into a free lease.
+
+Close first closes admission, then drains operations/transactions. It closes the
+pool, requires zero remaining SQL connections, closes the Header FD, and only
+then releases the inode lease. Failed/uncertain resource closure retains a strong
+owner reference and the lease. Repeated Close does not retry or assert recovery;
+there is no public force-release/resume API. Private nonempty pool/Header resource
+interfaces are actual I/O seams used by the owner and synthetic failure tests,
+not placeholder Writer interfaces.
+
+On POSIX, closing an unmanaged descriptor may release process SQLite locks.
+The owner retains one Header FD for the full pool lifetime. Duplicate/hardlink
+owners are rejected before raw Open, including during drain or uncertain Close.
+Symlinks are rejected and changed path/inode identities fail closed.
+All current connections still use native mode=ro and query_only; this refactor
+does not make the pool writable.
+
+Future Writer integration must share this owner's identity, Header FD, lease,
+pool ownership, operation tracking and single Close responsibility. It must not
+open another Header FD, acquire another lease or independently own a pool for the
+same inode. A writable connection-role/profile contract needs separate design
+and authorization; it is not implemented here. P-A Mutation and GuardControl
+must participate in the same enforced writer boundary, not bypass one another.
+No Writer API, writable profile, Mutation or GuardControl is supplied.
+
+Offline migration/administration must not independently open the same inode
+while an owner is active or uncertain. Close must be proved complete before
+switching to offline administration. These cooperative process-local invariants
+do not exclude uncoordinated library handles, management CLI, another process,
+Host root, Recovery, Timer or Supervisor. Host-wide Actor closure remains
+unproven; the owned directory/profile must not be adversarially replaced.
+
+Tests use only temporary synthetic DBs/processes. Existing read/receipt/schema/
+Continuity/cancellation/snapshot tests remain, including separate-process Writer
+lock probes. Additional owner tests exercise drain, closing admission, cancellation,
+connection-release waiting, inode replacement, failure retention and concurrent
+Close. Unit/race/build success does not certify power-loss durability, all-Actor
+exclusion, independent Continuity, a real clock, native ARM64 execution, production
+migration, Phase 1 closure or formal v2 return.
