@@ -43,20 +43,20 @@ type registryHeaderFD interface {
 // in use. This process-local ownership cannot exclude Host root, another process,
 // a management CLI or unrelated same-process SQLite/raw-file handles.
 type registryLifecycleOwner struct {
-	pool           registryConnectionPool
-	header         registryHeaderFD
-	path           string
-	identity       os.FileInfo
-	lease          *registryInodeLease
+	pool             registryConnectionPool
+	header           registryHeaderFD
+	path             string
+	identity         os.FileInfo
+	lease            *registryInodeLease
 	headerDescriptor int
-	headerProbe func(int, os.FileInfo) registryHeaderProbeResult
-	gate           sync.Mutex
-	activeOps      sync.WaitGroup
-	closing        atomic.Bool
-	uncertain      atomic.Bool
-	closeOnce      sync.Once
-	closeErr       error
-	closingStarted chan struct{}
+	headerProbe      func(int, os.FileInfo) registryHeaderProbeResult
+	gate             sync.Mutex
+	activeOps        sync.WaitGroup
+	closing          atomic.Bool
+	uncertain        atomic.Bool
+	closeOnce        sync.Once
+	closeErr         error
+	closingStarted   chan struct{}
 
 	// Observational bookkeeping is changed only by actual lifecycle operations
 	// under gate. Inspection never advances this version or acquires a borrow.

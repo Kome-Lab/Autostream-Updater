@@ -81,42 +81,42 @@ type LifecycleCloseDiagnostic struct {
 // path, URI, SQL, raw error, credential, file identity, descriptor number or
 // resource pointer. OPEN/admission/drain are diagnostics, not execution grants.
 type RegistryLifecycleDiagnostic struct {
-	State      RegistryLifecycleState
+	State RegistryLifecycleState
 	// Consistency describes the tracked owner frame only. Stats and filesystem
 	// facts are best-effort observations, not one globally atomic snapshot.
-	Consistency        Knowledge
-	ActiveOperations   LifecycleCount
+	Consistency         Knowledge
+	ActiveOperations    LifecycleCount
 	AcceptingOperations LifecycleFact
-	Drain              LifecycleDrainState
-	Pool               LifecyclePoolDiagnostic
-	Header             LifecycleHeaderDiagnostic
-	Lease              LifecycleLeaseDiagnostic
-	Close              LifecycleCloseDiagnostic
+	Drain               LifecycleDrainState
+	Pool                LifecyclePoolDiagnostic
+	Header              LifecycleHeaderDiagnostic
+	Lease               LifecycleLeaseDiagnostic
+	Close               LifecycleCloseDiagnostic
 }
 
 // All fields are private, deliberately separate from the exported diagnostic.
 // The frame is copied while holding gate; no resource method is called there.
 type registryLifecycleFrame struct {
-	version           uint64
-	active            int64
-	ready             bool
-	closing           bool
-	uncertain         bool
-	drainFinished     bool
-	closeFinished     bool
-	closeError        bool
-	poolCloseStarted  bool
-	poolReleased      bool
+	version            uint64
+	active             int64
+	ready              bool
+	closing            bool
+	uncertain          bool
+	drainFinished      bool
+	closeFinished      bool
+	closeError         bool
+	poolCloseStarted   bool
+	poolReleased       bool
 	headerCloseStarted bool
-	headerReleased    bool
-	leaseReleased     bool
-	pool              registryConnectionPool
-	header            registryHeaderFD
-	headerDescriptor  int
-	headerProbe       func(int, os.FileInfo) registryHeaderProbeResult
-	path              string
-	identity          os.FileInfo
-	lease             *registryInodeLease
+	headerReleased     bool
+	leaseReleased      bool
+	pool               registryConnectionPool
+	header             registryHeaderFD
+	headerDescriptor   int
+	headerProbe        func(int, os.FileInfo) registryHeaderProbeResult
+	path               string
+	identity           os.FileInfo
+	lease              *registryInodeLease
 }
 
 type registryLifecycleSnapshot struct {
@@ -143,7 +143,7 @@ func unknownRegistryLifecycleDiagnostic() RegistryLifecycleDiagnostic {
 	unknown := lifecycleUnknown()
 	return RegistryLifecycleDiagnostic{
 		State: LifecycleUnknown, Consistency: Unknown,
-		ActiveOperations: LifecycleCount{Knowledge: Unknown},
+		ActiveOperations:    LifecycleCount{Knowledge: Unknown},
 		AcceptingOperations: unknown, Drain: LifecycleDrainUnknown,
 		Pool: LifecyclePoolDiagnostic{Knowledge: Unknown},
 		Header: LifecycleHeaderDiagnostic{
@@ -180,7 +180,7 @@ func (owner *registryLifecycleOwner) lifecycleFrame() registryLifecycleFrame {
 // A changed owner frame becomes UNKNOWN; there is no implicit retry.
 func (owner *registryLifecycleOwner) snapshotLifecycle() registryLifecycleSnapshot {
 	snapshot := registryLifecycleSnapshot{
-		pool: LifecyclePoolDiagnostic{Knowledge: Unknown},
+		pool:            LifecyclePoolDiagnostic{Knowledge: Unknown},
 		headerReference: lifecycleUnknown(), headerValid: lifecycleUnknown(),
 		headerClosed: lifecycleUnknown(), pathValid: lifecycleUnknown(),
 		leaseHeld: lifecycleUnknown(), leaseLinked: lifecycleUnknown(),
