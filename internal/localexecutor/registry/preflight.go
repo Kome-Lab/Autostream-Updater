@@ -395,7 +395,9 @@ func (p *ConditionalCommitPreflight) checkSnapshot(ctx context.Context, request 
 		if receipt.Kind == Positive {
 			matched, linked := false, false
 			for _, transition := range raw.History {
-                if transition.Scope == original.Command.Scope && transition.ExecutionKey == original.Command.Execution.ExecutionKey { linked = true }
+				if transition.Scope == original.Command.Scope && transition.ExecutionKey == original.Command.Execution.ExecutionKey {
+					linked = true
+				}
 				if transition.Scope == original.Command.Scope &&
 					transition.ExecutionKey == original.Command.Execution.ExecutionKey &&
 					transition.ReceiptID == receipt.ReceiptID &&
@@ -408,7 +410,9 @@ func (p *ConditionalCommitPreflight) checkSnapshot(ctx context.Context, request 
 				}
 			}
 			if !matched {
-                if linked && raw.HistoryKnowledge == Known { return PreflightConflict, "scope_execution_history_conflict" }
+				if linked && raw.HistoryKnowledge == Known {
+					return PreflightConflict, "scope_execution_history_conflict"
+				}
 				return PreflightUnknown, "scope_execution_history_gap"
 			}
 		}
