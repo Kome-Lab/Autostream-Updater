@@ -83,6 +83,8 @@ type GuardEvidenceBundle struct {
 	Frame     BackendReadFrame
 	Proof     ID
 	Claims    []GuardEvidenceClaim
+	// Original canonical envelopes are data, not authentication authority.
+	EncodedEvidence [][]byte
 }
 
 // Implementations must be read-only, current, bounded, and fixed-owner. This
@@ -147,6 +149,13 @@ func guardEvidenceKindKnown(kind GuardEvidenceKind) bool {
 
 func cloneGuardEvidenceBundle(bundle GuardEvidenceBundle) GuardEvidenceBundle {
 	bundle.Claims = append([]GuardEvidenceClaim(nil), bundle.Claims...)
+	if bundle.EncodedEvidence != nil {
+		encoded := make([][]byte, len(bundle.EncodedEvidence))
+		for index, value := range bundle.EncodedEvidence {
+			encoded[index] = append([]byte(nil), value...)
+		}
+		bundle.EncodedEvidence = encoded
+	}
 	return bundle
 }
 

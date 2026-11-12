@@ -708,17 +708,50 @@ apply/reload/restart, Media/Provider actions and live-host operations remain abs
 Product-wide acceptance remains NOT_RUN; Phase 1 closure is on hold; production
 migration is unauthorized; formal v2 return remains NOT_CERTIFIED.
 
-## Pending C03 / Contracts publication
+## Contracts-owned v3 evidence connection
 
-The next wire implementation proposal is kept UNAPPLIED under
-[testdata/c03-contracts-candidate](../../../testdata/c03-contracts-candidate/README.md).
-It includes typed canonical-envelope/strict-codec source, synthetic tests and a
-proposed C10 bridge. The required CI validates it only in a disposable source
-archive. This package and its production go.mod/go.sum do not import that proposed
-module or install the bridge.
+The canonical Envelope/Strict Codec now lives in the separate
+`github.com/Kome-Lab/Autostream-Contracts/v3evidence` module, pinned to
+`v0.0.0-20261112114129-c53da46de667` / commit
+`c53da46de667d0cb0fc3692978870f373b437b06`.
+The Contracts PR is [#1](https://github.com/Kome-Lab/Autostream-Contracts/pull/1);
+it remains unmerged and no tag/Release is created. The legacy v2 require/replace
+is preserved at1550fab9220f rather than upgraded to obtain these new types.
 
-Automatic approval review blocked persistent branch creation in the separate
-Contracts repository as outside the explicit Updater repository scope. Contracts
-publication and actual producer/reader/key/clock connection remain pending
-authorization and implementation. Candidate CI success cannot certify those
-missing product boundaries, independent Continuity or Mutation readiness.
+`ContractsGuardEvidenceSource` strictly decodes the canonical package directly,
+pins Scope/Audience/per-Kind issuers in trusted construction, requires all13Kind
+records with unique EvidenceIDs, and correlates CP/Policy/Trust anchors,
+membership/Drain, owner/fence/Boot/process, generation/frame and Candidate content.
+Original Envelope bytes remain attached to the bundle and are deeply cloned.
+IDs used by internal claims are correlation references, not authentication.
+
+`ContractsGuardEvidenceAuthenticator` reconstructs the complete bundle from
+those original bytes and requires distinct Integrity, current Validity and current
+Revocation/effective-state verifier hooks. Original bytes plus typed payload,
+profile/key metadata and all target fields reach the verifier. There is no
+successful default, v2 fallback, automatic retry or implicit Consume.
+
+The actual CP Producer, read-only network/UDS delivery, keys, evidence clock and
+current owner/Policy/Trust/Admission/Drain/Candidate services remain unimplemented.
+Missing transport/verifier/clock qualification remains UNKNOWN. No signature/MAC
+algorithm, key product, Token format, TTL/skew or D1 substitute is adopted.
+Guard cannot qualify independent Continuity. No Reference/Receipt/History
+mutation, GuardControl or service effect is added.
+
+The pre-publication proposal under testdata/c03-contracts-candidate remains an
+unchanged historical artifact atf62469a4e319ca8487f1ac5502979ca15521d9d6.
+Its NOT_APPLIED/PUBLICATION_BLOCKED statements describe that earlier checkpoint,
+not this connection. Its candidate-only script is no longer invoked by CI:
+normal product-package tests now exercise the real pinned module connection.
+
+CI verifies the selected module has no local/candidate replacement, checks the
+reviewed module's exact source blobs and fixed version/commit, and runs native
+C10 interop tests alongside existing SQLite tests, CGO-free/Race and amd64/arm64
+cross-builds. Synthetic Producer/verifier/clock tests do not certify a deployed
+issuer or production eligibility. Next smallest unit is the actual v3 CP
+evidence Producer/read endpoint and its trusted verification/clock inputs,
+separately authorized in its owning repository.
+
+All original preservation, manual hold, old-authority nonreuse and UNKNOWN/HELD
+constraints remain. Product-wide acceptance NOT_RUN; Phase1 closure on hold;
+production migration unauthorized; formal v2 return NOT_CERTIFIED.

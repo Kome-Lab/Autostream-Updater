@@ -44,6 +44,8 @@ jobs:
           test "$(go env GOVERSION)" = go1.26.5
           test "$(awk '$1 == "go" { print $2 }' go.mod)" = 1.26.5
           go version
+      - name: Verify pinned Contracts evidence source
+        run: bash scripts/ci/verify-v3-evidence-module.sh
       - name: Check gofmt
         shell: bash
         run: |
@@ -75,7 +77,5 @@ jobs:
             go version -m "${RUNNER_TEMP}/registry-linux-${arch}.test"
             sha256sum "${RUNNER_TEMP}/registry-linux-${arch}.test"
           done
-      - name: Verify unapplied C03 Contracts evidence candidate
-        run: bash scripts/ci/verify-c03-evidence-candidate.sh
       - name: Verify module files unchanged
         run: git diff --exit-code -- go.mod go.sum

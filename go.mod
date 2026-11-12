@@ -3,6 +3,7 @@ module github.com/Kome-Lab/Autostream-Updater
 go 1.26.5
 
 require (
+	github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261112114129-c53da46de667
 	github.com/example/autostream-contracts v0.0.0
 	github.com/in-toto/attestation v1.2.0
 	github.com/klauspost/compress v1.19.2
