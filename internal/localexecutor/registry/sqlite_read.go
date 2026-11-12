@@ -452,200 +452,261 @@ func (p *SQLiteReadPort) readTransition(ctx context.Context, tx sqliteQueryer, r
 // Every table and correlation check belongs to this same managed SQL snapshot.
 // It does not qualify its own restore freshness or consume Writer admission.
 func (p *SQLiteReadPort) readPreflightSnapshot(ctx context.Context, request Request) (PreflightSnapshot, error) {
-    result := PreflightSnapshot{
-        Snapshot: ExecutionSnapshot{
-            Backend: BackendObservation{Knowledge: Unknown},
-            Current: readUnknownActive(request.Command.Scope),
-            Ledger: Projection{Knowledge: Unknown},
-            Report: Projection{Knowledge: Unknown},
-            Audit: Projection{Knowledge: Unknown},
-        },
-        IdentityKnowledge: Unknown,
-        HistoryKnowledge: Unknown,
-    }
-    if err := ValidateRequest(request); err != nil { return result, err }
-    tx, err := p.beginRead(ctx)
-    if err != nil { return result, err }
-    defer tx.Rollback()
-    active, resourceFound, err := p.readActive(ctx, tx, request.Command.Scope)
-    if err != nil { return result, err }
-    result.Snapshot.Current, result.Snapshot.Evidence = active, active.Evidence
-    resourceQualified := resourceFound && sqliteValidateFrame(sqliteFrameFromEvidence(active.Evidence)) == nil
-    found, err := p.readExecution(ctx, tx, request, &result.Snapshot)
-    if err != nil { return result, err }
-    if resourceQualified {
-        result.Snapshot.Ledger = Projection{Knowledge: Absent}
-        result.Snapshot.Report = Projection{Knowledge: Absent}
-        result.Snapshot.Audit = Projection{Knowledge: Absent}
-    }
-    projections, err := p.readProjections(ctx, tx, request, &result.Snapshot)
-    if err != nil { return result, err }
-    transitions, err := p.readTransition(ctx, tx, request, &result.Snapshot)
-    if err != nil { return result, err }
-    if found && !resourceFound { result.Snapshot.Backend = BackendObservation{Knowledge: Conflict} }
-    if !found {
-        if projections+transitions > 0 {
-            result.Snapshot.Backend = BackendObservation{Knowledge: Conflict}
-        } else if resourceQualified {
-            result.Snapshot.Backend = BackendObservation{Knowledge: Absent}
-        }
-    }
-    if err := p.readPreflightIdentities(ctx, tx, request, &result); err != nil { return result, err }
-    if err := p.readPreflightScopeExecutions(ctx, tx, request.Command.Scope, &result); err != nil { return result, err }
-    if err := p.readPreflightHistory(ctx, tx, request.Command.Scope, &result); err != nil { return result, err }
-    if err := tx.Commit(); err != nil { return result, p.readError(ctx, err, "sqlite.preflight_snapshot") }
-    return clonePreflightSnapshot(result), nil
+	result := PreflightSnapshot{
+		Snapshot: ExecutionSnapshot{
+			Backend: BackendObservation{Knowledge: Unknown},
+			Current: readUnknownActive(request.Command.Scope),
+			Ledger:  Projection{Knowledge: Unknown},
+			Report:  Projection{Knowledge: Unknown},
+			Audit:   Projection{Knowledge: Unknown},
+		},
+		IdentityKnowledge: Unknown,
+		HistoryKnowledge:  Unknown,
+	}
+	if err := ValidateRequest(request); err != nil {
+		return result, err
+	}
+	tx, err := p.beginRead(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer tx.Rollback()
+	active, resourceFound, err := p.readActive(ctx, tx, request.Command.Scope)
+	if err != nil {
+		return result, err
+	}
+	result.Snapshot.Current, result.Snapshot.Evidence = active, active.Evidence
+	resourceQualified := resourceFound && sqliteValidateFrame(sqliteFrameFromEvidence(active.Evidence)) == nil
+	found, err := p.readExecution(ctx, tx, request, &result.Snapshot)
+	if err != nil {
+		return result, err
+	}
+	if resourceQualified {
+		result.Snapshot.Ledger = Projection{Knowledge: Absent}
+		result.Snapshot.Report = Projection{Knowledge: Absent}
+		result.Snapshot.Audit = Projection{Knowledge: Absent}
+	}
+	projections, err := p.readProjections(ctx, tx, request, &result.Snapshot)
+	if err != nil {
+		return result, err
+	}
+	transitions, err := p.readTransition(ctx, tx, request, &result.Snapshot)
+	if err != nil {
+		return result, err
+	}
+	if found && !resourceFound {
+		result.Snapshot.Backend = BackendObservation{Knowledge: Conflict}
+	}
+	if !found {
+		if projections+transitions > 0 {
+			result.Snapshot.Backend = BackendObservation{Knowledge: Conflict}
+		} else if resourceQualified {
+			result.Snapshot.Backend = BackendObservation{Knowledge: Absent}
+		}
+	}
+	if err := p.readPreflightIdentities(ctx, tx, request, &result); err != nil {
+		return result, err
+	}
+	if err := p.readPreflightScopeExecutions(ctx, tx, request.Command.Scope, &result); err != nil {
+		return result, err
+	}
+	if err := p.readPreflightHistory(ctx, tx, request.Command.Scope, &result); err != nil {
+		return result, err
+	}
+	if err := tx.Commit(); err != nil {
+		return result, p.readError(ctx, err, "sqlite.preflight_snapshot")
+	}
+	return clonePreflightSnapshot(result), nil
 }
 
 // Uniqueness here covers the complete managed registry, not only the requested
 // Scope. Absence is query coverage, never an unused grant or NOT_STARTED proof.
 func (p *SQLiteReadPort) readPreflightIdentities(ctx context.Context, tx sqliteQueryer, request Request, result *PreflightSnapshot) error {
-    execution := request.Command.Execution
-    rows, err := tx.QueryContext(ctx, "SELECT realm,host,resource,backend,execution_key,request_id,operation_id,attempt_id,step_id,request_json FROM executions WHERE execution_key=? OR request_id=? OR (operation_id=? AND attempt_id=? AND step_id=?) ORDER BY realm,host,resource,backend,execution_key",
-        string(execution.ExecutionKey), string(execution.RequestID), string(execution.OperationID), string(execution.AttemptID), string(execution.StepID))
-    if err != nil { return p.readError(ctx, err, "sqlite.preflight_identity") }
-    defer rows.Close()
-    result.IdentityKnowledge = Known
-    for rows.Next() {
-        var realm, host, resource, backend, key, requestID, operation, attempt, step, raw string
-        if err := rows.Scan(&realm, &host, &resource, &backend, &key, &requestID, &operation, &attempt, &step, &raw); err != nil {
-            return p.readError(ctx, err, "sqlite.preflight_identity_row")
-        }
-        stored, err := DecodeRequest([]byte(raw))
-        if err != nil {
-            if result.IdentityKnowledge != Conflict { result.IdentityKnowledge = Unknown }
-            continue
-        }
-        indexedScope := Scope{Realm: ID(realm), Host: ID(host), Resource: ID(resource), Backend: ID(backend)}
-        indexedExecution := Execution{RequestID: ID(requestID), ExecutionKey: ID(key), OperationID: ID(operation), AttemptID: ID(attempt), StepID: ID(step)}
-        if ValidateScope(indexedScope) != nil || ValidateExecution(indexedExecution) != nil ||
-            stored.Command.Scope != indexedScope || stored.Command.Execution != indexedExecution {
-            result.IdentityKnowledge = Conflict
-        }
-        result.IdentityMatches = append(result.IdentityMatches, stored)
-    }
-    if err := rows.Err(); err != nil { return p.readError(ctx, err, "sqlite.preflight_identity_rows") }
-    if err := rows.Close(); err != nil { return p.readError(ctx, err, "sqlite.preflight_identity_close") }
-    return nil
+	execution := request.Command.Execution
+	rows, err := tx.QueryContext(ctx, "SELECT realm,host,resource,backend,execution_key,request_id,operation_id,attempt_id,step_id,request_json FROM executions WHERE execution_key=? OR request_id=? OR (operation_id=? AND attempt_id=? AND step_id=?) ORDER BY realm,host,resource,backend,execution_key",
+		string(execution.ExecutionKey), string(execution.RequestID), string(execution.OperationID), string(execution.AttemptID), string(execution.StepID))
+	if err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_identity")
+	}
+	defer rows.Close()
+	result.IdentityKnowledge = Known
+	for rows.Next() {
+		var realm, host, resource, backend, key, requestID, operation, attempt, step, raw string
+		if err := rows.Scan(&realm, &host, &resource, &backend, &key, &requestID, &operation, &attempt, &step, &raw); err != nil {
+			return p.readError(ctx, err, "sqlite.preflight_identity_row")
+		}
+		stored, err := DecodeRequest([]byte(raw))
+		if err != nil {
+			if result.IdentityKnowledge != Conflict {
+				result.IdentityKnowledge = Unknown
+			}
+			continue
+		}
+		indexedScope := Scope{Realm: ID(realm), Host: ID(host), Resource: ID(resource), Backend: ID(backend)}
+		indexedExecution := Execution{RequestID: ID(requestID), ExecutionKey: ID(key), OperationID: ID(operation), AttemptID: ID(attempt), StepID: ID(step)}
+		if ValidateScope(indexedScope) != nil || ValidateExecution(indexedExecution) != nil ||
+			stored.Command.Scope != indexedScope || stored.Command.Execution != indexedExecution {
+			result.IdentityKnowledge = Conflict
+		}
+		result.IdentityMatches = append(result.IdentityMatches, stored)
+	}
+	if err := rows.Err(); err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_identity_rows")
+	}
+	if err := rows.Close(); err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_identity_close")
+	}
+	return nil
 }
 
 // Read the entire scoped transition set, with each historical immutable request
 // and Receipt from the same SQL snapshot. Independent history/baseline coverage
 // and authenticity remain verifier obligations, not facts synthesized by SQL.
 func (p *SQLiteReadPort) readPreflightHistory(ctx context.Context, tx sqliteQueryer, scope Scope, result *PreflightSnapshot) error {
-    rows, err := tx.QueryContext(ctx, "SELECT t.realm,t.host,t.resource,t.backend,t.execution_key,t.transition_id,t.receipt_id,t.before_revision,t.before_state_version,t.after_revision,t.after_state_version,e.request_id,e.operation_id,e.attempt_id,e.step_id,e.request_json,e.backend_knowledge,e.receipt_kind,e.receipt_json FROM reference_transitions t LEFT JOIN executions e ON e.realm=t.realm AND e.host=t.host AND e.resource=t.resource AND e.backend=t.backend AND e.execution_key=t.execution_key WHERE t.realm=? AND t.host=? AND t.resource=? AND t.backend=? ORDER BY t.after_state_version,t.transition_id", sqliteScopeArgs(scope)...)
-    if err != nil { return p.readError(ctx, err, "sqlite.preflight_history") }
-    defer rows.Close()
-    result.HistoryKnowledge = Known
-    for rows.Next() {
-        var realm, host, resource, backend, key, transition, receiptID, beforeRevision, beforeVersion, afterRevision, afterVersion string
-        var requestID, operationID, attemptID, stepID, rawRequest, backendKnowledge, rawKind, rawReceipt sql.NullString
-        if err := rows.Scan(&realm, &host, &resource, &backend, &key, &transition, &receiptID, &beforeRevision, &beforeVersion, &afterRevision, &afterVersion,
-            &requestID, &operationID, &attemptID, &stepID, &rawRequest, &backendKnowledge, &rawKind, &rawReceipt); err != nil {
-            return p.readError(ctx, err, "sqlite.preflight_history_row")
-        }
-        before, beforeErr := sqliteStateVersion(beforeVersion)
-        after, afterErr := sqliteStateVersion(afterVersion)
-        entry := PreflightTransition{
-            Scope: Scope{Realm: ID(realm), Host: ID(host), Resource: ID(resource), Backend: ID(backend)},
-            ExecutionKey: ID(key), TransitionID: ID(transition), ReceiptID: ID(receiptID),
-            Before: Reference{Revision: ID(beforeRevision), StateVersion: before},
-            After: Reference{Revision: ID(afterRevision), StateVersion: after},
-        }
-        if beforeErr != nil || afterErr != nil || ValidateScope(entry.Scope) != nil ||
-            validateID(entry.ExecutionKey, "preflight.history_key") != nil ||
-            validateID(entry.TransitionID, "preflight.history_transition") != nil ||
-            validateID(entry.ReceiptID, "preflight.history_receipt") != nil ||
-            validateID(entry.Before.Revision, "preflight.history_before") != nil ||
-            validateID(entry.After.Revision, "preflight.history_after") != nil {
-            if result.HistoryKnowledge != Conflict { result.HistoryKnowledge = Unknown }
-        }
-        if !requestID.Valid || !operationID.Valid || !attemptID.Valid || !stepID.Valid || !rawRequest.Valid ||
-            !backendKnowledge.Valid || !rawKind.Valid || !rawReceipt.Valid {
-            if result.HistoryKnowledge != Conflict { result.HistoryKnowledge = Unknown }
-            result.History = append(result.History, entry)
-            continue
-        }
-        stored, decodeErr := DecodeRequest([]byte(rawRequest.String))
-        if decodeErr != nil {
-            if result.HistoryKnowledge != Conflict { result.HistoryKnowledge = Unknown }
-            result.History = append(result.History, entry)
-            continue
-        }
-        indexed := Execution{RequestID: ID(requestID.String), ExecutionKey: entry.ExecutionKey, OperationID: ID(operationID.String), AttemptID: ID(attemptID.String), StepID: ID(stepID.String)}
-        if ValidateExecution(indexed) != nil || stored.Command.Scope != entry.Scope || stored.Command.Execution != indexed {
-            result.HistoryKnowledge = Conflict
-        }
-        entry.Request = &stored
-        var receipt Receipt
-        if decodeSQLiteRecord(rawReceipt.String, &receipt) != nil {
-            if result.HistoryKnowledge != Conflict { result.HistoryKnowledge = Unknown }
-        } else {
-            entry.Receipt = &receipt
-            if backendKnowledge.String != string(Known) || rawKind.String != string(Positive) || receipt.Kind != Positive {
-                result.HistoryKnowledge = Conflict
-            }
-        }
-        result.History = append(result.History, entry)
-    }
-    if err := rows.Err(); err != nil { return p.readError(ctx, err, "sqlite.preflight_history_rows") }
-    if err := rows.Close(); err != nil { return p.readError(ctx, err, "sqlite.preflight_history_close") }
-    return nil
+	rows, err := tx.QueryContext(ctx, "SELECT t.realm,t.host,t.resource,t.backend,t.execution_key,t.transition_id,t.receipt_id,t.before_revision,t.before_state_version,t.after_revision,t.after_state_version,e.request_id,e.operation_id,e.attempt_id,e.step_id,e.request_json,e.backend_knowledge,e.receipt_kind,e.receipt_json FROM reference_transitions t LEFT JOIN executions e ON e.realm=t.realm AND e.host=t.host AND e.resource=t.resource AND e.backend=t.backend AND e.execution_key=t.execution_key WHERE t.realm=? AND t.host=? AND t.resource=? AND t.backend=? ORDER BY t.after_state_version,t.transition_id", sqliteScopeArgs(scope)...)
+	if err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_history")
+	}
+	defer rows.Close()
+	result.HistoryKnowledge = Known
+	for rows.Next() {
+		var realm, host, resource, backend, key, transition, receiptID, beforeRevision, beforeVersion, afterRevision, afterVersion string
+		var requestID, operationID, attemptID, stepID, rawRequest, backendKnowledge, rawKind, rawReceipt sql.NullString
+		if err := rows.Scan(&realm, &host, &resource, &backend, &key, &transition, &receiptID, &beforeRevision, &beforeVersion, &afterRevision, &afterVersion,
+			&requestID, &operationID, &attemptID, &stepID, &rawRequest, &backendKnowledge, &rawKind, &rawReceipt); err != nil {
+			return p.readError(ctx, err, "sqlite.preflight_history_row")
+		}
+		before, beforeErr := sqliteStateVersion(beforeVersion)
+		after, afterErr := sqliteStateVersion(afterVersion)
+		entry := PreflightTransition{
+			Scope:        Scope{Realm: ID(realm), Host: ID(host), Resource: ID(resource), Backend: ID(backend)},
+			ExecutionKey: ID(key), TransitionID: ID(transition), ReceiptID: ID(receiptID),
+			Before: Reference{Revision: ID(beforeRevision), StateVersion: before},
+			After:  Reference{Revision: ID(afterRevision), StateVersion: after},
+		}
+		if beforeErr != nil || afterErr != nil || ValidateScope(entry.Scope) != nil ||
+			validateID(entry.ExecutionKey, "preflight.history_key") != nil ||
+			validateID(entry.TransitionID, "preflight.history_transition") != nil ||
+			validateID(entry.ReceiptID, "preflight.history_receipt") != nil ||
+			validateID(entry.Before.Revision, "preflight.history_before") != nil ||
+			validateID(entry.After.Revision, "preflight.history_after") != nil {
+			if result.HistoryKnowledge != Conflict {
+				result.HistoryKnowledge = Unknown
+			}
+		}
+		if !requestID.Valid || !operationID.Valid || !attemptID.Valid || !stepID.Valid || !rawRequest.Valid ||
+			!backendKnowledge.Valid || !rawKind.Valid || !rawReceipt.Valid {
+			if result.HistoryKnowledge != Conflict {
+				result.HistoryKnowledge = Unknown
+			}
+			result.History = append(result.History, entry)
+			continue
+		}
+		stored, decodeErr := DecodeRequest([]byte(rawRequest.String))
+		if decodeErr != nil {
+			if result.HistoryKnowledge != Conflict {
+				result.HistoryKnowledge = Unknown
+			}
+			result.History = append(result.History, entry)
+			continue
+		}
+		indexed := Execution{RequestID: ID(requestID.String), ExecutionKey: entry.ExecutionKey, OperationID: ID(operationID.String), AttemptID: ID(attemptID.String), StepID: ID(stepID.String)}
+		if ValidateExecution(indexed) != nil || stored.Command.Scope != entry.Scope || stored.Command.Execution != indexed {
+			result.HistoryKnowledge = Conflict
+		}
+		entry.Request = &stored
+		var receipt Receipt
+		if decodeSQLiteRecord(rawReceipt.String, &receipt) != nil {
+			if result.HistoryKnowledge != Conflict {
+				result.HistoryKnowledge = Unknown
+			}
+		} else {
+			entry.Receipt = &receipt
+			if backendKnowledge.String != string(Known) || rawKind.String != string(Positive) || receipt.Kind != Positive {
+				result.HistoryKnowledge = Conflict
+			}
+		}
+		result.History = append(result.History, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_history_rows")
+	}
+	if err := rows.Close(); err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_history_close")
+	}
+	return nil
 }
 
 // Observe every execution in the affected Scope, not only aliases of this key.
 // A known local UNKNOWN from an older key cannot be hidden by an empty external
 // Outstanding slice. This is local content coverage, not independent freshness.
 func (p *SQLiteReadPort) readPreflightScopeExecutions(ctx context.Context, tx sqliteQueryer, scope Scope, result *PreflightSnapshot) error {
-    rows, err := tx.QueryContext(ctx, "SELECT execution_key,request_id,operation_id,attempt_id,step_id,request_json,backend_knowledge,receipt_kind,receipt_json FROM executions WHERE realm=? AND host=? AND resource=? AND backend=? ORDER BY execution_key", sqliteScopeArgs(scope)...)
-    if err != nil { return p.readError(ctx, err, "sqlite.preflight_scope_executions") }
-    defer rows.Close()
-    result.ScopeExecutionKnowledge = Known
-    for rows.Next() {
-        var key, requestID, operation, attempt, step, raw, knowledge string
-        var rawKind, rawReceipt sql.NullString
-        if err := rows.Scan(&key, &requestID, &operation, &attempt, &step, &raw, &knowledge, &rawKind, &rawReceipt); err != nil {
-            return p.readError(ctx, err, "sqlite.preflight_scope_row")
-        }
-        entry := PreflightExecutionObservation{Backend: BackendObservation{Knowledge: Unknown}}
-        stored, err := DecodeRequest([]byte(raw))
-        if err != nil {
-            if result.ScopeExecutionKnowledge != Conflict { result.ScopeExecutionKnowledge = Unknown }
-            result.ScopeExecutions = append(result.ScopeExecutions, entry)
-            continue
-        }
-        entry.Request = &stored
-        indexed := Execution{RequestID: ID(requestID), ExecutionKey: ID(key), OperationID: ID(operation), AttemptID: ID(attempt), StepID: ID(step)}
-        if ValidateExecution(indexed) != nil || stored.Command.Scope != scope || stored.Command.Execution != indexed {
-            result.ScopeExecutionKnowledge = Conflict
-        }
-        entry.Backend.Knowledge = Knowledge(knowledge)
-        if rawReceipt.Valid {
-            var receipt Receipt
-            if decodeSQLiteRecord(rawReceipt.String, &receipt) != nil {
-                if result.ScopeExecutionKnowledge != Conflict { result.ScopeExecutionKnowledge = Unknown }
-            } else {
-                entry.Backend.Receipt = &receipt
-                if !rawKind.Valid || ReceiptKind(rawKind.String) != receipt.Kind {
-                    result.ScopeExecutionKnowledge = Conflict
-                }
-            }
-        } else if rawKind.Valid {
-            result.ScopeExecutionKnowledge = Conflict
-        }
-        if err := ValidateBackendObservation(stored, entry.Backend); err != nil {
-            if IsCode(err, CodeBindingConflict) { result.ScopeExecutionKnowledge = Conflict
-            } else if result.ScopeExecutionKnowledge != Conflict { result.ScopeExecutionKnowledge = Unknown }
-        }
-        result.ScopeExecutions = append(result.ScopeExecutions, entry)
-    }
-    if err := rows.Err(); err != nil { return p.readError(ctx, err, "sqlite.preflight_scope_rows") }
-    if err := rows.Close(); err != nil { return p.readError(ctx, err, "sqlite.preflight_scope_close") }
-    // An orphan projection is a known local integrity/coverage gap. It cannot
-    // disappear just because the new request has a different execution key.
-    var orphans int64
-    err = tx.QueryRowContext(ctx, "SELECT count(*) FROM projections p WHERE p.realm=? AND p.host=? AND p.resource=? AND p.backend=? AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.realm=p.realm AND e.host=p.host AND e.resource=p.resource AND e.backend=p.backend AND e.execution_key=p.execution_key)", sqliteScopeArgs(scope)...).Scan(&orphans)
-    if err != nil { return p.readError(ctx, err, "sqlite.preflight_scope_orphan") }
-    if orphans != 0 && result.ScopeExecutionKnowledge != Conflict { result.ScopeExecutionKnowledge = Unknown }
-    return nil
+	rows, err := tx.QueryContext(ctx, "SELECT execution_key,request_id,operation_id,attempt_id,step_id,request_json,backend_knowledge,receipt_kind,receipt_json FROM executions WHERE realm=? AND host=? AND resource=? AND backend=? ORDER BY execution_key", sqliteScopeArgs(scope)...)
+	if err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_scope_executions")
+	}
+	defer rows.Close()
+	result.ScopeExecutionKnowledge = Known
+	for rows.Next() {
+		var key, requestID, operation, attempt, step, raw, knowledge string
+		var rawKind, rawReceipt sql.NullString
+		if err := rows.Scan(&key, &requestID, &operation, &attempt, &step, &raw, &knowledge, &rawKind, &rawReceipt); err != nil {
+			return p.readError(ctx, err, "sqlite.preflight_scope_row")
+		}
+		entry := PreflightExecutionObservation{Backend: BackendObservation{Knowledge: Unknown}}
+		stored, err := DecodeRequest([]byte(raw))
+		if err != nil {
+			if result.ScopeExecutionKnowledge != Conflict {
+				result.ScopeExecutionKnowledge = Unknown
+			}
+			result.ScopeExecutions = append(result.ScopeExecutions, entry)
+			continue
+		}
+		entry.Request = &stored
+		indexed := Execution{RequestID: ID(requestID), ExecutionKey: ID(key), OperationID: ID(operation), AttemptID: ID(attempt), StepID: ID(step)}
+		if ValidateExecution(indexed) != nil || stored.Command.Scope != scope || stored.Command.Execution != indexed {
+			result.ScopeExecutionKnowledge = Conflict
+		}
+		entry.Backend.Knowledge = Knowledge(knowledge)
+		if rawReceipt.Valid {
+			var receipt Receipt
+			if decodeSQLiteRecord(rawReceipt.String, &receipt) != nil {
+				if result.ScopeExecutionKnowledge != Conflict {
+					result.ScopeExecutionKnowledge = Unknown
+				}
+			} else {
+				entry.Backend.Receipt = &receipt
+				if !rawKind.Valid || ReceiptKind(rawKind.String) != receipt.Kind {
+					result.ScopeExecutionKnowledge = Conflict
+				}
+			}
+		} else if rawKind.Valid {
+			result.ScopeExecutionKnowledge = Conflict
+		}
+		if err := ValidateBackendObservation(stored, entry.Backend); err != nil {
+			if IsCode(err, CodeBindingConflict) {
+				result.ScopeExecutionKnowledge = Conflict
+			} else if result.ScopeExecutionKnowledge != Conflict {
+				result.ScopeExecutionKnowledge = Unknown
+			}
+		}
+		result.ScopeExecutions = append(result.ScopeExecutions, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_scope_rows")
+	}
+	if err := rows.Close(); err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_scope_close")
+	}
+	// An orphan projection is a known local integrity/coverage gap. It cannot
+	// disappear just because the new request has a different execution key.
+	var orphans int64
+	err = tx.QueryRowContext(ctx, "SELECT count(*) FROM projections p WHERE p.realm=? AND p.host=? AND p.resource=? AND p.backend=? AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.realm=p.realm AND e.host=p.host AND e.resource=p.resource AND e.backend=p.backend AND e.execution_key=p.execution_key)", sqliteScopeArgs(scope)...).Scan(&orphans)
+	if err != nil {
+		return p.readError(ctx, err, "sqlite.preflight_scope_orphan")
+	}
+	if orphans != 0 && result.ScopeExecutionKnowledge != Conflict {
+		result.ScopeExecutionKnowledge = Unknown
+	}
+	return nil
 }
