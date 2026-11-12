@@ -136,31 +136,31 @@ type RegistryLifecycleDiagnostic struct {
 // All fields are private, deliberately separate from the exported diagnostic.
 // The frame is copied while holding gate; no resource method is called there.
 type registryLifecycleFrame struct {
-	version            uint64
-	active             int64
-	readOperations     int64
-	readTransactions   int64
-	readConnections    int64
+	version               uint64
+	active                int64
+	readOperations        int64
+	readTransactions      int64
+	readConnections       int64
 	unresolvedConnections int64
-	roleTrackingInvalid bool
-	ready              bool
-	closing            bool
-	uncertain          bool
-	drainFinished      bool
-	closeFinished      bool
-	closeError         bool
-	poolCloseStarted   bool
-	poolReleased       bool
-	headerCloseStarted bool
-	headerReleased     bool
-	leaseReleased      bool
-	pool               registryConnectionPool
-	header             registryHeaderFD
-	headerDescriptor   int
-	headerProbe        func(int, os.FileInfo) registryHeaderProbeResult
-	path               string
-	identity           os.FileInfo
-	lease              *registryInodeLease
+	roleTrackingInvalid   bool
+	ready                 bool
+	closing               bool
+	uncertain             bool
+	drainFinished         bool
+	closeFinished         bool
+	closeError            bool
+	poolCloseStarted      bool
+	poolReleased          bool
+	headerCloseStarted    bool
+	headerReleased        bool
+	leaseReleased         bool
+	pool                  registryConnectionPool
+	header                registryHeaderFD
+	headerDescriptor      int
+	headerProbe           func(int, os.FileInfo) registryHeaderProbeResult
+	path                  string
+	identity              os.FileInfo
+	lease                 *registryInodeLease
 }
 
 type registryLifecycleSnapshot struct {
@@ -187,7 +187,7 @@ func unknownRegistryLifecycleDiagnostic() RegistryLifecycleDiagnostic {
 	unknown := lifecycleUnknown()
 	return RegistryLifecycleDiagnostic{
 		State: LifecycleUnknown, Consistency: Unknown,
-		Roles: unknownLifecycleRolesDiagnostic(),
+		Roles:               unknownLifecycleRolesDiagnostic(),
 		ActiveOperations:    LifecycleCount{Knowledge: Unknown},
 		AcceptingOperations: unknown, Drain: LifecycleDrainUnknown,
 		Pool: LifecyclePoolDiagnostic{Knowledge: Unknown},
@@ -208,13 +208,13 @@ func unknownLifecycleRolesDiagnostic() LifecycleRolesDiagnostic {
 		SharedOwner: lifecycleUnknown(),
 		Read: LifecycleReadRoleDiagnostic{
 			Implementation: LifecycleRoleUnknown, Admission: lifecycleUnknown(),
-			Operations: LifecycleCount{Knowledge: Unknown},
-			Transactions: LifecycleCount{Knowledge: Unknown},
-			Connections: LifecycleCount{Knowledge: Unknown},
+			Operations:            LifecycleCount{Knowledge: Unknown},
+			Transactions:          LifecycleCount{Knowledge: Unknown},
+			Connections:           LifecycleCount{Knowledge: Unknown},
 			UnresolvedConnections: LifecycleCount{Knowledge: Unknown},
 		},
-		WriteImplementation: LifecycleRoleUnknown,
-		WriterAdmission: LifecycleAdmissionUnknown,
+		WriteImplementation:    LifecycleRoleUnknown,
+		WriterAdmission:        LifecycleAdmissionUnknown,
 		MutationImplementation: LifecycleRoleUnknown,
 	}
 }
@@ -238,7 +238,7 @@ func (owner *registryLifecycleOwner) lifecycleFrame() registryLifecycleFrame {
 		readOperations: owner.readOperations, readTransactions: owner.readTransactions,
 		readConnections: owner.readConnections, unresolvedConnections: owner.unresolvedConnections,
 		roleTrackingInvalid: owner.roleTrackingInvalid,
-		ready: owner.ready, closing: owner.closing.Load(), uncertain: owner.uncertain.Load(),
+		ready:               owner.ready, closing: owner.closing.Load(), uncertain: owner.uncertain.Load(),
 		drainFinished: owner.drainFinished, closeFinished: owner.closeFinished,
 		closeError: owner.closeErr != nil, poolCloseStarted: owner.poolCloseStarted,
 		poolReleased: owner.poolReleased, headerCloseStarted: owner.headerCloseStarted,
