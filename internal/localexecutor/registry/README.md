@@ -712,8 +712,8 @@ migration is unauthorized; formal v2 return remains NOT_CERTIFIED.
 
 The canonical Envelope/Strict Codec now lives in the separate
 `github.com/Kome-Lab/Autostream-Contracts/v3evidence` module, pinned to
-`v0.0.0-20261113091349-790be850e98c` / commit
-`790be850e98c06119330907a8fc2ae091e2bdc85`.
+`v0.0.0-20261113172311-45aaa9932bcd` / commit
+`45aaa9932bcd92c728c86c95349853724fe1accc`.
 The Contracts PR is [#1](https://github.com/Kome-Lab/Autostream-Contracts/pull/1);
 it remains unmerged and no tag/Release is created. The legacy v2 require/replace
 is preserved at1550fab9220f rather than upgraded to obtain these new types.
@@ -769,3 +769,24 @@ The owning CP PR has implemented its Resolver/Service/SQL Authority code; its
 management/provisioning and real evidence issuance remain unavailable. No CP or
 Contracts source is modified by this Updater increment. Earlier next-unit notes
 above are historical checkpoints, not a claim of deployed evidence qualification.
+
+### Request rejection diagnostic compatibility
+
+The current adapter uses Contracts DecodeRequestWithDiagnostic. Existing strict
+DecodeRequest still owns the success predicate and retains its original errors.
+C10 maps only the additional finite rejection enum and structured Error Code;
+its former wire diagnostic JSON extraction is removed.
+
+The same corpus runs against fixed old C10 6f71ee3, pre-diagnostic a697b9f and the
+candidate. It compares actual DecodeRequest Code and CheckEncoded Status, normal
+bytes, both field orders and mixed structural/Command failures. Reject cases
+assert zero Request/result identity and no authorizer/DB-borrow/Guard/Verifier
+calls; cancellation remains UNKNOWN. Unicode Binding-only restores the old
+CONFLICT result. Unknown/contradictory diagnostics never accept, qualify or retry.
+
+CANONICAL.md records the necessary Error.Field mappings and explicit field-only
+residuals. New tests join the required CanonicalAdapter manifest and existing
+CGO-free/Race selection. Existing old SQLite byte-preservation and candidate C10
+to fixed CP d8ff336 product Resolver/Service/return verification remain active.
+CP collaborators and unconnected Integrity/time/applicability remain synthetic;
+real Evidence issuance stays disabled, with no authority/key/clock choice.

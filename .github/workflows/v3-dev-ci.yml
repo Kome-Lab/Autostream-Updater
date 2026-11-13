@@ -110,3 +110,12 @@ jobs:
         run: bash scripts/ci/c10-cp-interop.sh
       - name: Verify module files unchanged
         run: git diff --exit-code -- go.mod go.sum
+      - name: Checkout fixed pre-diagnostic C10
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Kome-Lab/Autostream-Updater
+          ref: a697b9ffc17fbcd45b636418e0713bd06e301a44
+          path: .c10-diagnostic-before
+          persist-credentials: false
+      - name: Compare old, pre-diagnostic and candidate Decode and real CheckEncoded
+        run: bash scripts/ci/c10_request_diagnostics.sh

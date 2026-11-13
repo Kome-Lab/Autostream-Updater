@@ -216,17 +216,54 @@ func TestCanonicalAdapterBindingErrorCompatibility(t *testing.T) {
 	}
 	for _, b := range []string{"\\ufffd", "\\ud800"} {
 		wire := validationOuterValue(t, validationJSON(t), "Binding", "\""+b+"\"")
-		_, err := DecodeRequest([]byte(wire))
-		if !IsCode(err, CodeInvalid) {
-			t.Fatal("shared structural Unicode refusal changed", err)
+		data := []byte(wire)
+		sharedRequest, sharedErr := evidence.DecodeRequest(data)
+		var sharedFailure *evidence.Error
+		if sharedRequest != (evidence.Request{}) || !errors.As(sharedErr, &sharedFailure) || sharedFailure.Code != "encoding" {
+			t.Fatal("existing shared structural Unicode refusal changed", sharedErr)
+		}
+		_, err := DecodeRequest(data)
+		var failure *Error
+		if !errors.As(err, &failure) || failure.Code != CodeBindingConflict || failure.Field != "request.binding" {
+			t.Fatal("old C10 Unicode Binding conflict was not restored", err)
 		}
 	}
 }
 func TestCanonicalAdapterDiagnosticsCannotAccept(t *testing.T) {
-	for _, err := range []error{nil, errors.New("request_binding"), &evidence.Error{Code: "future_code"}, &evidence.Error{Code: "encoding"}, &evidence.Error{Code: "request_binding"}} {
-		for _, raw := range [][]byte{nil, []byte("{"), []byte("{}"), []byte(validationJSON(t)), bytes.Repeat([]byte(" "), maxRequestBytes+1)} {
-			if decodeContractError(err, raw) == nil {
-				t.Fatal("diagnostic accepted")
+	var typedNil *evidence.Error
+	for _, err := range []error{nil, typedNil, errors.New("request_binding"), &evidence.Error{Code: "future_code"},
+		&evidence.Error{Code: "encoding"}, &evidence.Error{Code: "request_binding"},
+		&evidence.Error{Code: "request_version"}, &evidence.Error{Code: "request_operation"}} {
+		for _, diagnostic := range []evidence.RequestDiagnostic{evidence.RequestDiagnosticNone, evidence.RequestDiagnosticInvalid,
+			evidence.RequestDiagnosticBindingInvalid, evidence.RequestDiagnosticBindingConflict, evidence.RequestDiagnostic(255)} {
+			mapped := decodeContractError(err, diagnostic)
+			var got *Error
+			if !errors.As(mapped, &got) {
+				t.Fatal("diagnostic accepted or leaked a foreign error")
+			}
+			wantCode, wantField := CodeInvalid, "request.json"
+			var shared *evidence.Error
+			if errors.As(err, &shared) && shared != nil {
+				switch diagnostic {
+				case evidence.RequestDiagnosticBindingConflict:
+					if shared.Code == "encoding" || shared.Code == "request_binding" {
+						wantCode, wantField = CodeBindingConflict, "request.binding"
+					}
+				case evidence.RequestDiagnosticBindingInvalid:
+					if shared.Code == "request_binding" {
+						wantField = "request.binding"
+					}
+				case evidence.RequestDiagnosticInvalid:
+					if shared.Code == "request_version" {
+						wantField = "command.schema"
+					}
+					if shared.Code == "request_operation" {
+						wantField = "command.operation"
+					}
+				}
+			}
+			if got.Code != wantCode || got.Field != wantField {
+				t.Fatal("unknown/contradictory diagnostic mapping", got)
 			}
 		}
 		if commandContractError(err, validationValidCommand()) == nil {

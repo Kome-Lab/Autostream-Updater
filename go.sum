@@ -36,6 +36,8 @@ github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261112114129-c53da4
 github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261112114129-c53da46de667/go.mod h1:5qiLRYYDPqmluMD9xBGaY2pLzpzkwZROO7aHhwWeN4w=
 github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261113091349-790be850e98c h1:mPjZcr5gQpu7xU4fUrW8Kb388WssEQE00ksmnTKyZQQ=
 github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261113091349-790be850e98c/go.mod h1:5qiLRYYDPqmluMD9xBGaY2pLzpzkwZROO7aHhwWeN4w=
+github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261113172311-45aaa9932bcd h1:/T2lDdUbHvw8vi3EqlEQV62vMrTH2M0cIeAiwBl8BUI=
+github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261113172311-45aaa9932bcd/go.mod h1:5qiLRYYDPqmluMD9xBGaY2pLzpzkwZROO7aHhwWeN4w=
 github.com/alessio/shellescape v1.4.1 h1:V7yhSDDn8LP4lc4jS8pFkt0zCnzVJlG5JXy9BVKJUX0=
 github.com/alessio/shellescape v1.4.1/go.mod h1:PZAiSCk0LJaZkiCSkPv8qIobYglO3FPpyFjDCtHLS30=
 github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 h1:DklsrG3dyBCFEj5IhUbnKptjxatkF07cF2ak3yi77so=

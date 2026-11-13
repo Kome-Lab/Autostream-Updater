@@ -15,7 +15,12 @@ func TestCanonicalAdapterSourceOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	required := map[string]string{"CanonicalBinding": "ComputeBinding", "ValidateRequest": "ValidateRequest", "DecodeRequest": "DecodeRequest", "validateCommand": "ValidateCommand"}
+	for _, imported := range file.Imports {
+		if imported.Path.Value == `"encoding/json"` {
+			t.Fatal("local Request diagnostic reparse restored")
+		}
+	}
+	required := map[string]string{"CanonicalBinding": "ComputeBinding", "ValidateRequest": "ValidateRequest", "DecodeRequest": "DecodeRequestWithDiagnostic", "validateCommand": "ValidateCommand"}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok {

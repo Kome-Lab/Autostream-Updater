@@ -2,8 +2,8 @@
 
 The product Request/Command acceptance predicate, strict wire decoder and literal
 Binding generation now belong to reviewed Contracts commit
-790be850e98c06119330907a8fc2ae091e2bdc85, module version
-v0.0.0-20261113091349-790be850e98c. Request Schema1, Binding Profile1 and Evidence
+45aaa9932bcd92c728c86c95349853724fe1accc, module version
+v0.0.0-20261113172311-45aaa9932bcd. Request Schema1, Binding Profile1 and Evidence
 Protocol3 remain separate domains. No local replacement, hash, prefix, new wire
 field, normalization or schema/record migration is introduced.
 
@@ -14,7 +14,8 @@ Candidate revision/content pin, Expected revision/state version, all eight Guard
 fields, Timing/time base/deadline and OriginalBudget are preserved.
 
 CanonicalBinding calls shared ComputeBinding. validateCommand and ValidateRequest
-call shared validation. DecodeRequest calls shared DecodeRequest and constructs a
+call shared validation. DecodeRequest calls shared DecodeRequestWithDiagnostic
+and constructs a
 C10 Request ONLY after shared success. C10's old strictRequestValue walker and
 json.Marshal canonical encoder are removed. Generic persisted Record codecs and
 standalone ValidateScope/ValidateExecution/validateID callers retain their separate
@@ -27,26 +28,36 @@ responsibilities; their existence is not an alternate Request acceptance path.
 | Typed invalid Command | INVALID; rejection-only diagnostics retain old known field names |
 | Empty/over-64KiB/invalid-UTF8 typed Binding | INVALID / request.binding |
 | Valid Command plus well-formed nonempty mismatching Binding | BINDING_CONFLICT / request.binding |
-| Shared wire decoder reports request_binding | Bounded Binding extraction selects only those two legacy rejection classes |
-| Structural wire rejection | INVALID / request.json |
+| Shared diagnostic confirms BindingInvalid / BindingConflict | INVALID / BINDING_CONFLICT with request.binding |
+| Invalid/unknown/contradictory shared diagnostic | INVALID / request.json |
 | Wire request_version / request_operation | INVALID / command.schema or command.operation |
 | Unrecognized/non-contract diagnostic error | INVALID; never success |
 
-Error matching uses errors.As and structured Code values. The diagnostic JSON
-extractor is reachable only after the shared decoder has rejected request_binding.
-It never returns a successful Request, repairs a Binding, re-encodes to accept,
-or overrides a structural/unknown rejection. Command field diagnostics likewise
-run only after shared rejection and always return an error. Error.Field is not a
-production branching predicate; C10 readers/Preflight still branch on Code.
+Error matching uses errors.As and structured Code plus the new fixed
+RequestDiagnostic enum. C10 performs no wire reparse. Only shared
+DecodeRequestWithDiagnostic success and None can reach registryCommand.
+Unknown/non-contract errors, unknown enums and contradictory diagnostics remain
+INVALID; metadata cannot construct/repair a Request or authorize/retry.
 
-The shared strict walker refuses U+FFFD/lone-surrogate strings during structural
-decoding. Such corrupt wire Bindings are therefore INVALID/request.json rather
-than the old decoder's later BINDING_CONFLICT. The same typed valid-UTF8 mismatch
-still retains the old conflict class. Wire semantic identity/number errors can
-also report request.json rather than an old detailed field. These are rejected
-inputs only: no formerly rejected input is promoted to success, and no valid
-stored Request/Binding needs rewriting. The adapter deliberately does not use
-forbidden diagnostic parsing on non-request_binding errors to hide this boundary.
+Contracts completes the entire closed shape and trailing check, validates the
+Command, then classifies Binding. U+FFFD and unpaired-surrogate wire Bindings
+still fail the original shared DecodeRequest with its unchanged encoding error.
+For a valid Command, the additional diagnostic restores C10's old
+BINDING_CONFLICT/request.binding and real CheckEncoded CONFLICT. A later unknown,
+duplicate, missing field, malformed number or invalid Command instead remains
+INVALID/REJECTED, including Binding-first inputs. Raw invalid UTF-8 is INVALID.
+
+Necessary Error.Field compatibility includes request.binding for empty/mismatch/
+Unicode Binding and the existing typed Command and known wire version/operation
+mappings. No production caller branches on Field; Error() includes it as
+diagnostic text. This increment does not require every historical Field string.
+In the fixed 214-observation corpus, Code/real CheckEncoded Status/normal bytes
+match old 6f71 completely; 48 compound-invalid cases retain request.json rather
+than old scope.realm, command.schema, command.operation,
+command.expected.state_version or command.timing.deadline_tick. Those are the
+four Unicode forms in both field orders combined with identity/Unicode-identity,
+Schema, Operation, MaxUint64 StateVersion or zero DeadlineTick. All remain
+INVALID/REJECTED. CI prints these field-only residuals explicitly.
 
 ## Evidence and limits
 

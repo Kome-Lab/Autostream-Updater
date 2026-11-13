@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"encoding/json"
 	"errors"
 	"math"
 	"unicode/utf8"
@@ -163,9 +162,12 @@ func ValidateRequest(r Request) error {
 // DecodeRequest never constructs a successful C10 Request from diagnostics.
 // Only a successful shared DecodeRequest can reach registryCommand.
 func DecodeRequest(data []byte) (Request, error) {
-	request, err := evidence.DecodeRequest(data)
+	request, diagnostic, err := evidence.DecodeRequestWithDiagnostic(data)
 	if err != nil {
-		return Request{}, decodeContractError(err, data)
+		return Request{}, decodeContractError(err, diagnostic)
+	}
+	if diagnostic != evidence.RequestDiagnosticNone {
+		return Request{}, invalid("request.json")
 	}
 	return Request{Command: registryCommand(request.Command), Binding: Binding(request.Binding)}, nil
 }
@@ -175,31 +177,33 @@ func bindingContractError(binding Binding) error {
 	}
 	return collision("request.binding")
 }
-func decodeContractError(err error, data []byte) error {
+
+// Rejection-only mapping. No input JSON/Binding/Command is reparsed here.
+func decodeContractError(err error, diagnostic evidence.RequestDiagnostic) error {
 	var failure *evidence.Error
 	if !errors.As(err, &failure) || failure == nil {
 		return invalid("request.json")
 	}
-	switch failure.Code {
-	case "request_binding":
-		// The pinned shared decoder has ALREADY validated the entire closed shape.
-		// This bounded extraction changes only the legacy INVALID/CONFLICT label.
-		// It cannot accept, repair, regenerate or return a Request.
-		if len(data) == 0 || len(data) > maxRequestBytes || !utf8.Valid(data) {
-			return invalid("request.json")
+	switch diagnostic {
+	case evidence.RequestDiagnosticBindingConflict:
+		if failure.Code == "request_binding" || failure.Code == "encoding" {
+			return collision("request.binding")
 		}
-		var diagnostic struct{ Binding string }
-		if json.Unmarshal(data, &diagnostic) != nil {
-			return invalid("request.json")
+	case evidence.RequestDiagnosticBindingInvalid:
+		if failure.Code == "request_binding" {
+			return invalid("request.binding")
 		}
-		return bindingContractError(Binding(diagnostic.Binding))
-	case "request_version":
-		return invalid("command.schema")
-	case "request_operation":
-		return invalid("command.operation")
-	default:
-		return invalid("request.json")
+	case evidence.RequestDiagnosticInvalid:
+		switch failure.Code {
+		case "request_version":
+			return invalid("command.schema")
+		case "request_operation":
+			return invalid("command.operation")
+		}
 	}
+	// None with an error, unknown enum/Code and contradictory diagnostics fail
+	// closed. Even a known Binding diagnostic cannot override an unknown error.
+	return invalid("request.json")
 }
 
 // commandContractError is rejection-only diagnostic metadata. Shared validation
