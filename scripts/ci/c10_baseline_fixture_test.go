@@ -51,6 +51,9 @@ func TestC10BaselineExport(t *testing.T) {
 		if err != nil || plan.OriginalMutationAuthorized {
 			t.Fatal(err)
 		}
+		if snapshot.StoredRequest == nil || snapshot.Backend.Knowledge != Known || snapshot.Backend.Receipt == nil || snapshot.Backend.Receipt.Kind != kind || lookup.Backend.Knowledge != Known || plan.Knowledge != Known || len(plan.Steps) != 3 {
+			t.Fatal("baseline must export known positive/negative records and a qualified read-only plan")
+		}
 		if err = port.Close(); err != nil {
 			t.Fatal(err)
 		}

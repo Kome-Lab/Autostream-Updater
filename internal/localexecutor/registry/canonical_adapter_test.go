@@ -141,7 +141,7 @@ func TestCanonicalAdapterStrictDecode(t *testing.T) {
 	raw := validationJSON(t)
 	cases := map[string]string{
 		"extra":         strings.Replace(raw, "\"Schema\":1", "\"Extra\":0,\"Schema\":1", 1),
-		"missing":       strings.Replace(raw, "\"StateVersion\":0", "", 1),
+		"missing":       strings.Replace(raw, ",\"StateVersion\":0", "", 1),
 		"null":          strings.Replace(raw, "\"Schema\":1", "\"Schema\":null", 1),
 		"case":          strings.Replace(raw, "\"Command\":", "\"command\":", 1),
 		"duplicate":     strings.Replace(raw, "\"Schema\":1", "\"Schema\":1,\"Schema\":1", 1),
