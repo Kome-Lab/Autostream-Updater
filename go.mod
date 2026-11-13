@@ -3,6 +3,7 @@ module github.com/Kome-Lab/Autostream-Updater
 go 1.26.5
 
 require (
+	github.com/Kome-Lab/Autostream-Contracts/v3evidence v0.0.0-20261113172311-45aaa9932bcd
 	github.com/example/autostream-contracts v0.0.0
 	github.com/in-toto/attestation v1.2.0
 	github.com/klauspost/compress v1.19.2
@@ -10,8 +11,9 @@ require (
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/theupdateframework/go-tuf/v2 v2.4.2
 	go.yaml.in/yaml/v3 v3.0.4
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.49.0
 	google.golang.org/protobuf v1.36.11
+	modernc.org/sqlite v1.62.0
 )
 
 replace github.com/example/autostream-contracts => github.com/Kome-Lab/Autostream-Contracts v1.2.12-0.20260912235758-1550fab9220f
@@ -24,6 +26,7 @@ require (
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467 // indirect
 	github.com/digitorus/pkcs7 v0.0.0-20230818184609-3a137a874352 // indirect
 	github.com/digitorus/timestamp v0.0.0-20231217203849-220c5c2851b7 // indirect
+	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/analysis v0.25.5 // indirect
@@ -55,9 +58,12 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/secure-systems-lab/go-securesystemslib v0.11.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
@@ -73,13 +79,16 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/mod v0.38.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260523011958-0a33c5d7ca68 // indirect
 	google.golang.org/grpc v1.82.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
+	modernc.org/libc v1.80.1 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )

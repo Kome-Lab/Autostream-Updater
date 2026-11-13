@@ -1,5 +1,5 @@
 // Package registry defines the C10 reference-only registry read boundary.
-// It does not implement a SQLite driver, mutation, GuardControl, or service apply.
+// Its SQLite adapter is read-only; mutation, GuardControl and service apply are absent.
 package registry
 
 import "context"
