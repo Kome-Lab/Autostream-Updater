@@ -1,16 +1,15 @@
 package registry
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
+	"errors"
 	"math"
-	"reflect"
-	"strconv"
 	"unicode/utf8"
+
+	evidence "github.com/Kome-Lab/Autostream-Contracts/v3evidence"
 )
 
-const maxRequestBytes = 64 * 1024
+const maxRequestBytes = evidence.MaxRequestBytes
 
 // ValidateExecutionKey checks only the opaque identifier's representation.
 // Global uniqueness and ownership are storage/verifier obligations, not syntax.
@@ -107,164 +106,144 @@ func validateEvidence(evidence Evidence) error {
 	return nil
 }
 
-func validateCommand(command Command) error {
-	if command.Schema != CommandSchema {
-		return invalid("command.schema")
+// All conversions are explicit, lossless views of the reviewed shared contract.
+// Named ID/Binding types and C10 public signatures remain unchanged.
+func sharedCommand(c Command) evidence.Command {
+	return evidence.Command{
+		Schema: c.Schema, Operation: c.Operation,
+		Scope:               evidence.Scope{Realm: string(c.Scope.Realm), Host: string(c.Scope.Host), Resource: string(c.Scope.Resource), Backend: string(c.Scope.Backend)},
+		Execution:           evidence.Execution{RequestID: string(c.Execution.RequestID), ExecutionKey: string(c.Execution.ExecutionKey), OperationID: string(c.Execution.OperationID), AttemptID: string(c.Execution.AttemptID), StepID: string(c.Execution.StepID)},
+		RequestingPrincipal: string(c.RequestingPrincipal), AuthorizationIssuer: string(c.AuthorizationIssuer),
+		CandidateRevision: string(c.CandidateRevision), CandidateContentPin: string(c.CandidateContentPin),
+		Expected:      evidence.ExpectedReference{Revision: string(c.Expected.Revision), StateVersion: c.Expected.StateVersion},
+		RequiredGuard: evidence.RequiredGuard{Policy: string(c.RequiredGuard.Policy), Trust: string(c.RequiredGuard.Trust), Membership: string(c.RequiredGuard.Membership), OwnershipEpoch: string(c.RequiredGuard.OwnershipEpoch), FenceEpoch: string(c.RequiredGuard.FenceEpoch), Generation: string(c.RequiredGuard.Generation), BootID: string(c.RequiredGuard.BootID), ProcessIncarnation: string(c.RequiredGuard.ProcessIncarnation)},
+		Timing:        evidence.CommandTiming{TimeBase: string(c.Timing.TimeBase), DeadlineTick: c.Timing.DeadlineTick}, OriginalBudget: string(c.OriginalBudget),
 	}
-	if command.Operation != ReferenceOnlyOperation {
-		return invalid("command.operation")
+}
+func registryCommand(c evidence.Command) Command {
+	return Command{
+		Schema: c.Schema, Operation: c.Operation,
+		Scope:               Scope{Realm: ID(c.Scope.Realm), Host: ID(c.Scope.Host), Resource: ID(c.Scope.Resource), Backend: ID(c.Scope.Backend)},
+		Execution:           Execution{RequestID: ID(c.Execution.RequestID), ExecutionKey: ID(c.Execution.ExecutionKey), OperationID: ID(c.Execution.OperationID), AttemptID: ID(c.Execution.AttemptID), StepID: ID(c.Execution.StepID)},
+		RequestingPrincipal: ID(c.RequestingPrincipal), AuthorizationIssuer: ID(c.AuthorizationIssuer),
+		CandidateRevision: ID(c.CandidateRevision), CandidateContentPin: ID(c.CandidateContentPin),
+		Expected:      Reference{Revision: ID(c.Expected.Revision), StateVersion: c.Expected.StateVersion},
+		RequiredGuard: Guard{Policy: ID(c.RequiredGuard.Policy), Trust: ID(c.RequiredGuard.Trust), Membership: ID(c.RequiredGuard.Membership), OwnershipEpoch: ID(c.RequiredGuard.OwnershipEpoch), FenceEpoch: ID(c.RequiredGuard.FenceEpoch), Generation: ID(c.RequiredGuard.Generation), BootID: ID(c.RequiredGuard.BootID), ProcessIncarnation: ID(c.RequiredGuard.ProcessIncarnation)},
+		Timing:        Timing{TimeBase: ID(c.Timing.TimeBase), DeadlineTick: c.Timing.DeadlineTick}, OriginalBudget: ID(c.OriginalBudget),
 	}
-	if err := ValidateScope(command.Scope); err != nil {
-		return err
-	}
-	if err := ValidateExecution(command.Execution); err != nil {
-		return err
-	}
-	for _, item := range []struct {
-		value ID
-		field string
-	}{
-		{command.RequestingPrincipal, "command.requesting_principal"},
-		{command.AuthorizationIssuer, "command.authorization_issuer"},
-		{command.CandidateRevision, "command.candidate_revision"},
-		{command.CandidateContentPin, "command.candidate_content_pin"},
-		{command.Expected.Revision, "command.expected.revision"},
-		{command.RequiredGuard.Policy, "command.guard.policy"},
-		{command.RequiredGuard.Trust, "command.guard.trust"},
-		{command.RequiredGuard.Membership, "command.guard.membership"},
-		{command.RequiredGuard.OwnershipEpoch, "command.guard.ownership_epoch"},
-		{command.RequiredGuard.FenceEpoch, "command.guard.fence_epoch"},
-		{command.RequiredGuard.Generation, "command.guard.generation"},
-		{command.RequiredGuard.BootID, "command.guard.boot_id"},
-		{command.RequiredGuard.ProcessIncarnation, "command.guard.process_incarnation"},
-		{command.Timing.TimeBase, "command.timing.time_base"},
-		{command.OriginalBudget, "command.original_budget"},
-	} {
-		if err := validateID(item.value, item.field); err != nil {
-			return err
-		}
-	}
-	if command.Expected.StateVersion == math.MaxUint64 {
-		return invalid("command.expected.state_version")
-	}
-	if command.Timing.DeadlineTick == 0 {
-		return invalid("command.timing.deadline_tick")
+}
+func validateCommand(c Command) error {
+	if err := evidence.ValidateCommand(sharedCommand(c)); err != nil {
+		return commandContractError(err, c)
 	}
 	return nil
 }
 
-// CanonicalBinding defines the internal v1 equality representation of Command.
-// It does not select a signature, token format, wire protocol, or hash algorithm.
-// Struct field order and exact validated scalar values define this local schema;
-// changing them requires a new internal schema, never silent reinterpretation.
-func CanonicalBinding(command Command) (Binding, error) {
-	if err := validateCommand(command); err != nil {
-		return "", err
-	}
-	encoded, err := json.Marshal(command)
+// CanonicalBinding delegates the literal Schema1/Profile1 bytes to Contracts.
+// This does not authenticate a principal, select a signature or authorize mutation.
+func CanonicalBinding(c Command) (Binding, error) {
+	binding, err := evidence.ComputeBinding(sharedCommand(c))
 	if err != nil {
-		return "", invalid("command.encoding")
+		return "", commandContractError(err, c)
 	}
-	return Binding(encoded), nil
+	return Binding(binding), nil
+}
+func ValidateRequest(r Request) error {
+	err := evidence.ValidateRequest(evidence.Request{Command: sharedCommand(r.Command), Binding: string(r.Binding)})
+	if err == nil {
+		return nil
+	}
+	var failure *evidence.Error
+	if errors.As(err, &failure) && failure != nil && failure.Code == "request_binding" {
+		return bindingContractError(r.Binding)
+	}
+	return commandContractError(err, r.Command)
 }
 
-func ValidateRequest(request Request) error {
-	expected, err := CanonicalBinding(request.Command)
+// DecodeRequest never constructs a successful C10 Request from diagnostics.
+// Only a successful shared DecodeRequest can reach registryCommand.
+func DecodeRequest(data []byte) (Request, error) {
+	request, err := evidence.DecodeRequest(data)
 	if err != nil {
-		return err
+		return Request{}, decodeContractError(err, data)
 	}
-	if len(request.Binding) == 0 || len(request.Binding) > maxRequestBytes || !utf8.ValidString(string(request.Binding)) {
+	return Request{Command: registryCommand(request.Command), Binding: Binding(request.Binding)}, nil
+}
+func bindingContractError(binding Binding) error {
+	if len(binding) == 0 || len(binding) > maxRequestBytes || !utf8.ValidString(string(binding)) {
 		return invalid("request.binding")
 	}
-	if request.Binding != expected {
-		return collision("request.binding")
-	}
-	return nil
+	return collision("request.binding")
 }
-
-// DecodeRequest decodes the bounded internal v1 representation, not a public API.
-// All struct fields are mandatory. Object order/JSON string escaping can differ,
-// but decoded values must produce the exact canonical immutable binding.
-func DecodeRequest(data []byte) (Request, error) {
-	var request Request
-	if len(data) == 0 || len(data) > maxRequestBytes || !utf8.Valid(data) {
-		return request, invalid("request.json")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := strictRequestValue(decoder, reflect.TypeOf(request)); err != nil {
-		return request, err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return request, invalid("request.json")
-	}
-	if err := json.Unmarshal(data, &request); err != nil {
-		return Request{}, invalid("request.json")
-	}
-	if err := ValidateRequest(request); err != nil {
-		return Request{}, err
-	}
-	return request, nil
-}
-
-func strictRequestValue(decoder *json.Decoder, target reflect.Type) error {
-	token, err := decoder.Token()
-	if err != nil || token == nil {
+func decodeContractError(err error, data []byte) error {
+	var failure *evidence.Error
+	if !errors.As(err, &failure) || failure == nil {
 		return invalid("request.json")
 	}
-	switch target.Kind() {
-	case reflect.Struct:
-		if token != json.Delim('{') {
+	switch failure.Code {
+	case "request_binding":
+		// The pinned shared decoder has ALREADY validated the entire closed shape.
+		// This bounded extraction changes only the legacy INVALID/CONFLICT label.
+		// It cannot accept, repair, regenerate or return a Request.
+		if len(data) == 0 || len(data) > maxRequestBytes || !utf8.Valid(data) {
 			return invalid("request.json")
 		}
-		fields := make(map[string]reflect.Type, target.NumField())
-		for i := 0; i < target.NumField(); i++ {
-			field := target.Field(i)
-			fields[field.Name] = field.Type
-		}
-		seen := make(map[string]bool, len(fields))
-		for decoder.More() {
-			key, err := decoder.Token()
-			if err != nil {
-				return invalid("request.json")
-			}
-			name, ok := key.(string)
-			fieldType, exists := fields[name]
-			if !ok || !exists || seen[name] {
-				return invalid("request.json")
-			}
-			seen[name] = true
-			if err := strictRequestValue(decoder, fieldType); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil || closing != json.Delim('}') || len(seen) != len(fields) {
+		var diagnostic struct{ Binding string }
+		if json.Unmarshal(data, &diagnostic) != nil {
 			return invalid("request.json")
 		}
-	case reflect.String:
-		if _, ok := token.(string); !ok {
-			return invalid("request.json")
-		}
-	case reflect.Uint32, reflect.Uint64:
-		number, ok := token.(json.Number)
-		if !ok {
-			return invalid("request.json")
-		}
-		value := number.String()
-		if value == "" {
-			return invalid("request.json")
-		}
-		for i := 0; i < len(value); i++ {
-			if value[i] < '0' || value[i] > '9' {
-				return invalid("request.json")
-			}
-		}
-		if _, err := strconv.ParseUint(value, 10, target.Bits()); err != nil {
-			return invalid("request.json")
-		}
+		return bindingContractError(Binding(diagnostic.Binding))
+	case "request_version":
+		return invalid("command.schema")
+	case "request_operation":
+		return invalid("command.operation")
 	default:
 		return invalid("request.json")
 	}
-	return nil
+}
+
+// commandContractError is rejection-only diagnostic metadata. Shared validation
+// is the SOLE acceptance predicate. Unknown shared codes stay fail-closed.
+func commandContractError(err error, c Command) error {
+	var failure *evidence.Error
+	if !errors.As(err, &failure) || failure == nil {
+		return invalid("command")
+	}
+	switch failure.Code {
+	case "request_version":
+		return invalid("command.schema")
+	case "request_operation":
+		return invalid("command.operation")
+	case "request_identity":
+		if e := ValidateScope(c.Scope); e != nil {
+			return e
+		}
+		if e := ValidateExecution(c.Execution); e != nil {
+			return e
+		}
+		for _, item := range []struct {
+			value ID
+			field string
+		}{
+			{c.RequestingPrincipal, "command.requesting_principal"}, {c.AuthorizationIssuer, "command.authorization_issuer"},
+			{c.CandidateRevision, "command.candidate_revision"}, {c.CandidateContentPin, "command.candidate_content_pin"},
+			{c.Expected.Revision, "command.expected.revision"}, {c.RequiredGuard.Policy, "command.guard.policy"},
+			{c.RequiredGuard.Trust, "command.guard.trust"}, {c.RequiredGuard.Membership, "command.guard.membership"},
+			{c.RequiredGuard.OwnershipEpoch, "command.guard.ownership_epoch"}, {c.RequiredGuard.FenceEpoch, "command.guard.fence_epoch"},
+			{c.RequiredGuard.Generation, "command.guard.generation"}, {c.RequiredGuard.BootID, "command.guard.boot_id"},
+			{c.RequiredGuard.ProcessIncarnation, "command.guard.process_incarnation"}, {c.Timing.TimeBase, "command.timing.time_base"}, {c.OriginalBudget, "command.original_budget"},
+		} {
+			if e := validateID(item.value, item.field); e != nil {
+				return e
+			}
+		}
+	case "request_number":
+		if c.Expected.StateVersion == math.MaxUint64 {
+			return invalid("command.expected.state_version")
+		}
+		if c.Timing.DeadlineTick == 0 {
+			return invalid("command.timing.deadline_tick")
+		}
+	}
+	return invalid("command")
 }

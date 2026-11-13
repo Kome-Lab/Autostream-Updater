@@ -712,8 +712,8 @@ migration is unauthorized; formal v2 return remains NOT_CERTIFIED.
 
 The canonical Envelope/Strict Codec now lives in the separate
 `github.com/Kome-Lab/Autostream-Contracts/v3evidence` module, pinned to
-`v0.0.0-20261112114129-c53da46de667` / commit
-`c53da46de667d0cb0fc3692978870f373b437b06`.
+`v0.0.0-20261113091349-790be850e98c` / commit
+`790be850e98c06119330907a8fc2ae091e2bdc85`.
 The Contracts PR is [#1](https://github.com/Kome-Lab/Autostream-Contracts/pull/1);
 it remains unmerged and no tag/Release is created. The legacy v2 require/replace
 is preserved at1550fab9220f rather than upgraded to obtain these new types.
@@ -731,8 +731,10 @@ Revocation/effective-state verifier hooks. Original bytes plus typed payload,
 profile/key metadata and all target fields reach the verifier. There is no
 successful default, v2 fallback, automatic retry or implicit Consume.
 
-The actual CP Producer, read-only network/UDS delivery, keys, evidence clock and
-current owner/Policy/Trust/Admission/Drain/Candidate services remain unimplemented.
+The CP Producer/Resolver/SQL Authority product code exists in CP commit d8ff3362;
+its production management/provisioning and issuance remain disabled. Read-only
+network/UDS delivery, keys, qualified clocks and the remaining evidence Producers
+are still unconnected.
 Missing transport/verifier/clock qualification remains UNKNOWN. No signature/MAC
 algorithm, key product, Token format, TTL/skew or D1 substitute is adopted.
 Guard cannot qualify independent Continuity. No Reference/Receipt/History
@@ -755,3 +757,13 @@ separately authorized in its owning repository.
 All original preservation, manual hold, old-authority nonreuse and UNKNOWN/HELD
 constraints remain. Product-wide acceptance NOT_RUN; Phase1 closure on hold;
 production migration unauthorized; formal v2 return NOT_CERTIFIED.
+
+## Shared Canonical Request / Binding adapter
+
+The product canonical path now delegates to the reviewed Contracts Request APIs.
+See [CANONICAL.md](CANONICAL.md) for lossless type conversion, rejection-only error
+diagnostics, independent baseline/SQLite/CP verification and remaining limits.
+The owning CP PR has implemented its Resolver/Service/SQL Authority code; its
+management/provisioning and real evidence issuance remain unavailable. No CP or
+Contracts source is modified by this Updater increment. Earlier next-unit notes
+above are historical checkpoints, not a claim of deployed evidence qualification.
