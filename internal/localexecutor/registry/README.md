@@ -740,11 +740,13 @@ algorithm, key product, Token format, TTL/skew or D1 substitute is adopted.
 Guard cannot qualify independent Continuity. No Reference/Receipt/History
 mutation, GuardControl or service effect is added.
 
-The pre-publication proposal under testdata/c03-contracts-candidate remains an
-unchanged historical artifact atf62469a4e319ca8487f1ac5502979ca15521d9d6.
-Its NOT_APPLIED/PUBLICATION_BLOCKED statements describe that earlier checkpoint,
-not this connection. Its candidate-only script is no longer invoked by CI:
-normal product-package tests now exercise the real pinned module connection.
+The pre-publication candidate module, duplicate overlay sources/tests and their
+unused overlay-only CI script are removed from the current tree. Their complete
+original bytes remain in the fixed pre-adapter commit
+[6f71ee3a](https://github.com/Kome-Lab/Autostream-Updater/tree/6f71ee3a0906665f0a639abf69c27749ba211dc7/testdata/c03-contracts-candidate).
+Existing product-package tests are retained. Native product-package tests
+exercise the real pinned module; no candidate module/copy or local v3 replacement
+is retained in the current repository tree.
 
 CI verifies the selected module has no local/candidate replacement, checks the
 reviewed module's exact source blobs and fixed version/commit, and runs native
